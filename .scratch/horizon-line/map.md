@@ -58,6 +58,19 @@ decide before someone builds it.
   `agent.inject(createUserMessage(...))`, guarded on `source === "startup"`
   and on `delegationDepth`/`origin` to skip subagents. Proven live by
   moving-target; no research needed for DSH.
+- [Claude Code + opencode hook surfaces are known](.scratch/horizon-line/research/01-claude-opencode-hooks.md) —
+  Claude Code 2.1.258: SessionStart hook injects before the first prompt with
+  **exact** new-vs-resumed (`source` matcher) and **structural** subagent
+  exclusion. opencode 1.18.29: no session-start hook — `chat.message` prepend,
+  heuristic new-vs-resumed, `session.parentID` subagent exclusion; never
+  live-probed (binary absent).
+- [Hermes + pi hook surfaces are known](.scratch/horizon-line/research/02-hermes-pi-hooks.md) —
+  Hermes 0.21.1: `on_session_start` is observer-only; injection via
+  `register_system_prompt_section` (persistent, 4k cap) or `pre_llm_call`
+  (per-turn, `is_first_turn`). pi 0.73.1: `session_start` has explicit
+  `reason` (startup|new|resume|fork) but no injection return — inject via
+  `before_agent_start`. Neither auto-excludes subagents. Both can consume a
+  CLI's stdout.
 - [HL-03 r1: one horizon per project](#) — cardinality is exactly one, resolved
   by walking **up** from cwd to the nearest ancestor store, the way git finds
   `.git`. Monorepos work for free: a subproject with its own store gets its own
@@ -115,16 +128,16 @@ decide before someone builds it.
 
 | Ticket | Card | Type | State |
 |---|---|---|---|
-| 01 Claude Code + opencode hooks | `t_99204bb9` | research | dispatched → developer |
-| 02 Hermes + pi hooks | `t_f2e33c02` | research | dispatched → developer |
+| 01 Claude Code + opencode hooks | `t_99204bb9` | research | done (7dc531e) |
+| 02 Hermes + pi hooks | `t_f2e33c02` | research | done (5385bdd) |
 | 09 Anthropic primary-source check | `t_1e0bc4e1` | research | dispatched → developer |
 | 03 What IS a horizon line | `t_41be385d` | grilling | blocked: needs_input (HITL) |
 | 04 On-disk format | `t_df01dae9` | grilling | todo, gated by 03 |
 | 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 03+04 |
 | 06 Injected prompt variants | `t_48b2a9c5` | prototype | todo, gated by 03 |
 | 07 vs moving-target | `t_64b50d56` | grilling | blocked: needs_input (HITL) |
-| 08 Packaging + distribution | `t_0b9338c4` | grilling | todo, gated by 01+02 |
+| 08 Packaging + distribution | `t_0b9338c4` | grilling | running: grilling batch posted, needs Andre |
 
-Frontier right now: the three research cards (AFK, running) plus HL-03 and
-HL-07, which are HITL and wait on Andre. HL-03 is the keystone — 04, 05 and 06
-all hang off it.
+Frontier right now: HL-08's grilling batch (needs Andre), plus HL-03 and
+HL-07, which are HITL and wait on Andre. HL-09 is AFK and running. HL-03 is
+the keystone — 04, 05 and 06 all hang off it.
