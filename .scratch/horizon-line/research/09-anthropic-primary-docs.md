@@ -52,12 +52,18 @@ URL + `.md`). Verbatim: "An outcome tells the session what the end result
 should look like and how to measure its quality. The agent works toward that
 target, self-evaluating and iterating until the outcome is met." Concretely a
 `user.define_outcome` event with a markdown rubric; "the harness automatically
-provisions a *grader*"; `max_iterations` default 3, max 20. Requires the
-`managed-agents-2026-04-01` beta header and, per the Managed Agents overview
-(https://docs.anthropic.com/en/docs/managed-agents/overview), "Certain features
-(outcomes and multiagent) are in research preview. Request access to try them."
-It is an event on hosted sessions — nothing a local CLI harness can consume.
-Note: the earlier 404 was a slug problem; the real page is `define-outcomes`.
+provisions a *grader*"; `max_iterations` default 3, max 20. It is an event on hosted Managed Agents
+sessions — nothing a local CLI harness can consume. Availability, per the
+Managed Agents overview
+(https://platform.claude.com/docs/en/managed-agents/overview), verbatim:
+"Claude Managed Agents is in beta. All Managed Agents endpoints require the
+`managed-agents-2026-04-01` beta header." and "Within the beta, MCP tunnels and
+dreaming are in a more limited research preview." So Outcomes is a beta-gated
+API feature of the hosted product; the Dreams add-on is the request-access
+research preview. (Note: an older search-index snippet of this page said
+"outcomes and multiagent" were the research-preview items; the live page no
+longer says that — beta status above is quoted from the page as fetched
+2026-09-08.)
 
 ### Dreams — CONFIRMED as Managed-Agents feature, research preview
 
