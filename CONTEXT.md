@@ -17,7 +17,13 @@ and it is not what to do this session.
 
 One thing the human wants that does not exist yet, written as a capability, use
 case, or piece of functionality — **never as a task**. One line of plain text,
-no newlines, at most **512 characters**.
+no newlines, at most **512 Unicode code points**.
+
+Identified by a short opaque id (`g_3f9a2c1b`), minted once on add and never
+reused. Ids are deliberately **not sequential**: sequential numbering invites
+reading `g_3` as more important than `g_5`, and gaps carry no priority order.
+The id is what session records and the log reference, so a gap's text stays
+free to be amended without invalidating history.
 
 The two caps do different jobs. The character cap forces each gap to stay
 high-level: no details, no chosen approach, no decision history. The count cap
@@ -27,6 +33,12 @@ character limit.
 A gap is *open* until the human closes it. Nothing about a gap implies a plan,
 an owner, an estimate, or an order.
 
+**Only open gaps are stored in `gaps.json`.** Closing a gap removes it from
+that file; the close is recorded in the session log. So the file holds at most
+5 entries for the life of the project, the injection path reads it whole with
+no filtering, and the count cap can never be accidentally charged against
+closed gaps.
+
 ## Close
 
 Marking a gap delivered. **Only the human closes a gap.** The agent may notice
@@ -35,8 +47,8 @@ agent that silently drops a gap the human still cares about has destroyed the
 artifact's trustworthiness, and being wrong in that direction costs more than
 carrying a stale gap.
 
-Closed gaps stay in the log with a closed-at marker — the project's record of
-what actually got built.
+Closed gaps live on in the session log — the project's record of what actually
+got built, and the answer to "when did this close, and in which session?"
 
 ## Propose
 
@@ -104,3 +116,13 @@ everything below inherits the nearest one.
 Placing the current open gaps into an agent session's context before the
 human's first turn. Only genuinely new sessions — never resumed, compacted, or
 subagent sessions, which already carry context.
+
+## Revision
+
+A counter on `gaps.json`, incremented on every write. A writer reads a
+revision, and its write is accepted only if the stored revision still matches —
+otherwise it is **rejected**, telling the caller the horizon changed underneath
+it and to re-read and retry.
+
+This is what makes two harnesses safe to run at once without lockfiles, which
+strand when a process is killed.

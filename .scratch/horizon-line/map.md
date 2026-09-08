@@ -203,6 +203,41 @@ decide before someone builds it.
   **DEPENDS ON HL-10** (`t_0ba9fbe3`, running): whether a session-end hook
   exists at all in each harness, and whether it can elicit model text or is a
   fire-and-forget observer. No close hook fires on `kill -9` in any harness.
+
+- [HL-04 resolved: schema, identity, atomicity](#) — the format question,
+  settled in one round.
+  **Gap identity:** a short opaque id (`g_3f9a2c1b`), minted on add, never
+  reused, deliberately **non-sequential** — sequential ids invite reading `g_3`
+  as higher priority than `g_5`, and gaps carry no order. Session records and
+  the log reference the id, so gap text can be amended without invalidating
+  history.
+  **Closed gaps leave `gaps.json`.** The file holds *only* open gaps — at most
+  5 for the project's whole life — so the injection path reads it whole with no
+  filtering and the count cap can never be charged against closed entries.
+  Closes are recorded in `sessions.jsonl`; history grows only in the file
+  designed to grow.
+  **The 512 cap counts Unicode code points** (`[...s].length` in JS, `len(s)`
+  in Python) — the only unit that agrees across both languages and doesn't
+  penalise Portuguese. Bytes would make "ção" cost more than "cao"; UTF-16
+  units make an emoji cost 2. The rejection message states the actual count.
+  **Atomicity:** temp-file + `rename()` in the same directory (atomic on POSIX,
+  so a reader never sees a torn file), plus a **compare-and-swap on a
+  `revision` integer** for the lost-update case: read rev 7, write expects 7,
+  someone already wrote 8 → reject with "the horizon changed underneath you,
+  re-read and retry" rather than silently clobbering. **No lockfiles** — they
+  strand on `kill -9`, the exact failure mode HL-10 found in DSH.
+- [HL-10 partial: DSH cannot elicit model text at close](#) — the worker
+  finished only 2 of 5 harnesses and never wrote its file; both sections were
+  salvaged from the workspace before pruning (`e3d8160`), and HL-10b
+  (`t_7b8c4c17`) covers the rest. What landed already constrains the design:
+  **Hermes CAN** produce a close-time summary (three end hooks; `ctx.llm`
+  exposes host-owned completion; `on_session_finalize` runs from `atexit` so it
+  survives Ctrl-C and SIGTERM, though not `kill -9`). **DSH CANNOT** — there is
+  no `agent/session-end` event at all; the nearest is `agent/disposed`, which
+  fires *after* the loop stops, is unawaited (emit-mode, returns discarded), and
+  steering at that point is thrown away. This validates r4's `summary: null`
+  ahead of time: the summary field must be optional because at least one
+  harness structurally cannot fill it.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
@@ -227,17 +262,12 @@ decide before someone builds it.
 - **What "opencode injects heuristically" costs at 5 gaps.** The old estimate
   (~130 tokens) assumed one 512-char line. Five gaps is ~5x that, injected on
   every turn if the heuristic route is taken. Re-cost before HL-08 decides.
-- **Gap identity.** Session records reference gaps by *something*. Stable ids
-  (opaque? sequential?) or the gap text itself? Text breaks the moment a gap is
-  amended. Blocks HL-04's schema.
-- **Where the closed gaps live** — still in `gaps.json` with a `closed_at`
-  field, or moved to the log on close? Affects whether the 5-gap cap needs to
-  filter, and how big `gaps.json` grows over a project's life.
-- Whether `amend` may edit any open gap or only the most recently added one.
 - Whether the 5-gap cap is a hard reject on the 6th add, or a prompt to close
-  one first — and whether closed gaps count against it (they must not).
-- Ordering: are gaps ordered (priority) or a set? Injection order matters if
-  the model reads the first one as most important.
+  one first. (HL-04 settles the second half: closed gaps leave `gaps.json`, so
+  they can never count against the cap.) For HL-05's exit-code table.
+- Ordering: gaps carry no priority (HL-04, non-sequential ids). Still open:
+  what order they are *injected* in — insertion order, or most-recent-first —
+  since a model may read the first as most important.
 - Commit-vs-gitignore default for the store, and what a teammate sees.
 
 ## Out of scope
@@ -258,18 +288,19 @@ decide before someone builds it.
 
 | Ticket | Card | Type | State |
 |---|---|---|---|
-| 01 Claude Code + opencode hooks | `t_99204bb9` | research | done |
-| 02 Hermes + pi hooks | `t_f2e33c02` | research | done |
+| 01 Claude Code + opencode start hooks | `t_99204bb9` | research | done |
+| 02 Hermes + pi start hooks | `t_f2e33c02` | research | done |
 | 09 Anthropic primary-source check | `t_1e0bc4e1` | research | done — corrected the prior-art finding |
-| 03 What IS a horizon line | `t_41be385d` | grilling | done — 3 rounds; r3 reshaped it to a gap list |
-| 04 On-disk format | `t_df01dae9` | grilling | blocked → **now unblocked by r3**, needs Andre |
-| 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 04 |
-| 06 Injected prompt variants | `t_48b2a9c5` | prototype | **redo** — 08f6bfd was built pre-reshape (single line, human-authored) |
-| 07 vs moving-target | `t_64b50d56` | grilling | blocked (HITL) — r3 largely pre-answers it |
-| 08 Packaging + distribution | `t_0b9338c4` | grilling | blocked (HITL) — HL-01/02 largely pre-answer it |
+| 03 What IS a horizon | `t_41be385d` | grilling | done — 4 rounds; gap list + JSON store |
+| 04 On-disk format | `t_df01dae9` | grilling | **done** — ids, closed-gap location, code points, CAS |
+| 10 Session-end hooks (Hermes, DSH) | `t_0ba9fbe3` | research | partial — 2 of 5, salvaged at `e3d8160` |
+| 10b Session-end hooks (CC, opencode, pi) | `t_7b8c4c17` | research | **running** |
+| 05 CLI contract spec | `t_f10bd84a` | task | **unblocked** — HL-04 landed |
+| 06 Injected prompt variants | `t_48b2a9c5` | prototype | redo — built pre-reshape |
+| 07 vs moving-target | `t_64b50d56` | grilling | blocked (HITL) — largely pre-answered |
+| 08 Packaging + distribution | `t_0b9338c4` | grilling | blocked (HITL) — largely pre-answered |
 
-Frontier: **HL-04 (format)** is the live one — the gap-list reshape changed
-what it has to describe (N gaps + closed history + provenance, not one line).
-HL-06's variants need redoing against the new model. HL-07 and HL-08 are both
-substantially pre-answered by r3 and the research; they may collapse into
-short confirmations rather than full grillings.
+Frontier: **HL-05** (write the CLI contract spec) is now the live ticket — the
+last decisions it waited on have landed. HL-10b is AFK and running. HL-06 needs
+redoing against the gap-list model. HL-07 and HL-08 may collapse into short
+confirmations rather than full grillings.
