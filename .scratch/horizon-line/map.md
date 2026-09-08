@@ -238,6 +238,17 @@ decide before someone builds it.
   steering at that point is thrown away. This validates r4's `summary: null`
   ahead of time: the summary field must be optional because at least one
   harness structurally cannot fill it.
+- [HL-05 done: the CLI contract is written](#) — full spec at
+  `.scratch/horizon-line/05-cli-contract.md`: seven commands (`show`, `add`,
+  `close`, `amend`, `log`, `session-end`, `init`), the `gaps.json` /
+  `sessions.jsonl` schemas, an eight-code exit table, and **33 acceptance
+  tests** a TDD implementation turns red first. Two contract choices worth
+  surfacing: **exit 0 when no store exists** (`show` runs at every session start
+  on every project, and most projects have no horizon — a non-zero exit there
+  would make every hook noisy on unrelated repos), and **`gaps_added` /
+  `gaps_closed` are computed by the CLI**, never passed in, so the session log
+  cannot be lied to by a caller. The spec is the implementation target; no code
+  is written yet.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
@@ -290,17 +301,17 @@ decide before someone builds it.
 |---|---|---|---|
 | 01 Claude Code + opencode start hooks | `t_99204bb9` | research | done |
 | 02 Hermes + pi start hooks | `t_f2e33c02` | research | done |
-| 09 Anthropic primary-source check | `t_1e0bc4e1` | research | done — corrected the prior-art finding |
-| 03 What IS a horizon | `t_41be385d` | grilling | done — 4 rounds; gap list + JSON store |
-| 04 On-disk format | `t_df01dae9` | grilling | **done** — ids, closed-gap location, code points, CAS |
-| 10 Session-end hooks (Hermes, DSH) | `t_0ba9fbe3` | research | partial — 2 of 5, salvaged at `e3d8160` |
+| 09 Anthropic primary-source check | `t_1e0bc4e1` | research | done |
+| 03 What IS a horizon | `t_41be385d` | grilling | done — 4 rounds |
+| 04 On-disk format | `t_df01dae9` | grilling | done (card stuck in `triage`; record is in comments + git) |
+| 10 Session-end hooks (Hermes, DSH) | `t_0ba9fbe3` | research | partial — 2 of 5, salvaged `e3d8160` |
 | 10b Session-end hooks (CC, opencode, pi) | `t_7b8c4c17` | research | **running** |
-| 05 CLI contract spec | `t_f10bd84a` | task | **unblocked** — HL-04 landed |
-| 06 Injected prompt variants | `t_48b2a9c5` | prototype | redo — built pre-reshape |
+| 05 CLI contract spec | `t_f10bd84a` | task | **done** — `.scratch/horizon-line/05-cli-contract.md` |
+| 06 Injected prompt variants | `t_48b2a9c5` | prototype | redo against the gap-list model |
 | 07 vs moving-target | `t_64b50d56` | grilling | blocked (HITL) — largely pre-answered |
 | 08 Packaging + distribution | `t_0b9338c4` | grilling | blocked (HITL) — largely pre-answered |
 
-Frontier: **HL-05** (write the CLI contract spec) is now the live ticket — the
-last decisions it waited on have landed. HL-10b is AFK and running. HL-06 needs
-redoing against the gap-list model. HL-07 and HL-08 may collapse into short
-confirmations rather than full grillings.
+The way is nearly clear. What remains before implementation: **HL-06** (the two
+injected texts, redone for gaps), and **HL-07/HL-08**, both of which the
+research has largely pre-answered and which may collapse into short
+confirmations. HL-10b is the last AFK unknown.
