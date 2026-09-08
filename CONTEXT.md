@@ -48,11 +48,31 @@ The human types no command; the agent does the typing. But nothing enters or
 leaves the horizon unsanctioned. This is what keeps the horizon something the
 human authored rather than something they audit.
 
-## Log
+## Gap log
 
 The append-only record of every change the horizon has ever undergone: gaps
 added, gaps closed, gaps amended. Nothing is ever deleted, so the moment the
 horizon moved is always visible.
+
+## Session record
+
+One entry per agent session that touched this project: when it happened, which
+harness ran it, that harness's own session id, a short summary of what the
+session did, and the gaps it added and closed.
+
+The gap deltas are the load-bearing part and are filled by the CLI itself,
+which already knows what happened. The summary is prose the agent supplies and
+is **optional** — a session record with no summary is valid and normal. A
+summary is never fabricated to fill the field.
+
+Session records turn the log from a diary into a causal record: which sessions
+moved the horizon, and which did not.
+
+## Session id
+
+The identifier a harness uses for its own session, recorded verbatim on the
+session record. It is the join key back into that harness's own transcripts —
+horizon-line never invents its own.
 
 ## Amend
 

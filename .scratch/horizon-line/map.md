@@ -18,6 +18,11 @@ hears a want that spans sessions; the human confirms; the CLI writes
 deterministically. No LLM ever authors the file's contents unprompted, and no
 gap opens or closes without a human yes.
 
+Alongside the gaps, the same store keeps a **session log**: one append-only
+record per session that touched the project — timestamp, harness, that
+harness's session id, the gaps it added and closed, and an optional agent-written
+summary.
+
 The map is done when the way is clear: format, CLI contract, injection text,
 per-harness hook mechanics and packaging are all decided — nothing left to
 decide before someone builds it.
@@ -175,6 +180,29 @@ decide before someone builds it.
   a gap the human still cares about costs more than carrying a stale one.
   Closed gaps stay in the log with a closed-at marker: the project's record of
   what actually got built.
+- [HL-03 r4: JSON store, split in two, plus a session log](#) — the store is
+  **JSON, not Markdown**: a deterministic CLI writing Markdown would be parsing
+  prose to append a record. Split across two files in one directory:
+  `gaps.json` (a small mutable set — read-modify-write) and `sessions.jsonl`
+  (append-only, unbounded). JSONL makes appending a session one `>>` with no
+  read, no parse and no lock — which matters when two harnesses close at once —
+  and a corrupt session log can never take the gaps with it.
+  **Session record fields:** timestamp, harness name, that harness's own
+  session id (verbatim — the join key back into its transcripts; horizon-line
+  never invents one), an optional summary, and `gaps_added` / `gaps_closed`.
+  The gap deltas are filled **by the CLI**, which already knows what happened
+  in the session; they cost nothing at write time and require nothing of the
+  agent. They turn the log from a diary into a causal record and make the
+  closed-gap history queryable: *when did this gap close, and in which
+  session?*
+  **Summary is optional and never fabricated.** If a harness's close hook
+  cannot elicit model text, the entry is still written with `summary: null` —
+  the deltas are load-bearing, the prose is a bonus. Fallback held in reserve:
+  have the agent write the summary *mid-session*, when it already has context
+  and no close hook is needed.
+  **DEPENDS ON HL-10** (`t_0ba9fbe3`, running): whether a session-end hook
+  exists at all in each harness, and whether it can elicit model text or is a
+  fire-and-forget observer. No close hook fires on `kill -9` in any harness.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
@@ -199,6 +227,12 @@ decide before someone builds it.
 - **What "opencode injects heuristically" costs at 5 gaps.** The old estimate
   (~130 tokens) assumed one 512-char line. Five gaps is ~5x that, injected on
   every turn if the heuristic route is taken. Re-cost before HL-08 decides.
+- **Gap identity.** Session records reference gaps by *something*. Stable ids
+  (opaque? sequential?) or the gap text itself? Text breaks the moment a gap is
+  amended. Blocks HL-04's schema.
+- **Where the closed gaps live** — still in `gaps.json` with a `closed_at`
+  field, or moved to the log on close? Affects whether the 5-gap cap needs to
+  filter, and how big `gaps.json` grows over a project's life.
 - Whether `amend` may edit any open gap or only the most recently added one.
 - Whether the 5-gap cap is a hard reject on the 6th add, or a prompt to close
   one first — and whether closed gaps count against it (they must not).
