@@ -154,14 +154,21 @@ decide before someone builds it.
 
 ## Not yet specified
 
-- **Whether horizon-line survives the CLAUDE.md/AGENTS.md comparison** — the
-  sharpest open question on the map, raised by HL-09. Anthropic already ships
-  a human-authored, repo-local, persistent, session-start-injected file, and
-  `AGENTS.md` is the cross-harness convention Andre already uses on this
-  machine. Needs an explicit answer before any code: what does a capped
-  single line plus a deterministic CLI plus an append-only log give that a
-  paragraph in AGENTS.md does not? Feeds HL-07 and the README's first
-  paragraph.
+- **RESHAPE PENDING: horizon = a GAP LIST, agent-maintained.** Andre's answer to
+  the CLAUDE.md question (2026-09-08) both settles the positioning AND reopens
+  two decisions locked earlier the same day. Positioning (settled, becomes the
+  README's opening): AGENTS.md/CLAUDE.md is *auto-inserted too*, so injection is
+  not the differentiator. Three things are: (1) a **size cap**, which forces the
+  content to stay top-level; (2) a **level constraint** — no details, no choices,
+  no decision history; (3) it is **maintained by the plugin**, not by hand. And
+  the content is not a goal statement but a **gap list**: what the user wants and
+  does not yet have — use cases, capabilities, functionality — expressly *not*
+  tasks. The agent detects when the user voices a want that will not be resolved
+  in this session, and captures it.
+  **CONFLICTS TO RESOLVE (round 3, HL-03 reopened):** this contradicts the
+  locked "no agent ever authors a horizon line" (r2) and the locked "one line,
+  no newlines" content model (r1). Nothing downstream should be built until
+  round 3 rules on both.
 - **opencode cannot exactly detect a new session** (HL-01) — `chat.message`
   has no `source` field; new-vs-resumed is heuristic (empty history +
   `session.time.created`). Either accept the heuristic, inject on every turn
@@ -191,14 +198,15 @@ decide before someone builds it.
 | 01 Claude Code + opencode hooks | `t_99204bb9` | research | done (7dc531e) |
 | 02 Hermes + pi hooks | `t_f2e33c02` | research | done (5385bdd) |
 | 09 Anthropic primary-source check | `t_1e0bc4e1` | research | dispatched → developer |
-| 03 What IS a horizon line | `t_41be385d` | grilling | blocked: needs_input (HITL) |
-| 04 On-disk format | `t_df01dae9` | grilling | todo, gated by 03 |
+| 03 What IS a horizon line | `t_41be385d` | grilling | done 2026-09-08 (2 rounds, Telegram) |
+| 04 On-disk format | `t_df01dae9` | grilling | running: grilling round 1 posted on card, needs Andre |
 | 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 03+04 |
 | 06 Injected prompt variants | `t_48b2a9c5` | prototype | prototype posted (08f6bfd) — needs Andre: pick A/B/C or name a hybrid |
 | 07 vs moving-target | `t_64b50d56` | grilling | blocked: needs_input (HITL) |
 | 08 Packaging + distribution | `t_0b9338c4` | grilling | running: grilling batch posted, needs Andre |
 
-Frontier right now: everything open waits on Andre — HL-08's grilling batch,
-HL-03 and HL-07 (HITL), and HL-06 (pick variant A/B/C or a hybrid; full texts
-in .scratch/horizon-line/prototypes/06-injected-prompt-variants.md). HL-09 is
-AFK and running. HL-03 is the keystone — 04, 05 and 06 all hang off it.
+Frontier right now: HL-04 (format) + HL-08 (packaging) grilling batches and
+HL-06 (pick variant A/B/C or a hybrid; full texts in
+.scratch/horizon-line/prototypes/06-injected-prompt-variants.md) wait on
+Andre. HL-07 still HITL-waiting. HL-09 is AFK and running. HL-03 is resolved
+— keystone cleared; HL-05 starts as soon as HL-04's format lands.
