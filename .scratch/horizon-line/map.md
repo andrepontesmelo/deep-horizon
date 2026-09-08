@@ -117,9 +117,61 @@ decide before someone builds it.
   2026-09-08, moved 3 times". Dates and move counts are for the human at the
   terminal (`horizon log`); showing them to the model invites it to reason about
   the human's indecision instead of the aim.
+- [HL-09: the real prior art is CLAUDE.md, not `/goal`](#) — verified against
+  primary docs. `/goal` (v2.1.139) is a session-scoped wrapper around a
+  prompt-based Stop hook, machine-evaluated, carried over on *resume* only,
+  invisible to other tools. Outcomes and Dreams are beta-header-gated Managed
+  Agents API features (Dreams a request-access research preview); Routines are
+  claude.ai cloud runs. **None is prior art.** What *is*: `CLAUDE.md` —
+  "markdown files that give Claude persistent instructions for a project…
+  Claude reads them at the start of every session", repo-local, human-authored,
+  version-controlled, loaded from cwd and every parent directory. It covers
+  local injection + human authorship + persistence. The gap it leaves is
+  exactly cross-harness: Claude Code "reads `CLAUDE.md`, not `AGENTS.md`", and
+  the docs' own bridge is a per-repo `@AGENTS.md` import — glue, not a
+  standard. **Position against CLAUDE.md, not `/goal`.**
+- [HL-01/02: injection is possible in all five, but not uniformly](#) —
+  Claude Code has an exact `SessionStart` hook with a `startup` matcher and
+  structural subagent exclusion (subagents fire a separate `SubagentStart`);
+  DSH has `agent/session-start` + `agent.inject`; pi has `session_start` with a
+  first-class `reason` enum (`startup|reload|new|resume|fork`) but **no
+  injection return** — it must stash and inject from `before_agent_start`;
+  Hermes' `on_session_start` is an **observer whose return value is ignored**,
+  so injection goes through `register_system_prompt_section` (4,000-char cap,
+  `after_memory`, frozen into the persisted system prompt) or `pre_llm_call`
+  (per-turn, ephemeral, `is_first_turn` available); **opencode has no
+  session-start hook at all** — the only pre-first-turn seam is `chat.message`,
+  which fires per user message and lets a plugin append a TextPart to the
+  user's message.
+- [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
+  Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
+  single npm package can serve Hermes natively. Every harness can, however,
+  spawn a process and read stdout (Hermes: `subprocess` in a hook; opencode:
+  Bun `$`; pi: `node:child_process`; Claude Code: the hook *is* a command).
+  So the shared artifact is the **CLI**, and each adapter is a thin shim around
+  it. This was HL-08's central question and the research has largely answered
+  it.
 
 ## Not yet specified
 
+- **Whether horizon-line survives the CLAUDE.md/AGENTS.md comparison** — the
+  sharpest open question on the map, raised by HL-09. Anthropic already ships
+  a human-authored, repo-local, persistent, session-start-injected file, and
+  `AGENTS.md` is the cross-harness convention Andre already uses on this
+  machine. Needs an explicit answer before any code: what does a capped
+  single line plus a deterministic CLI plus an append-only log give that a
+  paragraph in AGENTS.md does not? Feeds HL-07 and the README's first
+  paragraph.
+- **opencode cannot exactly detect a new session** (HL-01) — `chat.message`
+  has no `source` field; new-vs-resumed is heuristic (empty history +
+  `session.time.created`). Either accept the heuristic, inject on every turn
+  (~130 tokens at the 512 cap — cheap enough to be a real option), or ship
+  opencode as a degraded adapter. Decide in HL-04 or HL-08.
+- **Subagent exclusion is free in only two of five harnesses** — structural in
+  Claude Code, header-based in DSH. opencode needs a `session.parentID` check,
+  Hermes a `parent_session_id` check, and **pi has no discriminator at all**
+  (child sessions are separate `pi` processes), so pi needs an env-var or a
+  project-local install scope.
 - Whether `amend` may ever touch an entry that is not the last one.
 - What `clear` means in an append-only log — a tombstone entry, or a separate
   empty-current state.
