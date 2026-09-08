@@ -58,20 +58,51 @@ decide before someone builds it.
   `agent.inject(createUserMessage(...))`, guarded on `source === "startup"`
   and on `delegationDepth`/`origin` to skip subagents. Proven live by
   moving-target; no research needed for DSH.
+- [HL-03 r1: one horizon per project](#) — cardinality is exactly one, resolved
+  by walking **up** from cwd to the nearest ancestor store, the way git finds
+  `.git`. Monorepos work for free: a subproject with its own store gets its own
+  horizon, everything below inherits the nearest. "Multiple simultaneous aims"
+  never enters the model — that is a backlog, and Kanban/dex already are one.
+- [HL-03 r1: append-only log, two verbs](#) — the store is an append-only log;
+  the current horizon is the **last entry**. `set` **supersedes** (appends a new
+  entry — the horizon moved); `amend` **rewrites the last entry in place** (the
+  wording moved, the horizon didn't). Directly answers moving-target's stated
+  pain: "nothing marks the moment it moved." Forces the format constraint that
+  gives the project its name — **entries contain no newlines**; a horizon *line*
+  is one line of text.
+- [HL-03 r1: no lifecycle states](#) — no `reached`/`paused`/`abandoned`. A
+  horizon is never reached; arriving means setting a new one. Abandonment is
+  `clear`. Adding states turns this into a task tracker, and its usefulness
+  depends on it not being one.
+- [HL-03 r1: silence on absence](#) — no line set means nothing is injected,
+  zero overhead (moving-target's rule). A nudge in every session of every repo
+  becomes noise, and noise trains the reader to skim past the injection block —
+  destroying signal on the repos that *do* have a horizon. The nudge lives in
+  `horizon show`, run by hand.
+- [HL-03 r1: agent may originate, but only at bootstrap](#) — the agent is not a
+  free author. It may **execute** updates the human asks for, and it may
+  **originate** exactly once, at bootstrap. Enforcement is social, not
+  technical: the CLI cannot tell who invoked it, so the rule lives in the
+  injected prompt's wording. The CLI records advisory **provenance** per entry
+  (harness name + `isatty(stdin)`) as evidence, never as a gate.
+  **OPEN:** whether bootstrap is human-invoked or fires automatically — see
+  Not yet specified.
 
 ## Not yet specified
 
-- Multiple lines per repo (monorepo with several independent aims), and
-  whether a line can be scoped to a subdirectory.
-- History/audit: whether superseded lines are kept, and where.
-- "Reached the horizon" — is there a terminal state, or does the line only
-  ever get replaced?
-- Whether an agent may *propose* a new line (and how a human ratifies it), vs
-  strictly human-authored. Interacts with the moving-target relationship
-  ticket.
-- Commit-vs-gitignore default for `.horizon/`, and what a teammate sees.
-- Conflict behaviour when two harnesses write the line in the same second.
-  (Sharp enough to ticket once the format is decided — see ticket 04.)
+- **Bootstrap's trigger and its source text.** Settled: the agent may originate
+  the first line at bootstrap. Unsettled: does the human invoke bootstrap (as
+  in moving-target's `/moving-target-bootstrap`), or does it fire on its own?
+  And what does it derive the line *from*? If bootstrap distills from session
+  history it needs an LLM — which collides with the locked "no LLM-authored
+  lines" boundary in Out of scope. Blocks HL-06's injected text and part of
+  HL-05's command surface.
+- Whether `amend` may ever touch an entry that is not the last one.
+- What `clear` means in an append-only log — a tombstone entry, or a separate
+  empty-current state.
+- Commit-vs-gitignore default for the store, and what a teammate sees.
+- Whether the injected block reveals history (last-set date, times moved) or
+  only the current line.
 
 ## Out of scope
 
