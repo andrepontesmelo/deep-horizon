@@ -2,63 +2,85 @@
 
 Vocabulary only. No implementation details, no spec, no scratch notes.
 
-## Horizon line
+## Horizon
 
-A single, human-owned, high-level aim for a project, persisted in the repo and
-injected at the start of every new agent session across every harness. One line
-of plain text — no newlines — capped at 512 characters.
+The set of **gaps** a project is currently steering toward: what the human
+wants and does not yet have. At most **5 open gaps** at a time. Injected at the
+start of every new agent session, on every harness, from a store shared by all
+of them.
 
-It describes where the work is *heading*, not what the project *is*, and not
-what to do this session. It is never "reached": you travel toward a horizon and
-it stays ahead. Arriving means setting a new one.
+The horizon says where the work is *heading*. It is not what the project *is*
+(that is `AGENTS.md` / `CLAUDE.md`, and moving-target's distilled paragraph),
+and it is not what to do this session.
 
-Distinct from a **task** (has an end state, lives on a Kanban board or in dex)
-and from a **project goal** (moving-target's LLM-distilled paragraph describing
-what the project *is*).
+## Gap
+
+One thing the human wants that does not exist yet, written as a capability, use
+case, or piece of functionality — **never as a task**. One line of plain text,
+no newlines, at most **512 characters**.
+
+The two caps do different jobs. The character cap forces each gap to stay
+high-level: no details, no chosen approach, no decision history. The count cap
+forces prioritisation — without it, a gap list is just a backlog with a
+character limit.
+
+A gap is *open* until the human closes it. Nothing about a gap implies a plan,
+an owner, an estimate, or an order.
+
+## Close
+
+Marking a gap delivered. **Only the human closes a gap.** The agent may notice
+that one looks delivered and *ask*, but it never closes one on its own: an
+agent that silently drops a gap the human still cares about has destroyed the
+artifact's trustworthiness, and being wrong in that direction costs more than
+carrying a stale gap.
+
+Closed gaps stay in the log with a closed-at marker — the project's record of
+what actually got built.
+
+## Propose
+
+The agent's only route to changing the horizon. When the human voices a want
+that will not be resolved in the current session, the agent **proposes** adding
+it as a gap and writes only after the human agrees. Same for closing.
+
+The human types no command; the agent does the typing. But nothing enters or
+leaves the horizon unsanctioned. This is what keeps the horizon something the
+human authored rather than something they audit.
 
 ## Log
 
-The append-only record of every horizon line a project has ever had. The
-**current horizon** is the last entry. Nothing is ever deleted, so the moment
-a horizon moved is always visible.
-
-## Supersede
-
-Appending a *new* entry to the log because the horizon genuinely moved. The
-previous entry remains, timestamped, as history. This is the normal way a
-horizon changes.
+The append-only record of every change the horizon has ever undergone: gaps
+added, gaps closed, gaps amended. Nothing is ever deleted, so the moment the
+horizon moved is always visible.
 
 ## Amend
 
-Rewriting the *last* entry in place because the wording was wrong, not because
-the horizon moved. Corrects a typo or sharpens phrasing without falsifying the
-history. Only the last entry is ever amendable.
-
-## Nudge
-
-What is injected on a project with **no** horizon line: a single line telling
-the agent that none is set, and to offer `horizon set` if the human states a
-direction. It is not a horizon line and is never stored.
-
-No agent ever authors a horizon line. The human's words are always the source;
-the agent only handles the typing. There is no bootstrap command and no
-distillation step.
+Rewriting a gap's text in place because the wording was wrong — not because the
+want changed. A changed want is a close plus an add, not an amend.
 
 ## Provenance
 
-Advisory metadata recorded on each log entry indicating how it was written —
-which harness, and whether stdin was a terminal. Evidence for the reader, never
-enforcement: the CLI cannot actually tell a human from an agent.
+Advisory metadata on each log entry: which harness wrote it, whether stdin was
+a terminal, and whether the entry was agent-proposed and human-confirmed.
+Evidence for the reader, never enforcement — the CLI cannot actually tell a
+human from an agent.
+
+## Nudge
+
+What is injected on a project with **no** open gaps: a single line saying the
+horizon is empty, and to offer adding a gap if the human voices a lasting want.
+It is not a gap and is never stored.
 
 ## Resolution
 
 Finding which horizon applies to a directory by walking *up* from the current
-working directory to the nearest ancestor containing a horizon store — the same
-way git finds `.git`. A subproject with its own store gets its own horizon;
+working directory to the nearest ancestor containing a horizon store — the way
+git finds `.git`. A subproject with its own store gets its own horizon;
 everything below inherits the nearest one.
 
 ## Injection
 
-Placing the current horizon into an agent session's context before the user's
-first turn, at session start. Only for genuinely new sessions — never resumed,
-compacted, or subagent sessions, which already carry context.
+Placing the current open gaps into an agent session's context before the
+human's first turn. Only genuinely new sessions — never resumed, compacted, or
+subagent sessions, which already carry context.

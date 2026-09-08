@@ -5,13 +5,18 @@ Started: 2026-09-08
 
 ## Destination
 
-A published, installable plugin — one core + thin per-harness adapters — that
-injects a single **human-owned, persisted, high-level aim** into the start of
-every new agent session, across Claude Code, opencode, DeepSeek Harness,
-Hermes and pi, all reading and writing the *same* repo-local line so work
-started in one harness continues in another. Ships with a deterministic
-(no-LLM) CLI that sets/updates the line and hard-rejects text over 512
-characters.
+A published, installable plugin — one CLI core + thin per-harness adapters —
+that injects a project's **gap list** into the start of every new agent
+session, across Claude Code, opencode, DeepSeek Harness, Hermes and pi, all
+reading and writing the *same* repo-local store so work started in one harness
+continues in another.
+
+A **gap** is one thing the human wants and does not yet have, written as a
+capability rather than a task: max 5 open gaps, each one newline-free line of
+at most 512 characters. The agent **proposes** additions and closures when it
+hears a want that spans sessions; the human confirms; the CLI writes
+deterministically. No LLM ever authors the file's contents unprompted, and no
+gap opens or closes without a human yes.
 
 The map is done when the way is clear: format, CLI contract, injection text,
 per-harness hook mechanics and packaging are all decided — nothing left to
@@ -143,6 +148,33 @@ decide before someone builds it.
   session-start hook at all** — the only pre-first-turn seam is `chat.message`,
   which fires per user message and lets a plugin append a TextPart to the
   user's message.
+- [HL-03 r3: the horizon is a GAP LIST, not a single aim](#) — Andre's answer
+  to the CLAUDE.md question reshaped the domain object and **superseded two
+  round-1/2 decisions**. Positioning first: `AGENTS.md`/`CLAUDE.md` is
+  auto-inserted too, so *injection was never the differentiator*. The
+  differentiators are (1) a **size cap** forcing top-level content, (2) a
+  **level constraint** — no details, no chosen approaches, no decision history,
+  and (3) **plugin-maintained** rather than hand-edited. Content is a **gap
+  list**: what the human wants and does not yet have, as use cases and
+  capabilities, expressly *not* tasks.
+  **Cardinality (supersedes r1 "one line, no newlines"):** a list of at most
+  **5 open gaps**, each still one newline-free line of ≤512 chars. The char cap
+  moved from the whole horizon to each gap; the new **count cap** is what
+  actually forces prioritisation — without it a gap list is a backlog with a
+  character limit. The name survives: each gap is a line.
+  **Authorship (supersedes r2 "no agent ever authors"):** the agent
+  **proposes**, the human confirms, the CLI writes. When the agent hears a want
+  that will not be resolved this session it offers to add it as a gap; nothing
+  enters the horizon unsanctioned. The human still types no command — the agent
+  does the typing. Provenance records `agent-proposed, human-confirmed`.
+  Rejected: silent writes (the human would be auditing rather than authoring)
+  and a silent-write-to-pending variant (kept as the fallback if the
+  propose-and-confirm friction proves too high in practice).
+  **Closure:** only the human closes a gap; the agent may notice one looks
+  delivered and *ask*. Auto-closing is the asymmetric risk — silently dropping
+  a gap the human still cares about costs more than carrying a stale one.
+  Closed gaps stay in the log with a closed-at marker: the project's record of
+  what actually got built.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
@@ -154,21 +186,6 @@ decide before someone builds it.
 
 ## Not yet specified
 
-- **RESHAPE PENDING: horizon = a GAP LIST, agent-maintained.** Andre's answer to
-  the CLAUDE.md question (2026-09-08) both settles the positioning AND reopens
-  two decisions locked earlier the same day. Positioning (settled, becomes the
-  README's opening): AGENTS.md/CLAUDE.md is *auto-inserted too*, so injection is
-  not the differentiator. Three things are: (1) a **size cap**, which forces the
-  content to stay top-level; (2) a **level constraint** — no details, no choices,
-  no decision history; (3) it is **maintained by the plugin**, not by hand. And
-  the content is not a goal statement but a **gap list**: what the user wants and
-  does not yet have — use cases, capabilities, functionality — expressly *not*
-  tasks. The agent detects when the user voices a want that will not be resolved
-  in this session, and captures it.
-  **CONFLICTS TO RESOLVE (round 3, HL-03 reopened):** this contradicts the
-  locked "no agent ever authors a horizon line" (r2) and the locked "one line,
-  no newlines" content model (r1). Nothing downstream should be built until
-  round 3 rules on both.
 - **opencode cannot exactly detect a new session** (HL-01) — `chat.message`
   has no `source` field; new-vs-resumed is heuristic (empty history +
   `session.time.created`). Either accept the heuristic, inject on every turn
@@ -179,34 +196,46 @@ decide before someone builds it.
   Hermes a `parent_session_id` check, and **pi has no discriminator at all**
   (child sessions are separate `pi` processes), so pi needs an env-var or a
   project-local install scope.
-- Whether `amend` may ever touch an entry that is not the last one.
-- What `clear` means in an append-only log — a tombstone entry, or a separate
-  empty-current state.
+- **What "opencode injects heuristically" costs at 5 gaps.** The old estimate
+  (~130 tokens) assumed one 512-char line. Five gaps is ~5x that, injected on
+  every turn if the heuristic route is taken. Re-cost before HL-08 decides.
+- Whether `amend` may edit any open gap or only the most recently added one.
+- Whether the 5-gap cap is a hard reject on the 6th add, or a prompt to close
+  one first — and whether closed gaps count against it (they must not).
+- Ordering: are gaps ordered (priority) or a set? Injection order matters if
+  the model reads the first one as most important.
 - Commit-vs-gitignore default for the store, and what a teammate sees.
 
 ## Out of scope
 
 - Any server or sync component. The filesystem is the bus.
-- LLM-authored line updates. That is moving-target's job; conflating them
-  destroys the "deterministic" property that makes this trustworthy.
+- **Unsanctioned agent writes.** An agent may *propose* a gap or a closure and
+  may *run* the CLI once the human agrees — that is the whole point of
+  "plugin-maintained". What stays out of scope is any write the human did not
+  say yes to: no distillation from session history, no auto-close on inferred
+  delivery, no background curation. The moment the horizon changes without a
+  human yes, it becomes something to audit rather than something they authored,
+  and its trustworthiness is the product.
+- Tasks, plans, owners, estimates, ordering-as-schedule. Gaps are wants, not
+  work items. Kanban and dex already hold the work.
 - Harnesses beyond the five named, for v1. Adapters are additive later.
 
 ## Kanban cards (board: horizon-line)
 
 | Ticket | Card | Type | State |
 |---|---|---|---|
-| 01 Claude Code + opencode hooks | `t_99204bb9` | research | done (7dc531e) |
-| 02 Hermes + pi hooks | `t_f2e33c02` | research | done (5385bdd) |
-| 09 Anthropic primary-source check | `t_1e0bc4e1` | research | dispatched → developer |
-| 03 What IS a horizon line | `t_41be385d` | grilling | done 2026-09-08 (2 rounds, Telegram) |
-| 04 On-disk format | `t_df01dae9` | grilling | running: grilling round 1 posted on card, needs Andre |
-| 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 03+04 |
-| 06 Injected prompt variants | `t_48b2a9c5` | prototype | prototype posted (08f6bfd) — needs Andre: pick A/B/C or name a hybrid |
-| 07 vs moving-target | `t_64b50d56` | grilling | blocked: needs_input (HITL) |
-| 08 Packaging + distribution | `t_0b9338c4` | grilling | running: grilling batch posted, needs Andre |
+| 01 Claude Code + opencode hooks | `t_99204bb9` | research | done |
+| 02 Hermes + pi hooks | `t_f2e33c02` | research | done |
+| 09 Anthropic primary-source check | `t_1e0bc4e1` | research | done — corrected the prior-art finding |
+| 03 What IS a horizon line | `t_41be385d` | grilling | done — 3 rounds; r3 reshaped it to a gap list |
+| 04 On-disk format | `t_df01dae9` | grilling | blocked → **now unblocked by r3**, needs Andre |
+| 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 04 |
+| 06 Injected prompt variants | `t_48b2a9c5` | prototype | **redo** — 08f6bfd was built pre-reshape (single line, human-authored) |
+| 07 vs moving-target | `t_64b50d56` | grilling | blocked (HITL) — r3 largely pre-answers it |
+| 08 Packaging + distribution | `t_0b9338c4` | grilling | blocked (HITL) — HL-01/02 largely pre-answer it |
 
-Frontier right now: HL-04 (format) + HL-08 (packaging) grilling batches and
-HL-06 (pick variant A/B/C or a hybrid; full texts in
-.scratch/horizon-line/prototypes/06-injected-prompt-variants.md) wait on
-Andre. HL-07 still HITL-waiting. HL-09 is AFK and running. HL-03 is resolved
-— keystone cleared; HL-05 starts as soon as HL-04's format lands.
+Frontier: **HL-04 (format)** is the live one — the gap-list reshape changed
+what it has to describe (N gaps + closed history + provenance, not one line).
+HL-06's variants need redoing against the new model. HL-07 and HL-08 are both
+substantially pre-answered by r3 and the research; they may collapse into
+short confirmations rather than full grillings.
