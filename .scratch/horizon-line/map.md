@@ -194,10 +194,11 @@ decide before someone builds it.
 | 03 What IS a horizon line | `t_41be385d` | grilling | blocked: needs_input (HITL) |
 | 04 On-disk format | `t_df01dae9` | grilling | todo, gated by 03 |
 | 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 03+04 |
-| 06 Injected prompt variants | `t_48b2a9c5` | prototype | ready — needs TWO texts: horizon-set and the unset nudge |
+| 06 Injected prompt variants | `t_48b2a9c5` | prototype | prototype posted (08f6bfd) — needs Andre: pick A/B/C or name a hybrid |
 | 07 vs moving-target | `t_64b50d56` | grilling | blocked: needs_input (HITL) |
 | 08 Packaging + distribution | `t_0b9338c4` | grilling | running: grilling batch posted, needs Andre |
 
-Frontier right now: HL-08's grilling batch (needs Andre), plus HL-03 and
-HL-07, which are HITL and wait on Andre. HL-09 is AFK and running. HL-03 is
-the keystone — 04, 05 and 06 all hang off it.
+Frontier right now: everything open waits on Andre — HL-08's grilling batch,
+HL-03 and HL-07 (HITL), and HL-06 (pick variant A/B/C or a hybrid; full texts
+in .scratch/horizon-line/prototypes/06-injected-prompt-variants.md). HL-09 is
+AFK and running. HL-03 is the keystone — 04, 05 and 06 all hang off it.
