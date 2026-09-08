@@ -34,11 +34,15 @@ Rewriting the *last* entry in place because the wording was wrong, not because
 the horizon moved. Corrects a typo or sharpens phrasing without falsifying the
 history. Only the last entry is ever amendable.
 
-## Bootstrap
+## Nudge
 
-Creating a project's first horizon line, where the agent originates the text
-rather than transcribing a line the human dictated. The one sanctioned case of
-agent authorship.
+What is injected on a project with **no** horizon line: a single line telling
+the agent that none is set, and to offer `horizon set` if the human states a
+direction. It is not a horizon line and is never stored.
+
+No agent ever authors a horizon line. The human's words are always the source;
+the agent only handles the typing. There is no bootstrap command and no
+distillation step.
 
 ## Provenance
 

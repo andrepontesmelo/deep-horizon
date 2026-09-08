@@ -98,24 +98,32 @@ decide before someone builds it.
   technical: the CLI cannot tell who invoked it, so the rule lives in the
   injected prompt's wording. The CLI records advisory **provenance** per entry
   (harness name + `isatty(stdin)`) as evidence, never as a gate.
-  **OPEN:** whether bootstrap is human-invoked or fires automatically — see
-  Not yet specified.
+  Bootstrap resolved in round 2 (below) — no LLM ever authors a line.
+- [HL-03 r2: bootstrap offers, never authors](#) — on a project with no horizon,
+  the injected text is a **nudge, not a line**: "No horizon line is set for this
+  project. If the user states a direction, offer to run `horizon set`." The
+  human invokes nothing and types no command; the agent handles the typing, but
+  the line still originates in the human's head. Rejected: distilling a first
+  line from session history (that IS moving-target, and it puts an LLM in the
+  authorship path ruled out in Out of scope) and seeding from README/`.moving-
+  target/summary.md` (deterministic but the wrong shape — descriptive "what this
+  is", not directional "where next"). Sharpens the boundary with moving-target
+  for HL-07: moving-target answers *what is this*, horizon-line answers *where
+  next*, and neither reaches into the other's authorship model.
+  **Amends the Q5 "silence on absence" decision**: injection on an unset project
+  is a single nudge line, not literal silence. The zero-overhead intent survives
+  — one line, no history, no machinery.
+- [HL-03 r2: injected block shows the current line only](#) — no "set
+  2026-09-08, moved 3 times". Dates and move counts are for the human at the
+  terminal (`horizon log`); showing them to the model invites it to reason about
+  the human's indecision instead of the aim.
 
 ## Not yet specified
 
-- **Bootstrap's trigger and its source text.** Settled: the agent may originate
-  the first line at bootstrap. Unsettled: does the human invoke bootstrap (as
-  in moving-target's `/moving-target-bootstrap`), or does it fire on its own?
-  And what does it derive the line *from*? If bootstrap distills from session
-  history it needs an LLM — which collides with the locked "no LLM-authored
-  lines" boundary in Out of scope. Blocks HL-06's injected text and part of
-  HL-05's command surface.
 - Whether `amend` may ever touch an entry that is not the last one.
 - What `clear` means in an append-only log — a tombstone entry, or a separate
   empty-current state.
 - Commit-vs-gitignore default for the store, and what a teammate sees.
-- Whether the injected block reveals history (last-set date, times moved) or
-  only the current line.
 
 ## Out of scope
 
@@ -134,7 +142,7 @@ decide before someone builds it.
 | 03 What IS a horizon line | `t_41be385d` | grilling | blocked: needs_input (HITL) |
 | 04 On-disk format | `t_df01dae9` | grilling | todo, gated by 03 |
 | 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 03+04 |
-| 06 Injected prompt variants | `t_48b2a9c5` | prototype | todo, gated by 03 |
+| 06 Injected prompt variants | `t_48b2a9c5` | prototype | ready — needs TWO texts: horizon-set and the unset nudge |
 | 07 vs moving-target | `t_64b50d56` | grilling | blocked: needs_input (HITL) |
 | 08 Packaging + distribution | `t_0b9338c4` | grilling | running: grilling batch posted, needs Andre |
 
