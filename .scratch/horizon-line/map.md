@@ -79,3 +79,21 @@ decide before someone builds it.
 - LLM-authored line updates. That is moving-target's job; conflating them
   destroys the "deterministic" property that makes this trustworthy.
 - Harnesses beyond the five named, for v1. Adapters are additive later.
+
+## Kanban cards (board: horizon-line)
+
+| Ticket | Card | Type | State |
+|---|---|---|---|
+| 01 Claude Code + opencode hooks | `t_99204bb9` | research | dispatched → developer |
+| 02 Hermes + pi hooks | `t_f2e33c02` | research | dispatched → developer |
+| 09 Anthropic primary-source check | `t_1e0bc4e1` | research | dispatched → developer |
+| 03 What IS a horizon line | `t_41be385d` | grilling | blocked: needs_input (HITL) |
+| 04 On-disk format | `t_df01dae9` | grilling | todo, gated by 03 |
+| 05 CLI contract spec | `t_f10bd84a` | task | todo, gated by 03+04 |
+| 06 Injected prompt variants | `t_48b2a9c5` | prototype | todo, gated by 03 |
+| 07 vs moving-target | `t_64b50d56` | grilling | blocked: needs_input (HITL) |
+| 08 Packaging + distribution | `t_0b9338c4` | grilling | todo, gated by 01+02 |
+
+Frontier right now: the three research cards (AFK, running) plus HL-03 and
+HL-07, which are HITL and wait on Andre. HL-03 is the keystone — 04, 05 and 06
+all hang off it.
