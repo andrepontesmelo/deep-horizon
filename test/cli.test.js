@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, rmdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -798,6 +798,35 @@ test("ADV-3c. close record with the gap still open: counted once, by real closes
   }
 });
 
+// ADV-3d: an orphaned close record (crash between the closes.jsonl append and
+// the gaps.json rename) is a NO-OP: the session that wrote it must not count
+// the gap in gaps_closed while the gap is still open. Only gaps actually
+// absent from gaps.json are counted, and only once, by the real closer.
+test("ADV-3d. orphan close record while gap still open: that session's gaps_closed is empty", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    await run(["add", "Orphan close", "--cwd", dir, "--session", "s1"]);
+    const store = join(dir, ".horizon");
+    const id = readGaps(dir).gaps[0].id;
+    // Crash simulation: the close record lands while the gap is still open.
+    writeFileSync(join(store, "closes.jsonl"), JSON.stringify({ ts: "2026-09-08T15:00:00Z", session_id: "s1", gap_id: id, added_session_id: "s1" }) + "\n");
+    const se = await run(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
+    assert.equal(se.code, 0, `stderr: ${se.stderr}`);
+    const rec = JSON.parse((await run(["log", "--cwd", dir, "--json"])).stdout.trim().split("\n")[0]);
+    assert.deepEqual(rec.gaps_closed, []);
+    // A real close from another session IS counted, exactly once.
+    const r = await run(["close", id, "--cwd", dir, "--session", "s2"]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const se2 = await run(["session-end", "--harness", "t", "--session", "s2", "--cwd", dir]);
+    assert.equal(se2.code, 0, `stderr: ${se2.stderr}`);
+    const rec2 = JSON.parse((await run(["log", "--cwd", dir, "--json"])).stdout.trim().split("\n")[0]);
+    assert.deepEqual(rec2.gaps_closed, [id]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ADV-4: `.horizon` existing as a REGULAR FILE used to crash init/add with a
 // raw ENOTDIR stack, exit 1. Spec 7: unusable store path -> exit 7 naming it.
 test("ADV-4. .horizon as a regular file: init and add exit 7 naming the path", async () => {
@@ -825,6 +854,29 @@ test("ADV-4b. mkdir EACCES on new-store add: exit 7 naming the path, no raw stac
     assert.equal(r.code, 7);
     assert.match(r.stderr, /\.horizon/);
     assert.ok(!/at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
+  } finally {
+    chmodSync(dir, 0o755);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADV-4c: mkdir EACCES on a NEW store must fail both init and add with exit 7
+// naming the path (mutant class: materializeStoreDir swallowing the creation
+// error makes init exit 0 silently with no store created).
+test("ADV-4c. mkdir EACCES on new store: init exits 7 naming the path, store absent", async () => {
+  if (process.platform === "win32") return; // POSIX permission model only
+  const dir = freshDir();
+  try {
+    chmodSync(dir, 0o555);
+    const i = await run(["init", "--cwd", dir]);
+    assert.equal(i.code, 7, `init stderr: ${i.stderr}`);
+    assert.match(i.stderr, /\.horizon/);
+    assert.ok(!/at /m.test(i.stderr), `raw stack leaked: ${i.stderr}`);
+    const a = await run(["add", "No permission", "--cwd", dir]);
+    assert.equal(a.code, 7, `add stderr: ${a.stderr}`);
+    assert.match(a.stderr, /\.horizon/);
+    assert.ok(!/at /m.test(a.stderr), `raw stack leaked: ${a.stderr}`);
+    assert.equal(existsSync(join(dir, ".horizon")), false, "store must not be created");
   } finally {
     chmodSync(dir, 0o755);
     rmSync(dir, { recursive: true, force: true });
