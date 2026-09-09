@@ -249,6 +249,27 @@ decide before someone builds it.
   `gaps_closed` are computed by the CLI**, never passed in, so the session log
   cannot be lied to by a caller. The spec is the implementation target; no code
   is written yet.
+- [HL-10b: every harness can elicit model text, but only three reliably](#) —
+  the remaining three harnesses researched with live probes. **Claude Code**
+  has `Stop` (a `decision:"block"` makes the model continue — probed) plus
+  `SessionEnd`, which is the *only* close hook proven to fire on SIGINT/SIGTERM.
+  **pi** has `session_shutdown`, a true mirror of `session_start` with the same
+  `reason` enum, awaited during teardown, and can call `complete()` in-process.
+  **opencode** has no session-end hook at all: `dispose` receives no arguments
+  (so no session id) and does not fire on abnormal exit. Combined with DSH's
+  unawaited `agent/disposed`, that makes **close-time summaries reliable in
+  three of five harnesses**, and abnormal exits uncovered nearly everywhere.
+  The derive-later path from on-disk transcripts is therefore the fallback, not
+  the exception — every harness writes self-identifying transcripts.
+  **Confirms an HL-05 choice:** session id formats differ wildly (Claude Code
+  UUIDv4, opencode `ses_`+26-char sortable, DSH UUIDv4, Hermes
+  `YYYYMMDD_HHMMSS_6hex`, pi UUIDv7-shaped), so the store must keep the id as
+  an **opaque string plus harness name** — which is exactly what the spec says.
+- [HL-06 prototypes written: two texts, three variants each](#) —
+  `.scratch/horizon-line/prototypes/06-injected-texts-v2.md`. The gap-list
+  reshape needs **two** injected texts, not one: the horizon block and the
+  empty-project nudge. Variants differ in strategy, not wording: terse,
+  explicit-contract, and inheritance-framed. Awaiting Andre's pick.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
