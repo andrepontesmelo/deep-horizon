@@ -331,40 +331,6 @@ decide before someone builds it.
   it. This was HL-08's central question and the research has largely answered
   it.
 
-- [HL-07 resolved: coexist — different objects, pattern-only reuse](#) — five
-  confirmations, as predicted ("short confirmations, not full grillings").
-  Resolved in a headless run with recommendations auto-adopted; every one
-  follows from already-locked decisions. Veto by comment on `t_64b50d56`.
-  **The relationship, one line each** (goes in both READMEs; CONTEXT.md's
-  Horizon gloss already carries it): moving-target answers *what this project
-  IS* — LLM-distilled, descriptive, frozen until you update it; horizon-line
-  answers *what we steer toward next* — human-authored, directional, moves
-  only with the human's yes.
-  **Coexist, uncoupled.** Neither supersedes nor absorbs: different questions,
-  different stores (`.moving-target/summary.md` vs `.horizon/`), different
-  authorship models, no cross-writes. The injected texts stay exactly as
-  HL-06 locked them — no clause added to name the other plugin: the no-copies
-  rule (§10, test 36) makes a bespoke cross-reference unmirrorable, and each
-  block already describes itself well enough that adjacency needs no
-  explanation.
-  **Injection order: moving-target first, then horizon-line** — identity
-  before direction reads naturally, and in practice the harness decides it by
-  mount order (cordis.patch.yml insert order in DSH, hook registration order
-  elsewhere). Both gates already agree (genuinely-new sessions only), so the
-  pairing is symmetric. A fixed convention noted here, not a mechanism —
-  nothing configurable, nothing enforced in code.
-  **Code: share the pattern, not the code.** Confirms the prior-art note
-  above: HL imports nothing from moving-target; the `agent/session-start`
-  hook pattern, startup-only guard, subagent exclusion and pure
-  `injectionText()` split are re-implemented against HL's contract — and
-  CLI-as-core makes an npm dependency useless to the Hermes adapter anyway.
-  moving-target keeps shipping independently; its LLM update path stays its
-  own.
-  **`.moving-target/` keeps its future.** It remains moving-target's store,
-  unchanged, gitignored per its own README; HL-08 decides `.horizon/`'s
-  commit-vs-gitignore independently. Sole recorded future coupling: the
-  bootstrap seeding option rejected in HL-03 r2 would have *read* MT's
-  summary — dead unless deliberately revived.
 
 ## Not yet specified
 
