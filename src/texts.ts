@@ -1,6 +1,11 @@
 // The two locked injection strings (spec section 10). They live in the core
 // package so every adapter imports them instead of carrying its own copy.
-
+//
+// BYTE-CONTRACT (DEF-3 ruling, 2026-09-09): each export equals the inside of
+// its spec §10 fenced block EXACTLY — no leading/trailing newline added,
+// none stripped. The fence backticks are markdown, not content. Verified by
+// test 34, which extracts both fences from the spec file and asserts
+// character equality (lengths 885/98).
 export const HORIZON_BLOCK_TEMPLATE =
   "This project has a horizon — a short list of what the user wants and doesn't\n" +
   "have yet. It was written across earlier sessions, by earlier agents, with the\n" +

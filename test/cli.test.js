@@ -334,6 +334,54 @@ test("20. amend past the cap rejected, exit 3, text unchanged", async () => {
 
 // --- Atomicity / concurrency (21-25) ---
 
+test("21b. two simultaneous adds: no silent lost update", async () => {
+  // Natural race, no env hook: the pre-fix code loses one gap in ~15-25% of
+  // rounds (both exit 0, store holds 1 gap at revision 1). The fix serializes
+  // the loser's write to exit 6, so every round ends with: exit-0 ids all
+  // present, gap count and revision equal to the exit-0 count, exit-6 texts
+  // absent. 40 rounds keeps the suite fast while making a real race
+  // near-certain pre-fix.
+  const { execFile } = await import("node:child_process");
+  function startAdd(cwd, text) {
+    return new Promise((resolve) => {
+      execFile(BIN, ["add", text, "--cwd", cwd], { encoding: "utf8" }, (error, stdout, stderr) => {
+        resolve({
+          code: error && typeof error.code === "number" ? error.code : 0,
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+        });
+      });
+    });
+  }
+  for (let round = 0; round < 40; round++) {
+    const dir = freshDir();
+    try {
+      await run(["init", "--cwd", dir]);
+      const [a, b] = await Promise.all([
+        startAdd(dir, `alpha ${round}`),
+        startAdd(dir, `beta ${round}`),
+      ]);
+      const state = readGaps(dir);
+      const won = [a, b].filter((r) => r.code === 0);
+      const lost = [a, b].filter((r) => r.code === 6);
+      assert.ok(won.length + lost.length === 2, `round ${round}: unexpected codes [${a.code},${b.code}]`);
+      // Every exit-0 id is present; gap count and revision equal exit-0 count;
+      // every exit-6 text is absent (the loser wrote nothing).
+      const ids = new Set(state.gaps.map((g) => g.id));
+      for (const w of won) assert.ok(ids.has(w.stdout), `round ${round}: ${w.stdout} missing from store`);
+      assert.equal(state.gaps.length, won.length, `round ${round}: gap count`);
+      assert.equal(state.revision, won.length, `round ${round}: revision`);
+      const texts = new Set(state.gaps.map((g) => g.text));
+      for (const l of lost) {
+        const text = l === a ? `alpha ${round}` : `beta ${round}`;
+        assert.ok(!texts.has(text), `round ${round}: exit-6 text present`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("21. revision moved between read and write: exit 6, file byte-identical", async () => {
   const dir = freshDir();
   try {
@@ -384,19 +432,64 @@ test("23. no .tmp file left after a failed write", async () => {
   }
 });
 
-test("24. temp+rename: gaps.json never opened for writing", async () => {
+test("24. SIGKILL mid-write: gaps.json stays parseable; next run sweeps stranded tmp", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    // The CLI writes to .gaps.json.tmp.<pid> and renames; gaps.json itself is
-    // never opened for writing, so a kill mid-write cannot leave a partial
-    // gaps.json. Assert the property structurally: run several writes and
-    // check gaps.json parses after each.
-    for (let i = 0; i < 3; i++) {
-      const r = await run(["add", `Gap ${i}`, "--cwd", dir]);
-      assert.equal(r.code, 0);
-      assert.doesNotThrow(() => readGaps(dir));
+    const a = await run(["add", "Killable", "--cwd", dir]);
+    assert.equal(a.code, 0);
+    const id = a.stdout.trim();
+    // Kill several amends mid-flight: gaps.json must parse after every kill
+    // (temp+rename property). Timing varies, so this loop asserts the
+    // property, not that a tmp was stranded in any given round.
+    const { spawn } = await import("node:child_process");
+    for (let i = 0; i < 8; i++) {
+      const child = spawn(BIN, ["amend", id, `revision ${i} wording`, "--cwd", dir], { stdio: "ignore" });
+      const exited = new Promise((r) => child.on("exit", r));
+      await new Promise((r) => setTimeout(r, 120));
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        // Already exited before the kill landed; nothing stranded this round.
+      }
+      await exited;
+      assert.doesNotThrow(() => readGaps(dir), `gaps.json unparseable after kill ${i}`);
     }
+    // Deterministic half: plant a dead-pid tmp (stranded by a kill) and a
+    // live-pid tmp (an in-flight writer's). The next CLI run must sweep the
+    // dead one and never touch the live one.
+    const { writeFileSync, readdirSync } = await import("node:fs");
+    // Dead pid: a spawned child that has fully exited (fully reaped via
+    // exit event), so kill(pid, 0) reports ESRCH. Wait a tick after the
+    // exit event: the kernel may briefly keep the pid allocated while the
+    // runner's own grandchildren fork, so retry until the pid reads dead
+    // (bounded; a live pid here would mean the fixture is wrong).
+    const { setTimeout: delay } = await import("node:timers/promises");
+    let deadPid = -1;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const cand = spawn(process.execPath, ["--version"], { stdio: "ignore" });
+      deadPid = cand.pid;
+      await new Promise((r) => cand.on("exit", r));
+      await delay(20);
+      let alive = true;
+      try {
+        process.kill(deadPid, 0);
+      } catch (err) {
+        if (err && err.code === "ESRCH") alive = false;
+        else throw err;
+      }
+      if (!alive) break;
+      deadPid = -1;
+    }
+    assert.notEqual(deadPid, -1, "could not obtain a dead pid for the sweep fixture");
+    const store = join(dir, ".horizon");
+    writeFileSync(join(store, `.gaps.json.tmp.${deadPid}`), "{}\n");
+    writeFileSync(join(store, `.gaps.json.tmp.${process.pid}`), "live writer\n");
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const left = readdirSync(store).filter((n) => n.startsWith(".gaps.json.tmp."));
+    assert.deepEqual(left, [`.gaps.json.tmp.${process.pid}`]);
+    assert.doesNotThrow(() => readGaps(dir));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -546,5 +639,27 @@ test("33. unknown future version refused, not migrated", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- Injection texts (34: DEF-3 byte-contract) ---
+
+test("34. exported texts equal the spec section 10 fence blocks byte-for-byte", async () => {
+  // DEF-3 ruling: each export equals the INSIDE of its fenced block exactly
+  // (no trailing newline added or stripped; fence backticks are markdown,
+  // not content). Extract the fences from the spec and compare characters.
+  const SRC = new URL("../src/texts.ts", import.meta.url).pathname;
+  const SPEC = new URL("../.scratch/horizon-line/05-cli-contract.md", import.meta.url).pathname;
+  const spec = readFileSync(SPEC, "utf8").split("\n");
+  function fenceAfter(heading) {
+    const h = spec.findIndex((l) => l.startsWith(heading));
+    assert.notEqual(h, -1, `missing ${heading} in spec`);
+    const open = spec.findIndex((l, i) => i > h && l === "```");
+    const close = spec.findIndex((l, i) => i > open && l === "```");
+    assert.ok(open > h && close > open, `unclosed fence after ${heading}`);
+    return spec.slice(open + 1, close).join("\n");
+  }
+  const { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT } = await import(SRC);
+  assert.equal(HORIZON_BLOCK_TEMPLATE, fenceAfter("### 10.1"));
+  assert.equal(NUDGE_TEXT, fenceAfter("### 10.2"));
 });
 
