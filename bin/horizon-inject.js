@@ -8,8 +8,8 @@
 // --json swaps the composed text for {"text": <string>} for programmatic
 // callers. Unknown flags are a usage error (exit 2).
 import { existsSync, readFileSync } from "node:fs";
-import { resolveStore, readGapsFile } from "../src/store.ts";
-import { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT } from "../src/texts.ts";
+import { resolveStore, readGapsFile } from "../dist/store.js";
+import { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT } from "../dist/texts.js";
 
 const GLOBAL_FLAGS = new Set(["--cwd", "--json", "--help", "--version", "--harness", "--session", "--origin"]);
 
