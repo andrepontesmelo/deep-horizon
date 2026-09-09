@@ -88,7 +88,7 @@ function main() {
       }
     }
     if (exitCode === 0) {
-      text = stdoutText.length > 0 ? HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", stdoutText) : NUDGE_TEXT;
+      text = stdoutText.length > 0 ? HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => stdoutText) : NUDGE_TEXT;
     }
   } catch {
     process.stderr.write("horizon-inject: store read failed\n");

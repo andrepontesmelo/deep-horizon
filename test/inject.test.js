@@ -378,3 +378,29 @@ test("48. end-to-end: apply() with no overrides injects the composed block throu
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("49. inject embeds show stdout byte-for-byte even when gap texts carry $-replacement patterns (DEF-1)", async () => {
+  const dir = freshDir();
+  try {
+    const texts = ["pay $& now", "cost $$5", "use $`tick", "tail $'mark", "plain $1 end"];
+    const gaps = seed(dir, texts);
+    const HORIZON_BIN = new URL("../bin/horizon.js", import.meta.url).pathname;
+    const show = await new Promise((resolve) => {
+      execFile(process.execPath, [HORIZON_BIN, "show", "--cwd", dir], { encoding: "utf8" }, (error, stdout) => {
+        resolve({ code: error && typeof error.code === "number" ? error.code : 0, stdout });
+      });
+    });
+    assert.equal(show.code, 0);
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0);
+    // spec 10: {{GAPS}} is horizon show stdout substituted verbatim, never
+    // re-formatted — so the block must contain that stdout byte-for-byte.
+    assert.ok(r.stdout.includes(show.stdout), "inject stdout must embed horizon show stdout byte-for-byte");
+    for (const g of gaps) {
+      assert.ok(r.stdout.includes(`${g.id}  ${g.text}`), `gap line must survive verbatim: ${g.text}`);
+    }
+    assert.ok(!r.stdout.includes("{{GAPS}}"), "the {{GAPS}} placeholder must never leak into the output");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
