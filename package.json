@@ -1,1 +1,48 @@
-{"bin": {"horizon": "bin/horizon.js"}, "description": "Horizon Line CLI core: a deterministic, human-authored horizon (open gaps + session log) shared across agent harnesses.", "engines": {"node": ">=22.18"}, "exports": {"./texts": "./src/texts.ts"}, "license": "MIT", "name": "horizon-line", "scripts": {"test": "node --test test/*.test.js"}, "type": "module", "version": "0.1.0"}
+{
+  "name": "horizon-line",
+  "version": "0.1.0",
+  "description": "Horizon Line CLI core: a deterministic, human-authored horizon (open gaps + session log) shared across agent harnesses.",
+  "license": "MIT",
+  "author": "Andre Melo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrepontesmelo/horizon-line.git"
+  },
+  "homepage": "https://github.com/andrepontesmelo/horizon-line#readme",
+  "bugs": {
+    "url": "https://github.com/andrepontesmelo/horizon-line"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "agents",
+    "cli",
+    "context",
+    "harness",
+    "session-log",
+    "claude-code",
+    "opencode",
+    "pi",
+    "hermes"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "horizon": "bin/horizon.js"
+  },
+  "exports": {
+    "./texts": "./src/texts.ts"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "prepublishOnly": "npm test"
+  }
+}
