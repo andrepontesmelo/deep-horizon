@@ -166,6 +166,14 @@ export async function main(argv) {
 
   const command = p1.positionals[0];
   const rest = p1.positionals.slice(1);
+  if (globals.help) {
+    stdout(helpText() + "\n");
+    return 0;
+  }
+  if (globals.version) {
+    stdout(`horizon ${cliVersion()}\n`);
+    return 0;
+  }
   if (command === undefined) return fail(2, "horizon: no command given");
   if (!COMMANDS.includes(command)) return fail(2, `horizon: unknown command: ${command}`);
 
@@ -196,15 +204,6 @@ export async function main(argv) {
   const opts = { ...globals, ...cmdOpts };
   const explicit = new Set([...globalExplicit, ...cmdExplicit]);
   json = !!opts.json;
-
-  if (opts.help) {
-    stdout(helpText() + "\n");
-    return 0;
-  }
-  if (opts.version) {
-    stdout(`horizon ${cliVersion()}\n`);
-    return 0;
-  }
 
   const cwd = opts.cwd ?? process.cwd();
   const harness = opts.harness ?? process.env.HORIZON_HARNESS ?? "unknown";
