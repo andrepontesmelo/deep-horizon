@@ -77,14 +77,19 @@ export function sweepStaleTmps(storeDir) {
 // directory (idempotent — a resolved store may predate .gitattributes, and a
 // case-variant one was found by name, not created) and sweeps stale tmps, so
 // any CLI command through a real store leaves it complete.
-export function openStore(storeDir) {
-  try {
-    materializeStoreDir(storeDir);
-  } catch (err) {
-    return { code: 7, message: `horizon: ${storeDir}: ${err.message}` };
+// `materialize: false` is the read-only mode used by horizon-inject (D6:
+// pure composition, no store writes) — it skips both the materializing
+// writes and the tmp sweep (an unlink is a write too).
+export function openStore(storeDir, { materialize = true } = {}) {
+  if (materialize) {
+    try {
+      materializeStoreDir(storeDir);
+    } catch (err) {
+      return { code: 7, message: `horizon: ${storeDir}: ${err.message}` };
+    }
+    const sweep = sweepStaleTmps(storeDir);
+    if (sweep) return sweep;
   }
-  const sweep = sweepStaleTmps(storeDir);
-  if (sweep) return sweep;
   return { dir: storeDir };
 }
 
@@ -96,7 +101,9 @@ export function openStore(storeDir) {
 // a second one. Returns { dir, open: openStore(...) } for the nearest store,
 // or null when none exists; `open` carries { code, message } when the store
 // cannot be opened (unreadable dir, failed sweep) so callers can exit 7.
-export function resolveStore(startDir) {
+// `readonly: true` skips openStore's materializing writes and tmp sweep
+// (horizon-inject's no-writes contract, D6).
+export function resolveStore(startDir, { readonly = false } = {}) {
   let dir = resolve(startDir);
   for (;;) {
     let entries = null;
@@ -112,7 +119,7 @@ export function resolveStore(startDir) {
         } catch {
           continue; // vanished or unstattable: not a store
         }
-        return { dir: candidate, open: openStore(candidate) };
+        return { dir: candidate, open: openStore(candidate, { materialize: !readonly }) };
       }
     }
     const parent = dirname(dir);

@@ -30,6 +30,8 @@ export const NUDGE_TEXT =
   "Horizon: none set. `horizon add \"<one line>\"` if the user names a want that\n" +
   "outlives this session.";
 
+// Function replacement: a string replacement would expand $-patterns
+// ($&, $`, $', $$, $1) from user-authored gap text (DEF-1).
 export function horizonBlock(gapsStdout) {
-  return HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", gapsStdout);
+  return HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => gapsStdout);
 }
