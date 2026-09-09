@@ -1,0 +1,10 @@
+name: horizon-line
+description: >-
+  Horizon Line: a deterministic, human-authored horizon (open gaps + session
+  log) shared across agent harnesses. Registers a persistent system-prompt
+  section composed by `horizon-inject --harness hermes` (the CLI is the single
+  composer; this plugin never contains the section-10 texts itself) and closes
+  sessions with `horizon session-end --harness hermes`. Fails open when the
+  horizon binary is not installed: sessions proceed with no injected horizon.
+version: 0.1.0
+author: Andre Pontes Melo
