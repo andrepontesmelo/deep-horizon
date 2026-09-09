@@ -737,3 +737,86 @@ test("34. exported texts equal the spec section 10 fence blocks byte-for-byte", 
   assert.equal(NUDGE_TEXT, fenceAfter("### 10.2"));
 });
 
+// --- Robbed-victim invariant (37: DEF-5) ---
+
+test("37. a live writer's claim is never stolen; exit 0 implies own gap in store (DEF-5)", async () => {
+  // DEF-5 (final review t_1c29d984, def5a-slowvictim.mjs, 2/2 on f044847):
+  // the DEF-4 wall-clock stale-claim steal robbed a LIVE slow writer. The
+  // victim's renameSync(claim, path) then published the THIEF's payload
+  // while the victim exited 0 for its own (absent) gap — a silent lost
+  // update with a success exit (DEF-1's failure class, reintroduced by the
+  // DEF-4 fix). Two deterministic halves reproduce the robbed-victim state
+  // without scheduler timing:
+  //   Half 1 (live owner, hooked): W1 holds its claim far past
+  //     CLAIM_STALE_MS; under the old clock-based steal W2 unlinked W1's
+  //     live claim and W1's commit published W2's payload. Under the
+  //     liveness rule W2 must exit 6, W1 must exit 0, and W1's gap — never
+  //     W2's — must be in gaps.json (the mandatory invariant).
+  //   Half 2 (dead owner, planted): a claim symlink naming a DEAD pid must
+  //     be stolen even though its mtime is fresh — the steal decision is
+  //     liveness first, clock only as fallback; a live-pid recovery and the
+  //     mtime fallback (planted plain claim) remain covered by test 36.
+  const { spawn } = await import("node:child_process");
+  const { readdirSync, symlinkSync, existsSync } = await import("node:fs");
+  const { setTimeout: delay } = await import("node:timers/promises");
+
+  // Half 1: thief meets a LIVE claim held past CLAIM_STALE_MS.
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    assert.equal((await run(["add", "seed gap", "--cwd", dir])).code, 0);
+    const victim = spawn(BIN, ["add", "VICTIM slow alive writer gap", "--cwd", dir], {
+      env: { ...process.env, HORIZON_CLI_TEST_HOLD_CLAIM_MS: "1500" },
+    });
+    let victimOut = "";
+    victim.stdout.on("data", (d) => (victimOut += d));
+    await delay(250); // victim has linked its claim and is mid-hold
+    const thief = spawn(BIN, ["add", "THIEF stealing writer gap", "--cwd", dir], {
+      stdio: "ignore",
+    });
+    const [victimCode, thiefCode] = await Promise.all([
+      new Promise((r) => victim.on("exit", r)),
+      new Promise((r) => thief.on("exit", r)),
+    ]);
+    assert.equal(victimCode, 0, `live victim must keep its claim (thief exit ${thiefCode})`);
+    const victimId = victimOut.trim();
+    assert.match(victimId, /^g_[0-9a-f]{8}$/);
+    assert.equal(thiefCode, 6, "thief must not rob a live claim");
+    // THE INVARIANT: the exit-0 writer's own gap is verifiably in the store.
+    const state = readGaps(dir);
+    assert.ok(
+      state.gaps.some((g) => g.id === victimId),
+      "exit-0 victim's gap absent from store: silent lost update (DEF-5)",
+    );
+    assert.ok(!state.gaps.some((g) => g.text === "THIEF stealing writer gap"), "thief's payload leaked into the store");
+    assert.equal(state.revision, 2);
+    assert.deepEqual(readdirSync(join(dir, ".horizon")).filter((n) => n.startsWith(".gaps.json.")), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // Half 2: liveness decides the steal — dead owner, fresh mtime.
+  const dir2 = freshDir();
+  try {
+    await run(["init", "--cwd", dir2]);
+    assert.equal((await run(["add", "Seed", "--cwd", dir2])).code, 0);
+    // A genuinely dead pid: spawn, let it exit, reuse its pid in the names.
+    const dead = spawn(process.execPath, ["-e", ""]);
+    await new Promise((r) => dead.on("exit", r));
+    const store2 = join(dir2, ".horizon");
+    const tmpName = `.gaps.json.tmp.${dead.pid}.9`;
+    writeFileSync(join(store2, tmpName), "{}\n");
+    symlinkSync(tmpName, join(store2, ".gaps.json.commit.1")); // fresh mtime, dead owner
+    const r = await run(["add", "Second", "--cwd", dir2]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const state2 = readGaps(dir2);
+    assert.equal(state2.revision, 2);
+    assert.equal(state2.gaps.length, 2);
+    assert.ok(state2.gaps.some((g) => g.text === "Second"));
+    // Claim removed and the dead writer's planted tmp swept on open.
+    assert.deepEqual(readdirSync(store2).filter((n) => n.startsWith(".gaps.json.")), []);
+    assert.ok(!existsSync(join(store2, ".gaps.json.commit.1")));
+  } finally {
+    rmSync(dir2, { recursive: true, force: true });
+  }
+});

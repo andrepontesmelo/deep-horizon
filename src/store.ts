@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -53,15 +53,12 @@ export function sweepStaleTmps(storeDir) {
   const live = readGapsFileNoSweep(storeDir);
   const liveRev = live.ok ? live.data.revision : null;
   for (const name of readdirSync(storeDir)) {
-    // Claim files carry no pid; they strand only on a kill between link and
-    // rename, in which case the claimed revision never advances past them.
-    // A live writer may still rename its current-revision claim, so the
-    // sweep leaves claims to writeGapsFile's stale-claim steal (CLAIM_STALE_MS):
-    // a claim at the live revision younger than the bound may still be
-    // renamed by its live owner and must not be touched; anything older is
-    // abandoned and steal-on-EEXIST clears it on the next write. Claims
-    // behind the live revision can never be renamed by anyone and are
-    // garbage-collected here.
+    // Claim symlinks name their owner's tmp (and thus its pid), but the
+    // sweep never steals a claim at the live revision: the owner may be
+    // alive and about to commit, and stealing is writeGapsFile's job
+    // (claimIsStale: dead pid, or unprovable liveness past CLAIM_STALE_MS).
+    // Claims behind the live revision can never be committed by anyone and
+    // are garbage-collected here.
     if (name.startsWith(COMMIT_PREFIX)) {
       const revText = name.slice(COMMIT_PREFIX.length);
       if (!/^[0-9]+$/.test(revText)) continue;
@@ -145,23 +142,29 @@ export function emptyStore() {
 
 // gaps.json write: temp file in the same directory, fsync, claim, re-check,
 // rename. Unique temp per attempt (.tmp.<pid>.<seq>) so two concurrent
-// writers never share a temp. Sequence: write tmp -> fsync -> link tmp to
+// writers never share a temp. Sequence: write tmp -> fsync -> symlink tmp to
 // the per-revision claim name -> hold-test-hook -> re-read revision ->
-// rename claim over gaps.json.
-// link() is atomic and the claim name is shared, so exactly one writer can
+// re-verify claim ownership -> rename tmp over gaps.json -> read back.
+// The claim name is shared and symlink() is atomic, so exactly one writer can
 // hold the claim for a given source revision; the claim is created BEFORE
 // the re-read, which closes the recheck-then-rename window: a writer that
 // loses the claim (EEXIST) returns exit 6 with its text absent instead of
-// silently clobbering the rival. On EEXIST the claim is stat'ed (DEF-4): a
-// claim older than CLAIM_STALE_MS can only belong to a SIGKILLed writer (a
-// live commit holds it for microseconds), so it is unlinked and the link is
-// retried once — a crashed writer cannot hold the live revision hostage.
-// The claim file itself keeps the temp+rename property (gaps.json is only
+// silently clobbering the rival. On EEXIST the claim is read (DEF-4): a
+// claim whose owner pid is dead (kill(pid, 0) -> ESRCH) belongs to a
+// SIGKILLed writer, so it is unlinked and the link is retried once — a
+// crashed writer cannot hold the live revision hostage. A live owner is
+// never robbed, however slow or descheduled: pid liveness is not fooled by
+// scheduling, which is what defeats a wall-clock bound (DEF-5, review
+// t_1c29d984). The claim symlink targets the owner's tmp NAME and the commit
+// renames the owner's tmp (never the claim link), so a steal can never swap
+// payloads between writers; a robbed writer detects the theft by re-reading
+// the link before the rename, and a post-commit read-back makes exit 0 mean
+// the writer's own payload is verifiably in gaps.json. gaps.json is only
 // ever replaced by a whole-file rename, so a kill mid-write leaves it
-// parseable). No lockfiles.
-// Test-only hook: hold the claim open so a SIGKILL lands between link and
+// parseable. No lockfiles.
+// Test-only hook: hold the claim so a SIGKILL lands between claim and
 // rename. Enabled by HORIZON_CLI_TEST_HOLD_CLAIM_MS=<ms> (busy-wait after the
-// link); production never sets it, so the window stays microseconds.
+// claim link); production never sets it.
 function maybeHoldClaim() {
   const ms = Number(process.env.HORIZON_CLI_TEST_HOLD_CLAIM_MS);
   if (!Number.isFinite(ms) || ms <= 0) return;
@@ -169,12 +172,55 @@ function maybeHoldClaim() {
   while (Date.now() < end) { /* busy-wait: keep the signal window open */ }
 }
 
-// A claim older than this is abandoned: its owner was SIGKILLed between
-// link and rename (DEF-4). A live commit holds its claim for microseconds
-// — the tmp fsync happens before the link, and nothing slow runs between
-// link and rename — so 100ms is orders of magnitude above any live hold
-// while keeping crash recovery to a tenth of a second.
+// Steal decision (DEF-5): liveness first, clock as fallback. The claim
+// symlink names its owner's tmp (.gaps.json.tmp.<pid>.<seq>); when
+// kill(owner, 0) succeeds the owner is alive and the claim must never be
+// stolen, no matter how long it has been held — a descheduled, throttled,
+// traced or swapped-out writer is alive, and robbing it is the silent lost
+// update of DEF-1. Only ESRCH (no such process) proves the owner dead.
+// Pids are recycled and liveness can be unprovable (EPERM, foreign pid), so
+// when liveness cannot be decided the wall clock falls back to the old
+// DEF-4 bound: a claim older than CLAIM_STALE_MS is treated as abandoned.
+// CLAIM_STALE_MS therefore bounds worst-case recovery from a crashed or
+// unprovable claim; it never bounds a live writer's critical section.
 export const CLAIM_STALE_MS = 100;
+
+// True when the claim may be stolen: its symlinked owner pid is dead
+// (ESRCH), or liveness cannot be decided and the link's mtime is older than
+// CLAIM_STALE_MS. A plain (non-symlink) claim has no owner pid to query —
+// legacy or planted state — so the clock decides from the link's own mtime
+// (lstat: a dangling symlink must still yield its mtime).
+export function claimIsStale(storeDir, claimName, now) {
+  const claimPath = join(storeDir, claimName);
+  let target;
+  try {
+    target = readlinkSync(claimPath);
+  } catch (err) {
+    if (err && err.code === "EINVAL") {
+      try {
+        return now - lstatSync(claimPath).mtimeMs > CLAIM_STALE_MS;
+      } catch {
+        return false; // vanished: nothing to steal
+      }
+    }
+    return false; // ENOENT and friends: the claim is gone
+  }
+  const m = /^\.gaps\.json\.tmp\.([1-9][0-9]*)\.[0-9]+$/.exec(basename(target));
+  if (m) {
+    try {
+      process.kill(Number(m[1]), 0);
+      return false; // owner alive: never steal (DEF-5)
+    } catch (err) {
+      if (err && err.code === "ESRCH") return true; // owner dead: safe to steal
+      // EPERM etc: liveness unprovable; fall through to the clock.
+    }
+  }
+  try {
+    return now - lstatSync(claimPath).mtimeMs > CLAIM_STALE_MS;
+  } catch {
+    return false; // vanished between readlink and lstat
+  }
+}
 
 let tmpSeq = 0;
 
@@ -198,19 +244,22 @@ export function writeGapsFile(storeDir, expectedRevision, next) {
   } finally {
     closeSync(fd);
   }
-  // Claim BEFORE re-reading: link() either makes us the owner of this
+  // Claim BEFORE re-reading: symlink() either makes us the owner of this
   // revision or tells us (EEXIST) a rival already holds the claim. On EEXIST
-  // the rival is usually live (it linked microseconds ago) and we exit 6.
+  // a live rival keeps its claim no matter how slow it is (DEF-5: liveness,
+  // not the clock) and we exit 6.
   // But a SIGKILLed rival strands its claim forever (DEF-4: the sweep cannot
-  // touch a claim at the live revision), so if the claim is older than
-  // CLAIM_STALE_MS we treat its owner as dead, take the claim, and retry the
-  // link once. A live commit holds its claim for microseconds (the fsync
-  // happens before the link; nothing slow runs between link and rename), so
-  // the bound is orders of magnitude above any live hold while keeping crash
-  // recovery to a tenth of a second.
+  // touch a claim at the live revision), so when the claim's owner pid is
+  // dead (or liveness is unprovable and the link is older than
+  // CLAIM_STALE_MS) we treat the owner as gone, take the claim, and retry
+  // the link once. The claim symlink targets our tmp NAME and the commit
+  // renames the owner's tmp, not the claim link, so even a steal can never
+  // swap payloads between writers.
+  let myClaim = null; // inode of the claim symlink, captured at claim time
   try {
-    linkSync(tmp, claim);
+    symlinkSync(tmp, claim);
     maybeHoldClaim();
+    myClaim = statSync(claim).ino; // ownership capture 1
   } catch (err) {
     if (!err || err.code !== "EEXIST") {
       try {
@@ -220,16 +269,17 @@ export function writeGapsFile(storeDir, expectedRevision, next) {
     }
     let stale = false;
     try {
-      stale = Date.now() - statSync(claim).mtimeMs > CLAIM_STALE_MS;
-    } catch { /* claim vanished between EEXIST and stat: race to re-link */ }
+      stale = claimIsStale(storeDir, basename(claim), Date.now());
+    } catch { /* claim vanished between EEXIST and check: race to re-link */ }
     if (stale) {
       try {
         unlinkSync(claim);
       } catch { /* a rival reaped it first */ }
     }
     try {
-      linkSync(tmp, claim);
+      symlinkSync(tmp, claim);
       maybeHoldClaim();
+      myClaim = statSync(claim).ino; // ownership capture 2
     } catch (err2) {
       try {
         unlinkSync(tmp);
@@ -240,7 +290,7 @@ export function writeGapsFile(storeDir, expectedRevision, next) {
       return { code: 7, message: `horizon: ${path}: cannot write: ${err.message}` };
     }
   }
-  // We own the claim. Re-read: if the revision already moved (a previous
+  // We hold the claim. Re-read: if the revision already moved (a previous
   // owner committed, or the file changed any other way), release the claim
   // and report the conflict; our text stays absent.
   const live = readGapsFileNoSweep(storeDir);
@@ -253,24 +303,51 @@ export function writeGapsFile(storeDir, expectedRevision, next) {
     if (!live.ok) return { code: live.code, message: live.message };
     return { code: 6, message: "horizon: the horizon changed underneath you, re-read and retry." };
   }
+  // Pre-rename ownership re-check (DEF-5): a steal by a third writer would
+  // have unlinked our claim and replaced it with the thief's own symlink,
+  // changing the inode. If we no longer own the name, our rename would
+  // publish the thief's payload — exit 6 instead.
+  if (statSync(claim).ino !== myClaim) {
+    try {
+      unlinkSync(tmp);
+    } catch { /* already gone */ }
+    return { code: 6, message: "horizon: the horizon changed underneath you, re-read and retry." };
+  }
   try {
-    renameSync(claim, path);
+    // Rename OUR tmp, never the claim link: the symlink name must stay
+    // resolved-able to the owner pid, and ownership of the name is what the
+    // re-check above verified.
+    renameSync(tmp, path);
   } catch (err) {
     for (const p of [claim, tmp]) {
       try {
         unlinkSync(p);
       } catch { /* already gone */ }
     }
-    // ENOENT means our claim was taken by a rival's stale-claim steal while
-    // we ran (only stealers unlink claims): we lost the race, not I/O.
-    if (err && err.code === "ENOENT") {
-      return { code: 6, message: "horizon: the horizon changed underneath you, re-read and retry." };
-    }
     return { code: 7, message: `horizon: ${path}: cannot write: ${err.message}` };
   }
+  // Our claim link is now redundant: remove it. If a rival's steal unlinked
+  // and recreated it in the meantime, our unlink removes the rival's claim
+  // link only — the rival's tmp payload is untouched and the rival's own
+  // read-back (below) is what certifies its commit, so no corruption is
+  // possible.
+  try {
+    unlinkSync(claim);
+  } catch { /* already gone or stolen */ }
   try {
     unlinkSync(tmp);
   } catch { /* already gone */ }
+  // Post-commit read-back (DEF-5, invariant): exit 0 only if OUR payload is
+  // verifiably the live one. rename is atomic and we just verified
+  // ownership, so failure here can only be an I/O fault — reported as such.
+  try {
+    const verify = readFileSync(path, "utf8");
+    if (verify !== JSON.stringify(next, null, 2) + "\n") {
+      return { code: 7, message: `horizon: ${path}: post-commit read-back mismatch` };
+    }
+  } catch (err) {
+    return { code: 7, message: `horizon: ${path}: post-commit read-back failed: ${err.message}` };
+  }
   return null;
 }
 
