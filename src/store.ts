@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -55,8 +55,13 @@ export function sweepStaleTmps(storeDir) {
   for (const name of readdirSync(storeDir)) {
     // Claim files carry no pid; they strand only on a kill between link and
     // rename, in which case the claimed revision never advances past them.
-    // A live writer may still rename its current-revision claim, so sweep a
-    // claim only when its revision is already behind the live revision.
+    // A live writer may still rename its current-revision claim, so the
+    // sweep leaves claims to writeGapsFile's stale-claim steal (CLAIM_STALE_MS):
+    // a claim at the live revision younger than the bound may still be
+    // renamed by its live owner and must not be touched; anything older is
+    // abandoned and steal-on-EEXIST clears it on the next write. Claims
+    // behind the live revision can never be renamed by anyone and are
+    // garbage-collected here.
     if (name.startsWith(COMMIT_PREFIX)) {
       const revText = name.slice(COMMIT_PREFIX.length);
       if (!/^[0-9]+$/.test(revText)) continue;
@@ -138,17 +143,39 @@ export function emptyStore() {
   return { version: STORE_VERSION, revision: 0, gaps: [] };
 }
 
-// gaps.json write: temp file in the same directory, fsync, re-check, rename.
-// Unique temp per attempt (.tmp.<pid>.<seq>) so two concurrent writers never
-// share a temp. Sequence: write tmp -> fsync -> link tmp to a per-revision
-// claim name -> re-read revision -> rename claim over gaps.json.
-// link() is atomic, so exactly one writer can hold the claim for a given
-// source revision; the claim is created BEFORE the re-read, which closes the
-// recheck-then-rename window: a writer that loses the claim (EEXIST) returns
-// exit 6 with its text absent instead of silently clobbering the rival, and
-// the claim file itself keeps the temp+rename property (gaps.json is only
+// gaps.json write: temp file in the same directory, fsync, claim, re-check,
+// rename. Unique temp per attempt (.tmp.<pid>.<seq>) so two concurrent
+// writers never share a temp. Sequence: write tmp -> fsync -> link tmp to
+// the per-revision claim name -> hold-test-hook -> re-read revision ->
+// rename claim over gaps.json.
+// link() is atomic and the claim name is shared, so exactly one writer can
+// hold the claim for a given source revision; the claim is created BEFORE
+// the re-read, which closes the recheck-then-rename window: a writer that
+// loses the claim (EEXIST) returns exit 6 with its text absent instead of
+// silently clobbering the rival. On EEXIST the claim is stat'ed (DEF-4): a
+// claim older than CLAIM_STALE_MS can only belong to a SIGKILLed writer (a
+// live commit holds it for microseconds), so it is unlinked and the link is
+// retried once — a crashed writer cannot hold the live revision hostage.
+// The claim file itself keeps the temp+rename property (gaps.json is only
 // ever replaced by a whole-file rename, so a kill mid-write leaves it
-// parseable; stranded claims sweep like stranded tmps). No lockfiles.
+// parseable). No lockfiles.
+// Test-only hook: hold the claim open so a SIGKILL lands between link and
+// rename. Enabled by HORIZON_CLI_TEST_HOLD_CLAIM_MS=<ms> (busy-wait after the
+// link); production never sets it, so the window stays microseconds.
+function maybeHoldClaim() {
+  const ms = Number(process.env.HORIZON_CLI_TEST_HOLD_CLAIM_MS);
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  const end = Date.now() + ms;
+  while (Date.now() < end) { /* busy-wait: keep the signal window open */ }
+}
+
+// A claim older than this is abandoned: its owner was SIGKILLed between
+// link and rename (DEF-4). A live commit holds its claim for microseconds
+// — the tmp fsync happens before the link, and nothing slow runs between
+// link and rename — so 100ms is orders of magnitude above any live hold
+// while keeping crash recovery to a tenth of a second.
+export const CLAIM_STALE_MS = 100;
+
 let tmpSeq = 0;
 
 export const COMMIT_PREFIX = ".gaps.json.commit.";
@@ -172,17 +199,46 @@ export function writeGapsFile(storeDir, expectedRevision, next) {
     closeSync(fd);
   }
   // Claim BEFORE re-reading: link() either makes us the owner of this
-  // revision or tells us (EEXIST) a rival already owns it.
+  // revision or tells us (EEXIST) a rival already holds the claim. On EEXIST
+  // the rival is usually live (it linked microseconds ago) and we exit 6.
+  // But a SIGKILLed rival strands its claim forever (DEF-4: the sweep cannot
+  // touch a claim at the live revision), so if the claim is older than
+  // CLAIM_STALE_MS we treat its owner as dead, take the claim, and retry the
+  // link once. A live commit holds its claim for microseconds (the fsync
+  // happens before the link; nothing slow runs between link and rename), so
+  // the bound is orders of magnitude above any live hold while keeping crash
+  // recovery to a tenth of a second.
   try {
     linkSync(tmp, claim);
+    maybeHoldClaim();
   } catch (err) {
-    try {
-      unlinkSync(tmp);
-    } catch { /* already gone */ }
-    if (err && err.code === "EEXIST") {
-      return { code: 6, message: "horizon: the horizon changed underneath you, re-read and retry." };
+    if (!err || err.code !== "EEXIST") {
+      try {
+        unlinkSync(tmp);
+      } catch { /* already gone */ }
+      return { code: 7, message: `horizon: ${path}: cannot write: ${err.message}` };
     }
-    return { code: 7, message: `horizon: ${path}: cannot write: ${err.message}` };
+    let stale = false;
+    try {
+      stale = Date.now() - statSync(claim).mtimeMs > CLAIM_STALE_MS;
+    } catch { /* claim vanished between EEXIST and stat: race to re-link */ }
+    if (stale) {
+      try {
+        unlinkSync(claim);
+      } catch { /* a rival reaped it first */ }
+    }
+    try {
+      linkSync(tmp, claim);
+      maybeHoldClaim();
+    } catch (err2) {
+      try {
+        unlinkSync(tmp);
+      } catch { /* already gone */ }
+      if (err2 && err2.code === "EEXIST") {
+        return { code: 6, message: "horizon: the horizon changed underneath you, re-read and retry." };
+      }
+      return { code: 7, message: `horizon: ${path}: cannot write: ${err.message}` };
+    }
   }
   // We own the claim. Re-read: if the revision already moved (a previous
   // owner committed, or the file changed any other way), release the claim
@@ -204,6 +260,11 @@ export function writeGapsFile(storeDir, expectedRevision, next) {
       try {
         unlinkSync(p);
       } catch { /* already gone */ }
+    }
+    // ENOENT means our claim was taken by a rival's stale-claim steal while
+    // we ran (only stealers unlink claims): we lost the race, not I/O.
+    if (err && err.code === "ENOENT") {
+      return { code: 6, message: "horizon: the horizon changed underneath you, re-read and retry." };
     }
     return { code: 7, message: `horizon: ${path}: cannot write: ${err.message}` };
   }

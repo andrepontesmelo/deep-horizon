@@ -495,6 +495,80 @@ test("24. SIGKILL mid-write: gaps.json stays parseable; next run sweeps stranded
   }
 });
 
+test("36. stranded claim at the live revision: next add recovers (DEF-4)", async () => {
+  // Real-kill lab evidence (review t_cf071306, DEF-4): a writer SIGKILLed
+  // between linkSync(claim) and renameSync strands
+  // .gaps.json.commit.<liveRev>, and the pre-fix store then exited 6 on
+  // every later write forever (sweep and re-init could not clear it).
+  // Half 1 reproduces the kill for real via the test-only hold hook.
+  // Half 2 fabricates the same state deterministically (planted claim,
+  // mtime backdated past CLAIM_STALE_MS) so the recovery is asserted
+  // without any timing dependence.
+  const { spawn } = await import("node:child_process");
+  const { readdirSync, utimesSync, existsSync } = await import("node:fs");
+  const { setTimeout: delay } = await import("node:timers/promises");
+
+  // Half 1: real SIGKILL between link and rename.
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    assert.equal((await run(["add", "First", "--cwd", dir])).code, 0);
+    const store = join(dir, ".horizon");
+    const child = spawn(BIN, ["add", "crash mid-claim", "--cwd", dir], {
+      stdio: "ignore",
+      env: { ...process.env, HORIZON_CLI_TEST_HOLD_CLAIM_MS: "2000" },
+    });
+    let stranded = false;
+    for (let i = 0; i < 100 && !stranded; i++) {
+      await delay(25);
+      stranded = readdirSync(store).some((n) => n.startsWith(".gaps.json.commit."));
+    }
+    assert.ok(stranded, "hold hook failed: claim never appeared");
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch { /* already exited: fixture broken */ }
+    await new Promise((r) => child.on("exit", r));
+    // The kill left the claim stranded at the live revision; gaps.json is
+    // untouched and parseable.
+    assert.ok(readdirSync(store).some((n) => n.startsWith(".gaps.json.commit.")), "claim not stranded after kill");
+    assert.doesNotThrow(() => readGaps(dir));
+    // Recovery: past CLAIM_STALE_MS the claim reads as abandoned, so the
+    // next add succeeds, the revision advances, and every claim/tmp leftover
+    // is gone (the tmp sweep clears the killed writer's tmp).
+    await delay(250);
+    const r = await run(["add", "after crash", "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const state = readGaps(dir);
+    assert.equal(state.revision, 2);
+    assert.equal(state.gaps.length, 2);
+    assert.ok(state.gaps.some((g) => g.text === "after crash"));
+    assert.deepEqual(readdirSync(store).filter((n) => n.startsWith(".gaps.json.")), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // Half 2: deterministic fabrication — plant the stranded claim and
+  // backdate it past CLAIM_STALE_MS (no real kill needed).
+  const dir2 = freshDir();
+  try {
+    await run(["init", "--cwd", dir2]);
+    assert.equal((await run(["add", "Seed", "--cwd", dir2])).code, 0);
+    const claim = join(dir2, ".horizon", ".gaps.json.commit.1");
+    writeFileSync(claim, "{}\n");
+    const past = new Date(Date.now() - 10_000);
+    utimesSync(claim, past, past);
+    const r = await run(["add", "Second", "--cwd", dir2]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const state = readGaps(dir2);
+    assert.equal(state.revision, 2);
+    assert.equal(state.gaps.length, 2);
+    assert.ok(state.gaps.some((g) => g.text === "Second"));
+    assert.ok(!existsSync(claim), "stranded claim not removed");
+  } finally {
+    rmSync(dir2, { recursive: true, force: true });
+  }
+});
+
 test("25. 20 concurrent session-ends yield 20 valid lines", async () => {
   const dir = freshDir();
   try {
