@@ -388,9 +388,20 @@ decide before someone builds it.
 
 **The map is complete. All eleven tickets resolved; the frontier is empty.**
 
+## Implementation (post-map)
+
+| Card | What | Assignee | State |
+|---|---|---|---|
+| `t_e0f4978d` | HL-11 build: CLI core, TDD, 33 tests | developer | dispatched |
+| `t_72fa9bb9` | HL-11r review: CLI core (6 executed gates) | reviewer | gates the merge |
+
+Build order: CLI core → DSH adapter (the reference harness) → Claude Code →
+Hermes → pi → opencode (degraded). Each is a build+review card pair; main stays
+clean until a review passes.
+
 What implementation inherits:
 
-- `CONTEXT.md` — the glossary (horizon, gap, close, propose, log, session
+- `CONTEXT.md` — the glossary (horizon, gap, close, propose, gap log, session
   record, revision, provenance, nudge, resolution, injection).
 - `.scratch/horizon-line/05-cli-contract.md` — seven commands, two JSON
   schemas, an eight-code exit table, the two locked injection strings, and **36
@@ -399,5 +410,11 @@ What implementation inherits:
   hook surfaces for all five harnesses, every claim carrying a file path or
   URL, plus the corrected prior-art record.
 
-First build: the CLI core (tests 1–33), then the DSH adapter, then Claude Code,
-Hermes, pi, and opencode degraded. Tracked as Kanban cards on this board.
+### A hazard this map hit twice
+
+A headless worker resolved HL-07 as "coexist" and wrote it into the map at the
+same moment Andre answered "replaces" in chat, leaving two contradictory
+decisions live in Decisions-so-far. **A ticket that is dispatchable while the
+same question is being grilled in chat will be answered twice.** Block HITL
+cards before dispatching anything, and re-read Decisions-so-far before
+appending to it.
