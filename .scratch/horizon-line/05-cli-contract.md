@@ -27,6 +27,10 @@ Stop at the filesystem root.
   sessions.jsonl   append-only, one JSON object per line
 ```
 
+**One store per repository.** Never shared across repos, never global. The
+store is discovered by walking up, so a monorepo's subprojects inherit the
+repo-root store unless they carry their own `.horizon/`.
+
 ### 1.1 `gaps.json`
 
 ```json
@@ -52,7 +56,7 @@ Stop at the filesystem root.
 - `version` — schema version. Present from day one so a future migration has
   something to branch on.
 - `revision` — monotonic integer, incremented on **every** successful write.
-  The compare-and-swap token (§4).
+  A counter, not a compare-and-swap token (§4).
 - `gaps` — **open gaps only**, ordered by `added_at` ascending (insertion
   order). Never more than 5. A closed gap is *removed* from this array.
 - `provenance.origin` — one of `human`, `agent-proposed`. Advisory only; the
@@ -182,21 +186,54 @@ store is left untouched, exit 0.
 
 ## 4. Atomicity and concurrency
 
-**`gaps.json` — temp + rename + compare-and-swap.**
+**One store per repository. `gaps.json` — temp + fsync + rename. No lock.**
 
-1. Read the file, note `revision`.
-2. Apply the mutation in memory.
-3. Write to `.horizon/.gaps.json.tmp.<pid>` in the **same directory** (so
-   `rename` stays atomic — a cross-filesystem rename is not).
-4. `fsync` the temp file, `rename()` over `gaps.json`.
-5. Before writing, re-read `revision`. If it changed, **abort with exit 6** —
-   "the horizon changed underneath you, re-read and retry". Never clobber.
+1. Read `gaps.json`. An absent file is an empty store, not an error (§7).
+2. Apply the mutation in memory; `revision` += 1.
+3. Write the whole document to `.horizon/.gaps.json.tmp.<pid>` in the **same
+   directory** — a cross-filesystem rename is not atomic.
+4. `fsync` the temp file, then `rename()` over `gaps.json`. Node's `fs.rename`
+   overwrites an existing destination on all three platforms: `rename(2)` on
+   POSIX, `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)` on Windows.
+5. Retry the `rename` up to 3 times (10 ms, 50 ms, 200 ms). Windows returns
+   `EPERM`/`EBUSY` when another process holds the destination open — antivirus,
+   search indexers, and editors all do this transiently. After the third
+   failure, exit 6.
 
-**`sessions.jsonl` — plain append.** One `O_APPEND` write of a single line
-under `PIPE_BUF` is atomic on POSIX. No lock, no read, no parse.
+**No lock file. No claim. No pid. No staleness timer.** Concurrency is
+last-writer-wins: if two writers race, the later `rename` wins and the earlier
+writer's mutation is lost **silently**. This is an **accepted risk** (Andre,
+2026-09-09): the store is written at session start/end and by deliberate human
+commands, so simultaneous writes are rare, and every mechanism that would
+prevent it costs more than the loss — either a native addon for a real kernel
+lock (`os-lock` runs `node-gyp rebuild` at install time and ships no
+prebuilds), or a hand-rolled sentinel that strands on `kill -9` and then needs
+liveness detection (the DEF-4/DEF-5 chain).
 
-**No lockfiles anywhere.** They strand when a process is killed, and HL-10
-confirmed DSH's teardown does not run on `kill -9`.
+**`revision` is a counter, not a compare-and-swap token.** It increments on
+every write so the log and future adapters can tell one write from the next.
+It is never re-read before writing, and a moved revision never aborts a write.
+
+**`sessions.jsonl` — plain append.** One write of one line, terminated by an
+explicit `\n`. No read, no parse, no lock.
+
+### 4.1 Cross-platform rules (Linux, macOS, Windows)
+
+The CLI must install and run on all three with **no native dependency**.
+
+- **No native modules.** `npm i -g horizon-line` must not invoke a compiler.
+  This rules out `os-lock` (fcntl/LockFileEx binding, `install: node-gyp
+  rebuild`) and `fs-ext`.
+- **No symlinks.** Creating one on Windows needs Developer Mode or admin.
+- **No `flock`, no `chmod`, no POSIX-only syscalls.**
+- **All paths via `path.join`.** Never concatenate separators.
+- **Line endings:** the store ships `.horizon/.gitattributes` containing
+  `* -text` (git honours `.gitattributes` in subdirectories), so a Windows
+  checkout with `core.autocrlf=true` cannot rewrite `sessions.jsonl` into
+  `\r\n`. The reader must still skip blank lines and tolerate a trailing `\r`.
+- **Store discovery tolerates case:** on macOS and Windows a directory named
+  `.Horizon` also matches.
+- **Runtime:** Node ≥ 20 on all three platforms.
 
 ---
 
@@ -236,7 +273,7 @@ read honestly afterward.
 | 3 | Text rejected — over cap, contains a newline, or empty | states the actual count or the offending character |
 | 4 | Cap reached — 5 gaps already open | lists the open gaps with ids |
 | 5 | Unknown gap id | states the id |
-| 6 | Revision conflict — the store changed mid-write | "re-read and retry" |
+| 6 | Write failed after retries — the OS held the store file open | names the file and the errno |
 | 7 | Store unreadable or malformed JSON | names the file and the parse error |
 
 **0 for an absent store is deliberate.** `horizon show` runs at the start of
@@ -294,14 +331,28 @@ The list a TDD implementation turns red first.
 20. `amend` past the cap is rejected, exit 3, text unchanged on disk.
 
 **Atomicity / concurrency**
-21. A write whose `revision` moved between read and write aborts with exit 6
-    and leaves the file byte-identical.
-22. No `.tmp` files remain after a successful write.
-23. No `.tmp` file is left behind after a failed write.
-24. A killed process mid-write leaves `gaps.json` parseable (temp+rename
-    property).
+21. No reader ever sees a partial document: 200 reads concurrent with a writer
+    in a tight loop all parse (temp+rename property).
+22. No `.tmp` file remains after a successful write; a `kill -9` mid-write may
+    leave one behind, and the **next** write still succeeds — there is no lock
+    to strand and nothing to wait on.
+23. Two concurrent `add`s: `gaps.json` stays valid JSON and the surviving gap
+    count is 1 or 2. Last-writer-wins is the accepted behaviour; corruption is
+    not.
+24. `rename` failing with `EPERM`/`EBUSY` is retried, and a later attempt
+    succeeding is enough to exit 0.
 25. 20 concurrent `session-end` appends produce 20 valid JSONL lines, none
     interleaved or truncated.
+
+**Cross-platform (X1–X5)**
+X1. `package.json` has no native dependency: no `gypfile`, no `os-lock`, no
+    `fs-ext`; `npm i -g` completes without invoking a compiler.
+X2. No `symlink` call anywhere in the source.
+X3. Every path is built with `path.join`; no hand-concatenated separator.
+X4. `.horizon/.gitattributes` exists and contains `* -text`; the JSONL reader
+    accepts `\r\n` and skips blank lines.
+X5. A store directory named `.Horizon` is found on a case-insensitive
+    filesystem.
 
 **session-end**
 26. Omitting `--summary` writes `"summary": null`, not `""` and not a
