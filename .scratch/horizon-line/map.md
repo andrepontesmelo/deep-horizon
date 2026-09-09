@@ -283,6 +283,45 @@ decide before someone builds it.
   about it. Final strings are §10 of the CLI contract; 3 more acceptance tests
   (34–36) cover substitution fidelity, block-vs-nudge selection, and the
   no-copies rule.
+- [HL-07 resolved: horizon-line REPLACES moving-target](#) — not coexistence.
+  Andre's call: this supersedes moving-target rather than sitting beside it.
+  The two were close cousins — moving-target injects an LLM-distilled paragraph
+  describing *what a project is*; horizon-line injects human-originated gaps
+  describing *what is missing* — but running both means two goal-shaped blocks
+  before the user's first word, and the newer object is the one worth keeping.
+  Consequences: `.moving-target/` has no future; moving-target v0.1.5 (never
+  published to npm, installed into three DSH profiles as a local `.tgz`) stays
+  archived as the origin of the pattern; horizon-line's README credits it as
+  the predecessor rather than positioning against it. **Code reuse: share the
+  pattern, not the code** — the overlap is ~40 lines of DSH-specific guard
+  logic (`startup`-only, `delegationDepth`/`origin` subagent exclusion, the
+  pure/testable `injectionText()` split). Copy it, credit it in a comment, and
+  avoid a versioning dependency between two projects with different cadences.
+- [HL-08 resolved: one package, DSH ships first](#) — **one npm package with
+  multiple entrypoints**, not a monorepo: `horizon-line` ships the CLI as
+  `bin`, plus `horizon-line/dsh`, `/opencode`, `/pi` adapter exports. Hermes'
+  Python plugin and Claude Code's hook shell out to the binary and need no npm
+  artifact. A monorepo buys independent versioning that five adapters *must
+  not* have — they stay in lockstep with one CLI contract, and lockstep is the
+  point. **Install: `npm i -g horizon-line`** — three of five harnesses shell
+  out, so the binary must be on `PATH`; `npx` adds ~300 ms to every session
+  start and needs network on a cold cache.
+  **Reference harness: DSH** (Andre's call, overriding the Claude-Code-first
+  recommendation). Worth recording the trade-off honestly: DSH is the harness
+  where the close hook is *weakest* — no `agent/session-end` event exists, and
+  `agent/disposed` fires after the loop stops, is unawaited, and steering is
+  discarded (HL-10). So the reference implementation gets built where
+  `session-end` must use the mid-session fallback from the start. The upside is
+  that the fallback path — the one that has to work everywhere — is proven
+  first rather than bolted on after a Claude-Code-shaped implementation.
+  **opencode ships degraded, and the README says so**: injection via
+  `chat.message` with the heuristic new-session check, subagent exclusion via
+  `session.parentID`, and **no session records at all** (no close hook; its
+  `dispose` receives no arguments, so no session id). Documented degradation
+  beats pretending parity.
+  **License MIT, public GitHub** — matching the rest of the portfolio. GitHub
+  is for the repo and releases only; **task tracking stays on Kanban**, and no
+  GitHub Issues are created for this project.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
@@ -363,6 +402,8 @@ decide before someone builds it.
 - Tasks, plans, owners, estimates, ordering-as-schedule. Gaps are wants, not
   work items. Kanban and dex already hold the work.
 - Harnesses beyond the five named, for v1. Adapters are additive later.
+- GitHub Issues. The repo and its releases live on GitHub; **task tracking is
+  Kanban only** and no issues are opened for this project.
 
 ## Kanban cards (board: horizon-line)
 
@@ -372,15 +413,25 @@ decide before someone builds it.
 | 02 Hermes + pi start hooks | `t_f2e33c02` | research | done |
 | 09 Anthropic primary-source check | `t_1e0bc4e1` | research | done |
 | 03 What IS a horizon | `t_41be385d` | grilling | done — 4 rounds |
-| 04 On-disk format | `t_df01dae9` | grilling | done (card stuck `triage`; record in comments + git) |
-| 10 Session-end hooks (Hermes, DSH) | `t_0ba9fbe3` | research | done |
-| 10b Session-end hooks (CC, opencode, pi) | `t_7b8c4c17` | research | done |
+| 04 On-disk format | `t_df01dae9` | grilling | done |
+| 10 / 10b Session-end hooks (all 5) | `t_0ba9fbe3` / `t_7b8c4c17` | research | done |
 | 05 CLI contract spec | `t_f10bd84a` | task | done — `05-cli-contract.md` |
-| 06 Injected texts | `t_48b2a9c5` | prototype | **done** — locked into spec §10 |
-| 07 vs moving-target | `t_64b50d56` | grilling | done — coexist, pattern-only reuse |
-| 08 Packaging + distribution | `t_0b9338c4` | grilling | blocked (HITL) — largely pre-answered |
+| 06 Injected texts | `t_48b2a9c5` | prototype | done — spec §10 |
+| 07 vs moving-target | `t_64b50d56` | grilling | **done** — replaces it |
+| 08 Packaging + distribution | `t_0b9338c4` | grilling | **done** — one package, DSH first |
 
-**Ten of eleven resolved.** Only HL-08 (packaging) remains, and it is
-substantially pre-answered — HL-01/02/10 forced CLI-as-core. Expect a short
-confirmation, not a full grilling. After that, the way is clear and the map
-hands off to implementation.
+**The map is complete. All eleven tickets resolved; the frontier is empty.**
+
+What implementation inherits:
+
+- `CONTEXT.md` — the glossary (horizon, gap, close, propose, log, session
+  record, revision, provenance, nudge, resolution, injection).
+- `.scratch/horizon-line/05-cli-contract.md` — seven commands, two JSON
+  schemas, an eight-code exit table, the two locked injection strings, and **36
+  acceptance tests** to turn red first.
+- `.scratch/horizon-line/research/` — verified session-start *and* session-end
+  hook surfaces for all five harnesses, every claim carrying a file path or
+  URL, plus the corrected prior-art record.
+
+First build: the CLI core (tests 1–33), then the DSH adapter, then Claude Code,
+Hermes, pi, and opencode degraded. Tracked as Kanban cards on this board.
