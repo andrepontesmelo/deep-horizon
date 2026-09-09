@@ -321,7 +321,81 @@ The list a TDD implementation turns red first.
 
 ---
 
-## 10. Open, deliberately
+## 10. The injected texts (HL-06, locked)
+
+These strings live in the **core package**, not per-adapter. Five copies would
+diverge within a month, and the premise is that every harness sees the same
+horizon — which has to mean the same words about it.
+
+`{{GAPS}}` is `horizon show` stdout **substituted verbatim, never
+re-formatted**. If bullets or numbering are ever wanted, they belong in §3.1's
+output, not in five adapters that would drift apart.
+
+### 10.1 The horizon block
+
+Injected when `horizon show` prints at least one gap.
+
+```
+This project has a horizon — a short list of what the user wants and doesn't
+have yet. It was written across earlier sessions, by earlier agents, with the
+user's approval:
+
+{{GAPS}}
+
+You have inherited it, not been assigned it. Nothing here is due today. Sessions
+that touch none of these are perfectly normal; the horizon exists so the aim
+survives between sessions, not so any one session delivers it.
+
+What it is not: a backlog, a task list, or work assigned to this session. A gap
+may sit open for weeks across many sessions and that is the normal case. Do not
+plan around closing them, and do not report progress against them.
+
+Two things are yours to do. When the user wants something that outlives this
+session, offer `horizon add "<one line>"`. When something here looks done, offer
+`horizon close <id>`. Both need the user's yes — the horizon is theirs, you only
+hold the pen.
+```
+
+Chosen over a terse variant and an explicit-contract variant. The reasoning:
+framing changes behaviour more reliably than instruction. *"Inherited, not
+assigned"* attacks the eagerness this project exists to prevent at its root,
+and *"you only hold the pen"* states the authorship rule (HL-03 r3) as identity
+rather than as a prohibition to comply with.
+
+The third paragraph is grafted from the explicit-contract variant, which was
+strongest exactly where the framing variant was vague — naming what a gap *is
+not*. Its final clause, "and do not mention them again unless relevant", was
+**dropped deliberately**: a gap becoming relevant mid-session is a good
+outcome, and suppressing it would defeat the injection.
+
+### 10.2 The nudge
+
+Injected when `horizon show` prints nothing (§3.1: empty store *and* absent
+store both print nothing and exit 0).
+
+```
+Horizon: none set. `horizon add "<one line>"` if the user names a want that
+outlives this session.
+```
+
+Two lines, because this appears in nearly every session of every project — the
+overwhelming majority have no horizon. A longer variant carrying "don't prompt
+them unasked" was rejected: it spends a line in every session on every project
+to prevent a behaviour the shorter text doesn't especially invite.
+
+### 10.3 Acceptance tests for the texts
+
+34. The horizon block substitutes `{{GAPS}}` with `show` stdout byte-for-byte,
+    with no added bullets, indentation, or trailing newline changes.
+35. The nudge is emitted when `show` is empty, and the block when it is not —
+    never both, never neither.
+36. Both strings are exported from the core package and imported by every
+    adapter; no adapter contains a literal copy. (Enforced by a test that greps
+    the adapter sources for a distinctive phrase from each string.)
+
+---
+
+## 11. Open, deliberately
 
 Not blockers for implementation; each is a fog patch on the map.
 

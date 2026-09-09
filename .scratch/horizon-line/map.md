@@ -265,11 +265,24 @@ decide before someone builds it.
   UUIDv4, opencode `ses_`+26-char sortable, DSH UUIDv4, Hermes
   `YYYYMMDD_HHMMSS_6hex`, pi UUIDv7-shaped), so the store must keep the id as
   an **opaque string plus harness name** — which is exactly what the spec says.
-- [HL-06 prototypes written: two texts, three variants each](#) —
-  `.scratch/horizon-line/prototypes/06-injected-texts-v2.md`. The gap-list
-  reshape needs **two** injected texts, not one: the horizon block and the
-  empty-project nudge. Variants differ in strategy, not wording: terse,
-  explicit-contract, and inheritance-framed. Awaiting Andre's pick.
+- [HL-06 resolved: the injected texts are locked](#) — two texts, not one.
+  **The horizon block** uses the inheritance framing — *"You have inherited it,
+  not been assigned it"*, *"the horizon is theirs, you only hold the pen"* —
+  chosen over a terse and an explicit-contract variant because framing changes
+  behaviour more reliably than instruction: it attacks the eagerness this
+  project exists to prevent at its root, and states the authorship rule as
+  identity rather than as a prohibition. One paragraph is grafted from the
+  contract variant, naming what a gap *is not* (backlog, task list, this
+  session's work) — but its "do not mention them again" clause was dropped
+  deliberately, since a gap becoming relevant mid-session is a good outcome.
+  **The nudge** is two lines, because it appears in nearly every session of
+  every project; the longer variant spent a line preventing a behaviour the
+  short one doesn't invite. Both strings live in the **core package**, imported
+  by every adapter — five copies would diverge within a month, and the premise
+  is that every harness sees the same horizon, which must mean the same words
+  about it. Final strings are §10 of the CLI contract; 3 more acceptance tests
+  (34–36) cover substitution fidelity, block-vs-nudge selection, and the
+  no-copies rule.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
@@ -324,15 +337,16 @@ decide before someone builds it.
 | 02 Hermes + pi start hooks | `t_f2e33c02` | research | done |
 | 09 Anthropic primary-source check | `t_1e0bc4e1` | research | done |
 | 03 What IS a horizon | `t_41be385d` | grilling | done — 4 rounds |
-| 04 On-disk format | `t_df01dae9` | grilling | done (card stuck in `triage`; record is in comments + git) |
-| 10 Session-end hooks (Hermes, DSH) | `t_0ba9fbe3` | research | partial — 2 of 5, salvaged `e3d8160` |
-| 10b Session-end hooks (CC, opencode, pi) | `t_7b8c4c17` | research | **running** |
-| 05 CLI contract spec | `t_f10bd84a` | task | **done** — `.scratch/horizon-line/05-cli-contract.md` |
-| 06 Injected prompt variants | `t_48b2a9c5` | prototype | redo against the gap-list model |
+| 04 On-disk format | `t_df01dae9` | grilling | done (card stuck `triage`; record in comments + git) |
+| 10 Session-end hooks (Hermes, DSH) | `t_0ba9fbe3` | research | done |
+| 10b Session-end hooks (CC, opencode, pi) | `t_7b8c4c17` | research | done |
+| 05 CLI contract spec | `t_f10bd84a` | task | done — `05-cli-contract.md` |
+| 06 Injected texts | `t_48b2a9c5` | prototype | **done** — locked into spec §10 |
 | 07 vs moving-target | `t_64b50d56` | grilling | blocked (HITL) — largely pre-answered |
 | 08 Packaging + distribution | `t_0b9338c4` | grilling | blocked (HITL) — largely pre-answered |
 
-The way is nearly clear. What remains before implementation: **HL-06** (the two
-injected texts, redone for gaps), and **HL-07/HL-08**, both of which the
-research has largely pre-answered and which may collapse into short
-confirmations. HL-10b is the last AFK unknown.
+**Nine of eleven resolved.** Only HL-07 (the moving-target boundary) and HL-08
+(packaging) remain, and both are substantially pre-answered — HL-03 r3 drew the
+moving-target boundary, and HL-01/02/10 forced CLI-as-core. Expect short
+confirmations, not full grillings. After those, the way is clear and the map
+hands off to implementation.
