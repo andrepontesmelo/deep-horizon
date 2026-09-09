@@ -292,6 +292,41 @@ decide before someone builds it.
   it. This was HL-08's central question and the research has largely answered
   it.
 
+- [HL-07 resolved: coexist — different objects, pattern-only reuse](#) — five
+  confirmations, as predicted ("short confirmations, not full grillings").
+  Resolved in a headless run with recommendations auto-adopted; every one
+  follows from already-locked decisions. Veto by comment on `t_64b50d56`.
+  **The relationship, one line each** (goes in both READMEs; CONTEXT.md's
+  Horizon gloss already carries it): moving-target answers *what this project
+  IS* — LLM-distilled, descriptive, frozen until you update it; horizon-line
+  answers *what we steer toward next* — human-authored, directional, moves
+  only with the human's yes.
+  **Coexist, uncoupled.** Neither supersedes nor absorbs: different questions,
+  different stores (`.moving-target/summary.md` vs `.horizon/`), different
+  authorship models, no cross-writes. The injected texts stay exactly as
+  HL-06 locked them — no clause added to name the other plugin: the no-copies
+  rule (§10, test 36) makes a bespoke cross-reference unmirrorable, and each
+  block already describes itself well enough that adjacency needs no
+  explanation.
+  **Injection order: moving-target first, then horizon-line** — identity
+  before direction reads naturally, and in practice the harness decides it by
+  mount order (cordis.patch.yml insert order in DSH, hook registration order
+  elsewhere). Both gates already agree (genuinely-new sessions only), so the
+  pairing is symmetric. A fixed convention noted here, not a mechanism —
+  nothing configurable, nothing enforced in code.
+  **Code: share the pattern, not the code.** Confirms the prior-art note
+  above: HL imports nothing from moving-target; the `agent/session-start`
+  hook pattern, startup-only guard, subagent exclusion and pure
+  `injectionText()` split are re-implemented against HL's contract — and
+  CLI-as-core makes an npm dependency useless to the Hermes adapter anyway.
+  moving-target keeps shipping independently; its LLM update path stays its
+  own.
+  **`.moving-target/` keeps its future.** It remains moving-target's store,
+  unchanged, gitignored per its own README; HL-08 decides `.horizon/`'s
+  commit-vs-gitignore independently. Sole recorded future coupling: the
+  bootstrap seeding option rejected in HL-03 r2 would have *read* MT's
+  summary — dead unless deliberately revived.
+
 ## Not yet specified
 
 - **opencode cannot exactly detect a new session** (HL-01) — `chat.message`
@@ -342,11 +377,10 @@ decide before someone builds it.
 | 10b Session-end hooks (CC, opencode, pi) | `t_7b8c4c17` | research | done |
 | 05 CLI contract spec | `t_f10bd84a` | task | done — `05-cli-contract.md` |
 | 06 Injected texts | `t_48b2a9c5` | prototype | **done** — locked into spec §10 |
-| 07 vs moving-target | `t_64b50d56` | grilling | blocked (HITL) — largely pre-answered |
+| 07 vs moving-target | `t_64b50d56` | grilling | done — coexist, pattern-only reuse |
 | 08 Packaging + distribution | `t_0b9338c4` | grilling | blocked (HITL) — largely pre-answered |
 
-**Nine of eleven resolved.** Only HL-07 (the moving-target boundary) and HL-08
-(packaging) remain, and both are substantially pre-answered — HL-03 r3 drew the
-moving-target boundary, and HL-01/02/10 forced CLI-as-core. Expect short
-confirmations, not full grillings. After those, the way is clear and the map
+**Ten of eleven resolved.** Only HL-08 (packaging) remains, and it is
+substantially pre-answered — HL-01/02/10 forced CLI-as-core. Expect a short
+confirmation, not a full grilling. After that, the way is clear and the map
 hands off to implementation.
