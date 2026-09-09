@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -638,6 +638,284 @@ test("34. exported texts equal the spec section 10 fence blocks byte-for-byte", 
   assert.equal(HORIZON_BLOCK_TEMPLATE, fenceAfter("### 10.1"));
   assert.equal(NUDGE_TEXT, fenceAfter("### 10.2"));
 });
+
+// --- Adversary regression gates (ADV-1..12, fix card t_76f202ea) ---
+
+// ADV-1: a non-object element in gaps[] used to crash every store-touching
+// command with a raw TypeError + exit 1. Spec 7: malformed store -> exit 7
+// naming the file. (The gap body was already tightened by HL-11's
+// envelope hardening; this pins the id/text field types too.)
+test("ADV-1. gaps[] containing null: exit 7 naming gaps.json, no crash", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    writeFileSync(join(dir, ".horizon", "gaps.json"), '{"version":1,"revision":1,"gaps":[null]}');
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /gaps\.json/);
+    assert.ok(!/TypeError|at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
+    assert.equal(readFileSync(join(dir, ".horizon", "gaps.json"), "utf8"), '{"version":1,"revision":1,"gaps":[null]}');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ADV-1b. gap with non-string text: exit 7 (no crash, store untouched)", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    writeFileSync(
+      join(dir, ".horizon", "gaps.json"),
+      JSON.stringify({ version: 1, revision: 1, gaps: [{ id: "g_00000001", text: 7 }] }) + "\n",
+    );
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /gaps\.json/);
+    assert.ok(!/TypeError|at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADV-2: a bare `null` line in a JSONL log used to crash `log` (human) with
+// exit 1 and silently pass through `log --json`. A JSONL line whose parse is
+// valid JSON but not an object makes the whole file malformed: exit 7.
+test("ADV-2. null line in sessions.jsonl: log exits 7; --json never emits a null record", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    const good = JSON.stringify({ ts: "2026-09-08T15:00:00Z", harness: "t", session_id: "s0", summary: null, gaps_added: [], gaps_closed: [] });
+    writeFileSync(join(dir, ".horizon", "sessions.jsonl"), good + "\nnull\n");
+    const r = await run(["log", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /sessions\.jsonl/);
+    const rj = await run(["log", "--cwd", dir, "--json"]);
+    assert.equal(rj.code, 7);
+    assert.ok(!/^\s*null\s*$/m.test(rj.stdout), "--json emitted a null record");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ADV-2b. null line in closes.jsonl: session-end exits 7 naming closes.jsonl", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    writeFileSync(join(dir, ".horizon", "closes.jsonl"), "null\n");
+    const r = await run(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /closes\.jsonl/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ADV-2c. syntactically invalid JSONL line: exit 7 (same contract as a null line)", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    writeFileSync(join(dir, ".horizon", "sessions.jsonl"), "{not json}\n");
+    const r = await run(["log", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /sessions\.jsonl/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADV-3: the close/session record append used to run AFTER the gaps.json
+// rename; an append failure then lost the record while the gap was already
+// gone (unauditable close, exit 1). Now record-first: append, then rename.
+test("ADV-3. append failure at close: exit 7, gap still open, store unchanged", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const add = await run(["add", "Doomed close", "--cwd", dir]);
+    assert.equal(add.code, 0);
+    const id = add.stdout.trim();
+    // closes.jsonl is created by the first close, so touch it first; an
+    // append to a file the process cannot write must then fail.
+    const closes = join(dir, ".horizon", "closes.jsonl");
+    writeFileSync(closes, "");
+    chmodSync(closes, 0o444);
+    const r = await run(["close", id, "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /closes\.jsonl/);
+    // No partial state: the gap is STILL open, revision did not move.
+    const g = readGaps(dir);
+    assert.equal(g.revision, 1);
+    assert.deepEqual(g.gaps.map((x) => x.id), [id]);
+    const { existsSync } = await import("node:fs");
+    assert.ok(!existsSync(join(dir, ".horizon", "sessions.jsonl")));
+  } finally {
+    const { existsSync: ex } = await import("node:fs");
+    if (ex(join(dir, ".horizon", "closes.jsonl"))) chmodSync(join(dir, ".horizon", "closes.jsonl"), 0o644);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ADV-3b. append failure at session-end: exit 7, no session record written", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    await run(["add", "Recorded gap", "--cwd", dir, "--session", "s9"]);
+    const sessions = join(dir, ".horizon", "sessions.jsonl");
+    await run(["session-end", "--harness", "t", "--session", "s9", "--cwd", dir]);
+    chmodSync(sessions, 0o444);
+    const r = await run(["session-end", "--harness", "t", "--session", "s9", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /sessions\.jsonl/);
+    assert.equal(readFileSync(sessions, "utf8").trim().split("\n").length, 1, "record appended despite failure");
+  } finally {
+    chmodSync(join(dir, ".horizon", "sessions.jsonl"), 0o644);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A close record whose gap is still open (crash between the append and the
+// rename) is a no-op for session-end/log accounting, never a phantom close.
+test("ADV-3c. close record with the gap still open: counted once, by real closes only", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    await run(["add", "Half closed", "--cwd", dir, "--session", "s1"]);
+    const store = join(dir, ".horizon");
+    const id = readGaps(dir).gaps[0].id;
+    writeFileSync(join(store, "closes.jsonl"), JSON.stringify({ ts: "2026-09-08T15:00:00Z", session_id: "s1", gap_id: id, added_session_id: "s1" }) + "\n");
+    // Session s2 closes it for real; now two close records exist for the id,
+    // one from the orphaned pre-crash append.
+    const r = await run(["close", id, "--cwd", dir, "--session", "s2"]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const se = await run(["session-end", "--harness", "t", "--session", "s2", "--cwd", dir]);
+    assert.equal(se.code, 0, `stderr: ${se.stderr}`);
+    const rec = JSON.parse((await run(["log", "--cwd", dir, "--json"])).stdout.trim().split("\n")[0]);
+    assert.deepEqual(rec.gaps_closed, [id]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADV-4: `.horizon` existing as a REGULAR FILE used to crash init/add with a
+// raw ENOTDIR stack, exit 1. Spec 7: unusable store path -> exit 7 naming it.
+test("ADV-4. .horizon as a regular file: init and add exit 7 naming the path", async () => {
+  const dir = freshDir();
+  try {
+    writeFileSync(join(dir, ".horizon"), "not a directory\n");
+    for (const argv of [["init"], ["add", "X"]]) {
+      const r = await run([...argv, "--cwd", dir]);
+      assert.equal(r.code, 7, `${argv[0]}: ${r.stderr}`);
+      assert.match(r.stderr, /\.horizon/);
+      assert.ok(!/at /m.test(r.stderr), `${argv[0]}: raw stack leaked: ${r.stderr}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADV-4b: mkdir EACCES on a NEW store used to crash `add` with a raw stack.
+test("ADV-4b. mkdir EACCES on new-store add: exit 7 naming the path, no raw stack", async () => {
+  if (process.platform === "win32") return; // POSIX permission model only
+  const dir = freshDir();
+  try {
+    chmodSync(dir, 0o555);
+    const r = await run(["add", "No permission", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /\.horizon/);
+    assert.ok(!/at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
+  } finally {
+    chmodSync(dir, 0o755);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADV-5: an unreadable store directory used to crash the tmp sweep with a
+// raw EACCES scandir stack, exit 1.
+test("ADV-5. store dir chmod 000: exit 7, no crash", async () => {
+  if (process.platform === "win32") return; // POSIX permission model only
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    chmodSync(join(dir, ".horizon"), 0o000);
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /\.horizon/);
+    assert.ok(!/at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
+  } finally {
+    chmodSync(join(dir, ".horizon"), 0o755);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADV-5b: a store FILE where a JSONL log belongs is malformed, not a crash.
+test("ADV-5b. sessions.jsonl as a directory: log exits 7 naming it", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    mkdirSync(join(dir, ".horizon", "sessions.jsonl"));
+    const r = await run(["log", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /sessions\.jsonl/);
+    assert.ok(!/at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
+  } finally {
+    rmdirSync(join(dir, ".horizon", "sessions.jsonl"));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ADV-6. rename ENOENT after retries: distinct swept-tmp message, exit 6", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    assert.equal((await run(["add", "Seed", "--cwd", dir])).code, 0);
+    // The old message blamed "EPERM" and hid the real cause; a swept tmp is
+    // the one deterministic way a rename fails with ENOENT.
+    const r = await run(["add", "Vanished", "--cwd", dir], {
+      env: { ...process.env, HORIZON_CLI_TEST_FAIL_RENAMES: "99", HORIZON_CLI_TEST_RENAME_ERRNO: "ENOENT" },
+    });
+    assert.equal(r.code, 6);
+    assert.match(r.stderr, /swept/);
+    assert.match(r.stderr, /retry the command/);
+    assert.equal(readGaps(dir).gaps.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ADV-9. help text alignment: command column and --harness naming line up", async () => {
+  const r = await run(["--help"]);
+  assert.equal(r.code, 0);
+  const lines = r.stdout.split("\n").filter((l) => l.startsWith("  "));
+  for (const l of lines.filter((l) => !l.includes("--harness"))) {
+    assert.ok(/ {2}\S.*?(\s{2,}|\n)/.test(l), `misaligned help line: ${JSON.stringify(l)}`);
+  }
+  const drift = lines.filter((l) => l.includes("--harness"));
+  for (const l of drift) assert.ok(l.includes("--harness <name>"), `drifted flag naming: ${JSON.stringify(l)}`);
+});
+
+function assertValidLimit(value) {
+  return async () => {
+    const dir = freshDir();
+    try {
+      await run(["init", "--cwd", dir]);
+      const r = await run(["log", "--limit", value, "--cwd", dir]);
+      assert.equal(r.code, 2, `--limit ${value} accepted`);
+      assert.match(r.stderr, /--limit/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+}
+
+test("ADV-10. --limit past Number.MAX_SAFE_INTEGER rejected, exit 2", assertValidLimit("99999999999999999999"));
+test("ADV-11. --limit leading zeros rejected, exit 2", assertValidLimit("007"));
+
+function emptyStore() {
+  return { version: 1, revision: 0, gaps: [] };
+}
 
 // --- Cross-platform gates (X1-X5, spec section 9 as amended by 297dc95) ---
 

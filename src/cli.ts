@@ -9,6 +9,7 @@ import {
   appendLine,
   codePoints,
   ensureStoreDir,
+  isRecord,
   mintId,
   readCloses,
   readGapsFile,
@@ -49,11 +50,11 @@ function helpText() {
     usage() +
     "\n\ncommands:\n" +
     "  show                      print open gaps (id + two spaces + text)\n" +
-    "  add \"<text>\"               append a gap; prints the new id\n" +
+    "  add \"<text>\"             append a gap; prints the new id\n" +
     "  close <id>                remove a gap; frees a slot\n" +
-    "  amend <id> \"<text>\"         rewrite a gap's text in place\n" +
+    "  amend <id> \"<text>\"        rewrite a gap's text in place\n" +
     "  log [--limit N]           print session records, newest first\n" +
-    "  session-end --harness <h> --session <id> [--summary \"<text>\"]\n" +
+    "  session-end --harness <name> --session <id> [--summary \"<text>\"]\n" +
     "  init                      create .horizon/ in --cwd\n"
   );
 }
@@ -204,11 +205,13 @@ export async function main(argv) {
 
   switch (command) {
     case "show": {
-      const storeDir = resolveStore(cwd);
-      if (!storeDir) {
+      const r = resolveStore(cwd);
+      if (!r) {
         if (json) stdout("[]\n");
         return 0;
       }
+      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
+      const storeDir = r.dir;
       const g = readGapsFile(storeDir);
       if (!g.ok) return fail(g.code, g.message);
       if (json) {
@@ -222,13 +225,19 @@ export async function main(argv) {
     case "add": {
       const bad = validateGapText(text);
       if (bad) return fail(3, bad);
-      let storeDir = resolveStore(cwd);
+      const found = resolveStore(cwd);
+      let storeDir;
       let created = null;
-      if (!storeDir) {
-        const r = ensureStoreDir(cwd);
-        storeDir = r.dir;
-        if (r.created) created = `horizon: created ${storeDir}`;
+      if (!found) {
+        const m = ensureStoreDir(cwd);
+        if (m.code !== undefined) return fail(m.code, m.message);
+        storeDir = m.dir;
+        if (m.created) created = `horizon: created ${storeDir}`;
+      } else {
+        if (found.open.code !== undefined) return fail(found.open.code, found.open.message);
+        storeDir = found.dir;
       }
+      if (created) stderr(`${created}\n`);
       const cur = readGapsFile(storeDir);
       if (!cur.ok) return fail(cur.code, cur.message);
       if (cur.data.gaps.length >= MAX_GAPS) return fail(4, capMessage(cur.data.gaps));
@@ -249,14 +258,15 @@ export async function main(argv) {
       const next = { version: 1, revision: cur.data.revision + 1, gaps: [...cur.data.gaps, gap] };
       const w = writeGapsFile(storeDir, next);
       if (w) return fail(w.code, w.message);
-      if (created) stderr(`${created}\n`);
       stdout(`${id}\n`);
       return 0;
     }
 
     case "close": {
-      const storeDir = resolveStore(cwd);
-      if (!storeDir) return fail(5, `horizon: unknown gap id: ${targetId}`);
+      const r = resolveStore(cwd);
+      if (!r) return fail(5, `horizon: unknown gap id: ${targetId}`);
+      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
+      const storeDir = r.dir;
       const cur = readGapsFile(storeDir);
       if (!cur.ok) return fail(cur.code, cur.message);
       const gap = cur.data.gaps.find((g) => g.id === targetId);
@@ -266,21 +276,29 @@ export async function main(argv) {
         revision: cur.data.revision + 1,
         gaps: cur.data.gaps.filter((g) => g.id !== targetId),
       };
-      const w = writeGapsFile(storeDir, next);
-      if (w) return fail(w.code, w.message);
-      appendLine(storeDir, CLOSES_FILE, {
+      // Record first (ADV-3): the close record lands in closes.jsonl before
+      // gaps.json shrinks, so an append failure leaves the gap open and the
+      // store unchanged. A close record whose gap is still open (crash
+      // between the append and the rename) is a no-op for session-end/log:
+      // only records for gaps actually gone are counted.
+      const a = appendLine(storeDir, CLOSES_FILE, {
         ts: utcNow(),
         session_id: session,
         gap_id: targetId,
         added_session_id:
           gap.provenance && typeof gap.provenance.session_id === "string" ? gap.provenance.session_id : "unknown",
       });
+      if (a) return fail(a.code, a.message);
+      const w = writeGapsFile(storeDir, next);
+      if (w) return fail(w.code, w.message);
       return 0;
     }
 
     case "amend": {
-      const storeDir = resolveStore(cwd);
-      if (!storeDir) return fail(5, `horizon: unknown gap id: ${targetId}`);
+      const r = resolveStore(cwd);
+      if (!r) return fail(5, `horizon: unknown gap id: ${targetId}`);
+      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
+      const storeDir = r.dir;
       const cur = readGapsFile(storeDir);
       if (!cur.ok) return fail(cur.code, cur.message);
       const idx = cur.data.gaps.findIndex((g) => g.id === targetId);
@@ -296,20 +314,26 @@ export async function main(argv) {
     case "log": {
       let limit = 20;
       if (explicit.has("limit")) {
-        if (!/^\d+$/.test(opts.limit)) return fail(2, `horizon: --limit must be a non-negative integer, got: ${opts.limit}`);
+        // Leading zeros and values past Number.MAX_SAFE_INTEGER are usage
+        // errors, matching the parser's strictness elsewhere (ADV-10/11).
+        if (!/^\d+$/.test(opts.limit) || /^0\d/.test(opts.limit) || !Number.isSafeInteger(Number(opts.limit))) {
+          return fail(2, `horizon: --limit must be a non-negative integer without leading zeros, at most ${Number.MAX_SAFE_INTEGER}, got: ${opts.limit}`);
+        }
         limit = parseInt(opts.limit, 10);
       }
-      const storeDir = resolveStore(cwd);
-      if (!storeDir) return 0;
-      const recs = readSessions(storeDir).reverse().slice(0, limit);
-      for (const r of recs) {
+      const r = resolveStore(cwd);
+      if (!r) return 0;
+      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
+      const s = readSessions(r.dir);
+      if (!s.ok) return fail(s.code, s.message);
+      for (const rec of s.records.slice(-limit).reverse()) {
         if (json) {
-          stdout(JSON.stringify(r) + "\n");
+          stdout(JSON.stringify(rec) + "\n");
         } else {
-          const added = Array.isArray(r.gaps_added) ? r.gaps_added.length : 0;
-          const closed = Array.isArray(r.gaps_closed) ? r.gaps_closed.length : 0;
-          const summary = r.summary ?? "(no summary)";
-          stdout(`${logTimestamp(r.ts)}  ${r.harness}  +${added} -${closed}  ${summary}\n`);
+          const added = Array.isArray(rec.gaps_added) ? rec.gaps_added.length : 0;
+          const closed = Array.isArray(rec.gaps_closed) ? rec.gaps_closed.length : 0;
+          const summary = rec.summary ?? "(no summary)";
+          stdout(`${logTimestamp(rec.ts)}  ${rec.harness}  +${added} -${closed}  ${summary}\n`);
         }
       }
       return 0;
@@ -320,32 +344,47 @@ export async function main(argv) {
         return fail(2, "horizon: session-end requires --harness and --session");
       }
       const summary = explicit.has("summary") ? opts.summary : null;
-      const storeDir = resolveStore(cwd);
-      if (!storeDir) return 0;
+      const r = resolveStore(cwd);
+      if (!r) return 0;
+      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
+      const storeDir = r.dir;
       const g = readGapsFile(storeDir);
       if (!g.ok) return fail(g.code, g.message);
       const sid = opts.session;
-      const closes = readCloses(storeDir, sid);
+      const c = readCloses(storeDir, sid);
+      if (!c.ok) return fail(c.code, c.message);
       const added = [];
       for (const gap of g.data.gaps) {
         if (gap.provenance && gap.provenance.session_id === sid && !added.includes(gap.id)) added.push(gap.id);
       }
-      for (const c of closes) {
-        if (c.added_session_id === sid && !added.includes(c.gap_id)) added.push(c.gap_id);
+      // Count close records only for gaps that are actually gone (ADV-3):
+      // an orphaned record from a crash between append and rename is a no-op,
+      // not a phantom close.
+      const openIds = new Set(g.data.gaps.map((gap) => gap.id));
+      const closedIds = [];
+      for (const rec of c.records) {
+        if (!openIds.has(rec.gap_id) && !closedIds.includes(rec.gap_id)) closedIds.push(rec.gap_id);
       }
-      appendLine(storeDir, SESSIONS_FILE, {
+      for (const gapId of closedIds) {
+        if (!added.includes(gapId)) added.push(gapId);
+      }
+      // Record first (ADV-3): append the session record before any other
+      // store mutation; a failed append is exit 7 and nothing is written.
+      const a = appendLine(storeDir, SESSIONS_FILE, {
         ts: utcNow(),
         harness: opts.harness,
         session_id: sid,
         summary,
         gaps_added: added,
-        gaps_closed: closes.map((c) => c.gap_id),
+        gaps_closed: closedIds,
       });
+      if (a) return fail(a.code, a.message);
       return 0;
     }
 
     case "init": {
       const r = ensureStoreDir(cwd);
+      if (r.code !== undefined) return fail(r.code, r.message);
       if (r.created) stderr(`horizon: created ${r.dir}\n`);
       return 0;
     }
