@@ -297,7 +297,7 @@ decide before someone builds it.
   logic (`startup`-only, `delegationDepth`/`origin` subagent exclusion, the
   pure/testable `injectionText()` split). Copy it, credit it in a comment, and
   avoid a versioning dependency between two projects with different cadences.
-- [HL-08 resolved: one package, DSH ships first](#) — **one npm package with
+- [HL-08 resolved: one package, DSH ships first](.scratch/horizon-line/08-packaging-distribution.md) — **one npm package with
   multiple entrypoints**, not a monorepo: `horizon-line` ships the CLI as
   `bin`, plus `horizon-line/dsh`, `/opencode`, `/pi` adapter exports. Hermes'
   Python plugin and Claude Code's hook shell out to the binary and need no npm
@@ -321,7 +321,14 @@ decide before someone builds it.
   beats pretending parity.
   **License MIT, public GitHub** — matching the rest of the portfolio. GitHub
   is for the repo and releases only; **task tracking stays on Kanban**, and no
-  GitHub Issues are created for this project.
+  GitHub Issues are created for this project. Mechanics recorded in the
+  resolution doc: **two bins** — `horizon` (the HL-05 CLI, prints raw gaps
+  only) plus `horizon-inject` (composes the §10 block or nudge) — so no
+  adapter ever implements text composition and test 36's no-copies grep
+  guards a real rule; the §10 strings are imported only in tests (amends
+  HL-06's "imported by every adapter"). The measured re-cost that killed
+  inject-every-turn on opencode: one block at the 5-gap cap is 3,501 chars
+  ≈ 875 tokens — ≈ 35k duplicated over a 40-turn session.
 - [HL-01/02: CLI-as-core is now forced, not chosen](#) — the adapters span
   Python (Hermes plugin, in-process) and TypeScript (opencode, pi, DSH). No
   single npm package can serve Hermes natively. Every harness can, however,
@@ -334,19 +341,15 @@ decide before someone builds it.
 
 ## Not yet specified
 
-- **opencode cannot exactly detect a new session** (HL-01) — `chat.message`
-  has no `source` field; new-vs-resumed is heuristic (empty history +
-  `session.time.created`). Either accept the heuristic, inject on every turn
-  (~130 tokens at the 512 cap — cheap enough to be a real option), or ship
-  opencode as a degraded adapter. Decide in HL-04 or HL-08.
+- ~~opencode cannot exactly detect a new session~~ — decided HL-08 (D4):
+  degraded adapter, once-per-session heuristic injection, no session
+  records.
 - **Subagent exclusion is free in only two of five harnesses** — structural in
-  Claude Code, header-based in DSH. opencode needs a `session.parentID` check,
-  Hermes a `parent_session_id` check, and **pi has no discriminator at all**
-  (child sessions are separate `pi` processes), so pi needs an env-var or a
-  project-local install scope.
-- **What "opencode injects heuristically" costs at 5 gaps.** The old estimate
-  (~130 tokens) assumed one 512-char line. Five gaps is ~5x that, injected on
-  every turn if the heuristic route is taken. Re-cost before HL-08 decides.
+  Claude Code, header-based in DSH. Decided HL-08: opencode checks
+  `session.parentID`, Hermes checks `parent_session_id`. The one left open
+  is **pi** (no discriminator at all — child sessions are separate `pi`
+  processes): env-var vs project-local install scope, decided at pi-adapter
+  implementation.
 - Whether the 5-gap cap is a hard reject on the 6th add, or a prompt to close
   one first. (HL-04 settles the second half: closed gaps leave `gaps.json`, so
   they can never count against the cap.) For HL-05's exit-code table.

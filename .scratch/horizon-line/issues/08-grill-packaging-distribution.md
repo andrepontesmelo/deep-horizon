@@ -1,7 +1,7 @@
 # Grilling: packaging + distribution across five harnesses
 
 Type: grilling
-Status: open
+Status: done
 Blocked by: 01, 02
 
 ## Question

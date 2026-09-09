@@ -89,10 +89,10 @@ rather than bolted on after a Claude-Code-shaped implementation. DSH's
 session records will carry `summary: null`-capable mechanics from the start,
 exactly as HL-03 r4 anticipated.
 
-Ship order after the reference, by injection-fidelity certainty:
-Claude Code (live-probed end-to-end, lowest ceremony) → pi (first-class
-`reason` enum, source-read) → opencode (degraded, D4) → Hermes (most
-divergent semantics: persistent system-prompt section, Python in-process).
+Ship order after the reference, matching the build order recorded on the
+map: Claude Code (live-probed end-to-end, lowest ceremony) → Hermes (most
+divergent semantics: persistent system-prompt section, Python in-process) →
+pi (first-class `reason` enum, source-read) → opencode (degraded, D4).
 
 ## D4 — opencode ships DEGRADED, with no session records
 
