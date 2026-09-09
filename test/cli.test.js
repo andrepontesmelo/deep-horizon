@@ -1,7 +1,3 @@
-// Acceptance tests 1-33 for the horizon-line CLI core, from
-// .scratch/horizon-line/05-cli-contract.md section 9. Each test shells out to
-// bin/horizon.js so it exercises the real entry point, real argv parsing, real
-// exit codes, and real on-disk stores in temp dirs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -332,15 +328,85 @@ test("20. amend past the cap rejected, exit 3, text unchanged", async () => {
   }
 });
 
-// --- Atomicity / concurrency (21-25) ---
+// --- Atomicity / concurrency (21-25, spec section 9 as amended by 297dc95) ---
 
-test("21b. two simultaneous adds: no silent lost update", async () => {
-  // Natural race, no env hook: the pre-fix code loses one gap in ~15-25% of
-  // rounds (both exit 0, store holds 1 gap at revision 1). The fix serializes
-  // the loser's write to exit 6, so every round ends with: exit-0 ids all
-  // present, gap count and revision equal to the exit-0 count, exit-6 texts
-  // absent. 40 rounds keeps the suite fast while making a real race
-  // near-certain pre-fix.
+test("21. no reader ever sees a partial document: 200 reads concurrent with a writer all parse", async () => {
+  // temp+fsync+rename property: gaps.json is only ever replaced by a
+  // whole-file rename, so a reader mid-write sees either the old or the new
+  // document, never a torn one.
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const added = await run(["add", "Seed", "--cwd", dir]);
+    assert.equal(added.code, 0);
+    const gapId = added.stdout.trim();
+    const { spawn } = await import("node:child_process");
+    // One persistent writer process: imports cli.ts directly and amends in a
+    // loop, so writes overlap the reader instead of a new process per write.
+    const script = `
+      const { main } = await import(${JSON.stringify(new URL("../src/cli.ts", import.meta.url).pathname)});
+      for (let i = 0; i < 25; i++) {
+        const code = await main(["amend", ${JSON.stringify(gapId)}, "wording " + i, "--cwd", ${JSON.stringify(dir)}]);
+        if (code !== 0) process.exit(90 + Math.min(code, 5));
+      }
+      process.exit(0);
+    `;
+    const writer = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "ignore" });
+    const exited = new Promise((r) => writer.on("exit", r)); // attached before any await
+    let parses = 0;
+    try {
+      for (; parses < 200; parses += 1) {
+        assert.doesNotThrow(() => readGaps(dir), `unparseable at read ${parses}`);
+        await new Promise((r) => setTimeout(r, 2));
+      }
+    } finally {
+      const wcode = await exited;
+      assert.equal(wcode, 0, `writer failed: exit ${wcode}`);
+    }
+    const state = readGaps(dir);
+    assert.ok(state.revision > 1, "writer made no progress");
+    assert.ok(state.gaps[0].text.startsWith("wording "), "surviving text not from the writer");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("22. no .tmp remains after a successful write; a SIGKILLed writer's tmp does not block; sweep by mtime", async () => {
+  const { spawn } = await import("node:child_process");
+  const { readdirSync, utimesSync, existsSync } = await import("node:fs");
+  const { setTimeout: delay } = await import("node:timers/promises");
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    assert.equal((await run(["add", "Seed", "--cwd", dir])).code, 0);
+    // (a) successful write leaves no .tmp behind
+    assert.equal((await run(["add", "Tidy", "--cwd", dir])).code, 0);
+    assert.deepEqual(readdirSync(join(dir, ".horizon")).filter((n) => n.includes(".tmp")), []);
+    // (b) a stray tmp (as a SIGKILLed writer strands) does not block the next write
+    const stray = join(dir, ".horizon", `.gaps.json.tmp.999999`);
+    writeFileSync(stray, "{}\n");
+    const r = await run(["add", "After stray tmp", "--cwd", dir]);
+    assert.equal(r.code, 0, `stray tmp blocked the write: ${r.stderr}`);
+    assert.equal(readGaps(dir).gaps.length, 3);
+    // (c) a stray tmp backdated past TMP_SWEEP_MS is swept by the next store
+    // open; a fresh one is kept.
+    const past = new Date(Date.now() - 120_000);
+    utimesSync(stray, past, past);
+    const fresh = join(dir, ".horizon", `.gaps.json.tmp.${process.pid}`);
+    writeFileSync(fresh, "in-flight writer\n");
+    const s = await run(["show", "--cwd", dir]); // any command through the store sweeps on open
+    assert.equal(s.code, 0, `stderr: ${s.stderr}`);
+    assert.ok(!existsSync(stray), "backdated tmp not swept");
+    assert.ok(existsSync(fresh), "fresh tmp was swept (must be kept)");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("23. two concurrent adds: gaps.json parses, gap count 1 or 2 (last-writer-wins)", async () => {
+  // The race window between read and rename is microseconds, so 40 rounds
+  // with both children spawned simultaneously makes a genuine overlap
+  // plausible; the assertion is corruption-freedom, not winner-prediction.
   const { execFile } = await import("node:child_process");
   function startAdd(cwd, text) {
     return new Promise((resolve) => {
@@ -357,215 +423,51 @@ test("21b. two simultaneous adds: no silent lost update", async () => {
     const dir = freshDir();
     try {
       await run(["init", "--cwd", dir]);
-      const [a, b] = await Promise.all([
-        startAdd(dir, `alpha ${round}`),
-        startAdd(dir, `beta ${round}`),
-      ]);
-      const state = readGaps(dir);
-      const won = [a, b].filter((r) => r.code === 0);
-      const lost = [a, b].filter((r) => r.code === 6);
-      assert.ok(won.length + lost.length === 2, `round ${round}: unexpected codes [${a.code},${b.code}]`);
-      // Every exit-0 id is present; gap count and revision equal exit-0 count;
-      // every exit-6 text is absent (the loser wrote nothing).
-      const ids = new Set(state.gaps.map((g) => g.id));
-      for (const w of won) assert.ok(ids.has(w.stdout), `round ${round}: ${w.stdout} missing from store`);
-      assert.equal(state.gaps.length, won.length, `round ${round}: gap count`);
-      assert.equal(state.revision, won.length, `round ${round}: revision`);
+      const [a, b] = await Promise.all([startAdd(dir, `alpha ${round}`), startAdd(dir, `beta ${round}`)]);
+      // Either exit code is fine (last-writer-wins); no crash, no corruption.
+      assert.ok([0, 6].includes(a.code), `round ${round}: a exit ${a.code}: ${a.stderr}`);
+      assert.ok([0, 6].includes(b.code), `round ${round}: b exit ${b.code}: ${b.stderr}`);
+      const state = readGaps(dir); // throws if the file is corrupt
+      assert.ok(state.gaps.length === 1 || state.gaps.length === 2, `round ${round}: ${state.gaps.length} gaps`);
       const texts = new Set(state.gaps.map((g) => g.text));
-      for (const l of lost) {
-        const text = l === a ? `alpha ${round}` : `beta ${round}`;
-        assert.ok(!texts.has(text), `round ${round}: exit-6 text present`);
-      }
+      // The survivor(s) must be from this round's writes, not a torn document.
+      for (const g of state.gaps) assert.ok([`alpha ${round}`, `beta ${round}`].includes(g.text), `round ${round}: alien text ${g.text}`);
+      assert.equal(state.gaps.length, texts.size, "duplicate gap texts in store");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
 });
 
-test("21. revision moved between read and write: exit 6, file byte-identical", async () => {
+test("24. rename EPERM retried; later success exits 0; exhaustion exits 6 with file + errno", async () => {
+  // HORIZON_CLI_TEST_FAIL_RENAMES=<n>: a test-only hook inside writeGapsFile
+  // that fails the first <n> rename attempts with {code:"EPERM"}, then
+  // proceeds. Production never sets it.
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    assert.equal((await run(["add", "First", "--cwd", dir])).code, 0);
-    const before = readFileSync(join(dir, ".horizon", "gaps.json"));
-    // HORIZON_CLI_TEST_RACE_HOOK=bump makes the CLI bump revision externally
-    // after reading but before its compare-and-swap write, simulating a
-    // concurrent writer.
-    const r = await run(["add", "Racer", "--cwd", dir], {
-      env: { ...process.env, HORIZON_CLI_TEST_RACE_HOOK: "bump" },
+    assert.equal((await run(["add", "Seed", "--cwd", dir])).code, 0);
+    // (a) fail the first 2 attempts: 10 ms + 50 ms real backoff, then success.
+    const t0 = Date.now();
+    const r = await run(["add", "Retried", "--cwd", dir], {
+      env: { ...process.env, HORIZON_CLI_TEST_FAIL_RENAMES: "2" },
     });
-    assert.equal(r.code, 6, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-    // The external bump is a legitimate committed write, so the file now holds
-    // it — the invariant is that OUR write added nothing: still parseable,
-    // still one gap, no "Racer" gap, and the bumped revision intact.
-    const after = JSON.parse(readFileSync(join(dir, ".horizon", "gaps.json"), "utf8"));
-    assert.equal(after.gaps.length, 1);
-    assert.ok(!after.gaps.some((g) => g.text === "Racer"));
-    assert.equal(after.revision, JSON.parse(before.toString()).revision + 1);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("22. no .tmp files after a successful write", async () => {
-  const dir = freshDir();
-  try {
-    await run(["init", "--cwd", dir]);
-    await run(["add", "Tidy", "--cwd", dir]);
-    const leftovers = (await import("node:fs")).readdirSync(join(dir, ".horizon")).filter((n) => n.includes(".tmp"));
-    assert.deepEqual(leftovers, []);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("23. no .tmp file left after a failed write", async () => {
-  const dir = freshDir();
-  try {
-    await run(["init", "--cwd", dir]);
-    for (let i = 0; i < 5; i++) await run(["add", `Gap ${i}`, "--cwd", dir]);
-    await run(["add", "Overflow", "--cwd", dir]);
-    const leftovers = (await import("node:fs")).readdirSync(join(dir, ".horizon")).filter((n) => n.includes(".tmp"));
-    assert.deepEqual(leftovers, []);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("24. SIGKILL mid-write: gaps.json stays parseable; next run sweeps stranded tmp", async () => {
-  const dir = freshDir();
-  try {
-    await run(["init", "--cwd", dir]);
-    const a = await run(["add", "Killable", "--cwd", dir]);
-    assert.equal(a.code, 0);
-    const id = a.stdout.trim();
-    // Kill several amends mid-flight: gaps.json must parse after every kill
-    // (temp+rename property). Timing varies, so this loop asserts the
-    // property, not that a tmp was stranded in any given round.
-    const { spawn } = await import("node:child_process");
-    for (let i = 0; i < 8; i++) {
-      const child = spawn(BIN, ["amend", id, `revision ${i} wording`, "--cwd", dir], { stdio: "ignore" });
-      const exited = new Promise((r) => child.on("exit", r));
-      await new Promise((r) => setTimeout(r, 120));
-      try {
-        process.kill(child.pid, "SIGKILL");
-      } catch {
-        // Already exited before the kill landed; nothing stranded this round.
-      }
-      await exited;
-      assert.doesNotThrow(() => readGaps(dir), `gaps.json unparseable after kill ${i}`);
-    }
-    // Deterministic half: plant a dead-pid tmp (stranded by a kill) and a
-    // live-pid tmp (an in-flight writer's). The next CLI run must sweep the
-    // dead one and never touch the live one.
-    const { writeFileSync, readdirSync } = await import("node:fs");
-    // Dead pid: a spawned child that has fully exited (fully reaped via
-    // exit event), so kill(pid, 0) reports ESRCH. Wait a tick after the
-    // exit event: the kernel may briefly keep the pid allocated while the
-    // runner's own grandchildren fork, so retry until the pid reads dead
-    // (bounded; a live pid here would mean the fixture is wrong).
-    const { setTimeout: delay } = await import("node:timers/promises");
-    let deadPid = -1;
-    for (let attempt = 0; attempt < 50; attempt++) {
-      const cand = spawn(process.execPath, ["--version"], { stdio: "ignore" });
-      deadPid = cand.pid;
-      await new Promise((r) => cand.on("exit", r));
-      await delay(20);
-      let alive = true;
-      try {
-        process.kill(deadPid, 0);
-      } catch (err) {
-        if (err && err.code === "ESRCH") alive = false;
-        else throw err;
-      }
-      if (!alive) break;
-      deadPid = -1;
-    }
-    assert.notEqual(deadPid, -1, "could not obtain a dead pid for the sweep fixture");
-    const store = join(dir, ".horizon");
-    writeFileSync(join(store, `.gaps.json.tmp.${deadPid}`), "{}\n");
-    writeFileSync(join(store, `.gaps.json.tmp.${process.pid}`), "live writer\n");
-    const r = await run(["show", "--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
-    const left = readdirSync(store).filter((n) => n.startsWith(".gaps.json.tmp."));
-    assert.deepEqual(left, [`.gaps.json.tmp.${process.pid}`]);
-    assert.doesNotThrow(() => readGaps(dir));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("36. stranded claim at the live revision: next add recovers (DEF-4)", async () => {
-  // Real-kill lab evidence (review t_cf071306, DEF-4): a writer SIGKILLed
-  // between linkSync(claim) and renameSync strands
-  // .gaps.json.commit.<liveRev>, and the pre-fix store then exited 6 on
-  // every later write forever (sweep and re-init could not clear it).
-  // Half 1 reproduces the kill for real via the test-only hold hook.
-  // Half 2 fabricates the same state deterministically (planted claim,
-  // mtime backdated past CLAIM_STALE_MS) so the recovery is asserted
-  // without any timing dependence.
-  const { spawn } = await import("node:child_process");
-  const { readdirSync, utimesSync, existsSync } = await import("node:fs");
-  const { setTimeout: delay } = await import("node:timers/promises");
-
-  // Half 1: real SIGKILL between link and rename.
-  const dir = freshDir();
-  try {
-    await run(["init", "--cwd", dir]);
-    assert.equal((await run(["add", "First", "--cwd", dir])).code, 0);
-    const store = join(dir, ".horizon");
-    const child = spawn(BIN, ["add", "crash mid-claim", "--cwd", dir], {
-      stdio: "ignore",
-      env: { ...process.env, HORIZON_CLI_TEST_HOLD_CLAIM_MS: "2000" },
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed >= 55, `backoff not real: only ${elapsed} ms elapsed`);
+    assert.equal(readGaps(dir).gaps.length, 2);
+    assert.ok(readGaps(dir).gaps.some((g) => g.text === "Retried"));
+    // (b) hook=99: every attempt fails -> exit 6 naming the file and the errno.
+    const r2 = await run(["add", "Doomed", "--cwd", dir], {
+      env: { ...process.env, HORIZON_CLI_TEST_FAIL_RENAMES: "99" },
     });
-    let stranded = false;
-    for (let i = 0; i < 100 && !stranded; i++) {
-      await delay(25);
-      stranded = readdirSync(store).some((n) => n.startsWith(".gaps.json.commit."));
-    }
-    assert.ok(stranded, "hold hook failed: claim never appeared");
-    try {
-      process.kill(child.pid, "SIGKILL");
-    } catch { /* already exited: fixture broken */ }
-    await new Promise((r) => child.on("exit", r));
-    // The kill left the claim stranded at the live revision; gaps.json is
-    // untouched and parseable.
-    assert.ok(readdirSync(store).some((n) => n.startsWith(".gaps.json.commit.")), "claim not stranded after kill");
-    assert.doesNotThrow(() => readGaps(dir));
-    // Recovery: past CLAIM_STALE_MS the claim reads as abandoned, so the
-    // next add succeeds, the revision advances, and every claim/tmp leftover
-    // is gone (the tmp sweep clears the killed writer's tmp).
-    await delay(250);
-    const r = await run(["add", "after crash", "--cwd", dir]);
-    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
-    const state = readGaps(dir);
-    assert.equal(state.revision, 2);
-    assert.equal(state.gaps.length, 2);
-    assert.ok(state.gaps.some((g) => g.text === "after crash"));
-    assert.deepEqual(readdirSync(store).filter((n) => n.startsWith(".gaps.json.")), []);
+    assert.equal(r2.code, 6, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+    assert.match(r2.stderr, /gaps\.json/);
+    assert.match(r2.stderr, /EPERM/);
+    // The failed write left the store intact.
+    assert.equal(readGaps(dir).gaps.length, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
-  }
-
-  // Half 2: deterministic fabrication — plant the stranded claim and
-  // backdate it past CLAIM_STALE_MS (no real kill needed).
-  const dir2 = freshDir();
-  try {
-    await run(["init", "--cwd", dir2]);
-    assert.equal((await run(["add", "Seed", "--cwd", dir2])).code, 0);
-    const claim = join(dir2, ".horizon", ".gaps.json.commit.1");
-    writeFileSync(claim, "{}\n");
-    const past = new Date(Date.now() - 10_000);
-    utimesSync(claim, past, past);
-    const r = await run(["add", "Second", "--cwd", dir2]);
-    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
-    const state = readGaps(dir2);
-    assert.equal(state.revision, 2);
-    assert.equal(state.gaps.length, 2);
-    assert.ok(state.gaps.some((g) => g.text === "Second"));
-    assert.ok(!existsSync(claim), "stranded claim not removed");
-  } finally {
-    rmSync(dir2, { recursive: true, force: true });
   }
 });
 
@@ -737,86 +639,111 @@ test("34. exported texts equal the spec section 10 fence blocks byte-for-byte", 
   assert.equal(NUDGE_TEXT, fenceAfter("### 10.2"));
 });
 
-// --- Robbed-victim invariant (37: DEF-5) ---
+// --- Cross-platform gates (X1-X5, spec section 9 as amended by 297dc95) ---
 
-test("37. a live writer's claim is never stolen; exit 0 implies own gap in store (DEF-5)", async () => {
-  // DEF-5 (final review t_1c29d984, def5a-slowvictim.mjs, 2/2 on f044847):
-  // the DEF-4 wall-clock stale-claim steal robbed a LIVE slow writer. The
-  // victim's renameSync(claim, path) then published the THIEF's payload
-  // while the victim exited 0 for its own (absent) gap — a silent lost
-  // update with a success exit (DEF-1's failure class, reintroduced by the
-  // DEF-4 fix). Two deterministic halves reproduce the robbed-victim state
-  // without scheduler timing:
-  //   Half 1 (live owner, hooked): W1 holds its claim far past
-  //     CLAIM_STALE_MS; under the old clock-based steal W2 unlinked W1's
-  //     live claim and W1's commit published W2's payload. Under the
-  //     liveness rule W2 must exit 6, W1 must exit 0, and W1's gap — never
-  //     W2's — must be in gaps.json (the mandatory invariant).
-  //   Half 2 (dead owner, planted): a claim symlink naming a DEAD pid must
-  //     be stolen even though its mtime is fresh — the steal decision is
-  //     liveness first, clock only as fallback; a live-pid recovery and the
-  //     mtime fallback (planted plain claim) remain covered by test 36.
-  const { spawn } = await import("node:child_process");
-  const { readdirSync, symlinkSync, existsSync } = await import("node:fs");
-  const { setTimeout: delay } = await import("node:timers/promises");
+test("X1. no native dependency: no gypfile, no os-lock/fs-ext, no compiler install script", async () => {
+  const { existsSync } = await import("node:fs");
+  const pkgRoot = new URL("..", import.meta.url).pathname;
+  const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
+  assert.equal(pkg.gypfile, undefined, "gypfile must not be set");
+  const deps = { ...(pkg.dependencies ?? {}), ...(pkg.optionalDependencies ?? {}), ...(pkg.peerDependencies ?? {}) };
+  for (const banned of ["os-lock", "fs-ext"]) {
+    assert.equal(deps[banned], undefined, `native dependency ${banned} must not be present`);
+  }
+  const scripts = pkg.scripts ?? {};
+  for (const [name, script] of Object.entries(scripts)) {
+    assert.ok(!/\b(node-gyp|node_gyp|prebuild-install|cmake|make|gcc|clang)\b/.test(String(script)), `script ${name} may not invoke a compiler: ${script}`);
+  }
+  assert.ok(!existsSync(join(pkgRoot, "binding.gyp")), "binding.gyp must not exist");
+});
 
-  // Half 1: thief meets a LIVE claim held past CLAIM_STALE_MS.
+test("X2. no symlink/readlink anywhere in src/", async () => {
+  const { readdirSync, statSync } = await import("node:fs");
+  const srcDir = new URL("../src", import.meta.url).pathname;
+  const files = [];
+  (function walk(d) {
+    for (const name of readdirSync(d)) {
+      const p = join(d, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else files.push(p);
+    }
+  })(srcDir);
+  assert.ok(files.length > 0, "src/ is empty");
+  for (const f of files) {
+    const text = readFileSync(f, "utf8");
+    assert.ok(!/symlink|readlink/i.test(text), `${f} mentions symlink/readlink`);
+  }
+});
+
+test("X3. no hand-built separators in src/ (all paths via path.join)", async () => {
+  const { readdirSync, statSync } = await import("node:fs");
+  const srcDir = new URL("../src", import.meta.url).pathname;
+  const files = [];
+  (function walk(d) {
+    for (const name of readdirSync(d)) {
+      const p = join(d, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else files.push(p);
+    }
+  })(srcDir);
+  for (const f of files) {
+    const text = readFileSync(f, "utf8");
+    // `+ "/"` and `+ '/'` are hand-built separators; path.join is the only
+    // sanctioned path builder (spec 4.1).
+    assert.ok(!/[+]\s*['"]\/['"]/.test(text), `${f} hand-builds a path separator`);
+  }
+});
+
+test("X4. init writes .horizon/.gitattributes (* -text); JSONL reader tolerates CRLF and blank lines", async () => {
   const dir = freshDir();
   try {
-    await run(["init", "--cwd", dir]);
-    assert.equal((await run(["add", "seed gap", "--cwd", dir])).code, 0);
-    const victim = spawn(BIN, ["add", "VICTIM slow alive writer gap", "--cwd", dir], {
-      env: { ...process.env, HORIZON_CLI_TEST_HOLD_CLAIM_MS: "1500" },
-    });
-    let victimOut = "";
-    victim.stdout.on("data", (d) => (victimOut += d));
-    await delay(250); // victim has linked its claim and is mid-hold
-    const thief = spawn(BIN, ["add", "THIEF stealing writer gap", "--cwd", dir], {
-      stdio: "ignore",
-    });
-    const [victimCode, thiefCode] = await Promise.all([
-      new Promise((r) => victim.on("exit", r)),
-      new Promise((r) => thief.on("exit", r)),
-    ]);
-    assert.equal(victimCode, 0, `live victim must keep its claim (thief exit ${thiefCode})`);
-    const victimId = victimOut.trim();
-    assert.match(victimId, /^g_[0-9a-f]{8}$/);
-    assert.equal(thiefCode, 6, "thief must not rob a live claim");
-    // THE INVARIANT: the exit-0 writer's own gap is verifiably in the store.
-    const state = readGaps(dir);
-    assert.ok(
-      state.gaps.some((g) => g.id === victimId),
-      "exit-0 victim's gap absent from store: silent lost update (DEF-5)",
-    );
-    assert.ok(!state.gaps.some((g) => g.text === "THIEF stealing writer gap"), "thief's payload leaked into the store");
-    assert.equal(state.revision, 2);
-    assert.deepEqual(readdirSync(join(dir, ".horizon")).filter((n) => n.startsWith(".gaps.json.")), []);
+    const r = await run(["init", "--cwd", dir]);
+    assert.equal(r.code, 0);
+    const ga = join(dir, ".horizon", ".gitattributes");
+    const { existsSync } = await import("node:fs");
+    assert.ok(existsSync(ga), ".gitattributes missing after init");
+    assert.equal(readFileSync(ga, "utf8"), "* -text\n");
+    // First add (store created by add, not init) also ships the .gitattributes.
+    const dir2 = freshDir();
+    try {
+      await run(["add", "Ships gitattributes too", "--cwd", dir2]);
+      assert.equal(readFileSync(join(dir2, ".horizon", ".gitattributes"), "utf8"), "* -text\n");
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+    // JSONL reader: CRLF line endings and blank lines are tolerated.
+    await run(["add", "CRLF gap", "--cwd", dir, "--session", "s1"]);
+    await run(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
+    const sessions = join(dir, ".horizon", "sessions.jsonl");
+    const raw = readFileSync(sessions, "utf8");
+    writeFileSync(sessions, "\r\n" + raw.trim().split("\n").join("\r\n") + "\r\n\r\n");
+    const rec = JSON.parse((await run(["log", "--cwd", dir, "--json"])).stdout.trim().split("\n")[0]);
+    assert.equal(rec.harness, "t");
+    assert.deepEqual(rec.gaps_added.length >= 1, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
 
-  // Half 2: liveness decides the steal — dead owner, fresh mtime.
-  const dir2 = freshDir();
+test("X5. a store directory named .Horizon is discovered (case-insensitive resolution)", async () => {
+  const dir = freshDir();
   try {
-    await run(["init", "--cwd", dir2]);
-    assert.equal((await run(["add", "Seed", "--cwd", dir2])).code, 0);
-    // A genuinely dead pid: spawn, let it exit, reuse its pid in the names.
-    const dead = spawn(process.execPath, ["-e", ""]);
-    await new Promise((r) => dead.on("exit", r));
-    const store2 = join(dir2, ".horizon");
-    const tmpName = `.gaps.json.tmp.${dead.pid}.9`;
-    writeFileSync(join(store2, tmpName), "{}\n");
-    symlinkSync(tmpName, join(store2, ".gaps.json.commit.1")); // fresh mtime, dead owner
-    const r = await run(["add", "Second", "--cwd", dir2]);
+    const store = join(dir, ".Horizon");
+    mkdirSync(store, { recursive: true });
+    writeFileSync(
+      join(store, "gaps.json"),
+      JSON.stringify({ version: 1, revision: 0, gaps: [] }, null, 2) + "\n",
+    );
+    const r = await run(["add", "Found .Horizon", "--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
-    const state2 = readGaps(dir2);
-    assert.equal(state2.revision, 2);
-    assert.equal(state2.gaps.length, 2);
-    assert.ok(state2.gaps.some((g) => g.text === "Second"));
-    // Claim removed and the dead writer's planted tmp swept on open.
-    assert.deepEqual(readdirSync(store2).filter((n) => n.startsWith(".gaps.json.")), []);
-    assert.ok(!existsSync(join(store2, ".gaps.json.commit.1")));
+    // The write landed in the real (case-variant) directory, not a new .horizon.
+    const { existsSync, readdirSync } = await import("node:fs");
+    assert.ok(existsSync(join(store, ".gitattributes")), ".gitattributes not written to the real store dir");
+    assert.deepEqual(readdirSync(dir).filter((n) => n.toLowerCase() === ".horizon"), [".Horizon"]);
+    const state = JSON.parse(readFileSync(join(store, "gaps.json"), "utf8"));
+    assert.equal(state.gaps.length, 1);
+    assert.equal(state.gaps[0].text, "Found .Horizon");
   } finally {
-    rmSync(dir2, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 });
