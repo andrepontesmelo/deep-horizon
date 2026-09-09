@@ -1,8 +1,7 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CLOSES_FILE,
-  GAPS_FILE,
   HORIZON_DIR,
   MAX_GAPS,
   MAX_TEXT_POINTS,
@@ -132,16 +131,6 @@ function capMessage(gaps) {
   return `horizon: at capacity: ${gaps.length} gaps already open; close one first.\n${lines.join("\n")}`;
 }
 
-// Test-only hook: simulates a concurrent writer committing between our read
-// and our compare-and-swap write, so test 21 can exercise the exit-6 path.
-function maybeRaceHook(storeDir) {
-  if (process.env.HORIZON_CLI_TEST_RACE_HOOK !== "bump") return;
-  const cur = readGapsFile(storeDir);
-  if (!cur.ok) return;
-  const bumped = { ...cur.data, revision: cur.data.revision + 1 };
-  writeFileSync(join(storeDir, GAPS_FILE), JSON.stringify(bumped, null, 2) + "\n", "utf8");
-}
-
 function logTimestamp(ts) {
   if (typeof ts === "string" && ts.length >= 16) return `${ts.slice(0, 10)} ${ts.slice(11, 16)}`;
   return String(ts);
@@ -243,7 +232,6 @@ export async function main(argv) {
       const cur = readGapsFile(storeDir);
       if (!cur.ok) return fail(cur.code, cur.message);
       if (cur.data.gaps.length >= MAX_GAPS) return fail(4, capMessage(cur.data.gaps));
-      maybeRaceHook(storeDir);
       let id = mintId();
       const taken = new Set(cur.data.gaps.map((g) => g.id));
       while (taken.has(id)) id = mintId();
@@ -259,7 +247,7 @@ export async function main(argv) {
         },
       };
       const next = { version: 1, revision: cur.data.revision + 1, gaps: [...cur.data.gaps, gap] };
-      const w = writeGapsFile(storeDir, cur.data.revision, next);
+      const w = writeGapsFile(storeDir, next);
       if (w) return fail(w.code, w.message);
       if (created) stderr(`${created}\n`);
       stdout(`${id}\n`);
@@ -273,13 +261,12 @@ export async function main(argv) {
       if (!cur.ok) return fail(cur.code, cur.message);
       const gap = cur.data.gaps.find((g) => g.id === targetId);
       if (!gap) return fail(5, `horizon: unknown gap id: ${targetId}`);
-      maybeRaceHook(storeDir);
       const next = {
         version: 1,
         revision: cur.data.revision + 1,
         gaps: cur.data.gaps.filter((g) => g.id !== targetId),
       };
-      const w = writeGapsFile(storeDir, cur.data.revision, next);
+      const w = writeGapsFile(storeDir, next);
       if (w) return fail(w.code, w.message);
       appendLine(storeDir, CLOSES_FILE, {
         ts: utcNow(),
@@ -300,9 +287,8 @@ export async function main(argv) {
       if (idx === -1) return fail(5, `horizon: unknown gap id: ${targetId}`);
       const bad = validateGapText(text);
       if (bad) return fail(3, bad);
-      maybeRaceHook(storeDir);
       const gaps = cur.data.gaps.map((g) => (g.id === targetId ? { ...g, text } : g));
-      const w = writeGapsFile(storeDir, cur.data.revision, { version: 1, revision: cur.data.revision + 1, gaps });
+      const w = writeGapsFile(storeDir, { version: 1, revision: cur.data.revision + 1, gaps });
       if (w) return fail(w.code, w.message);
       return 0;
     }
