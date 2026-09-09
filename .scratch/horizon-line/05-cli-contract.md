@@ -111,6 +111,13 @@ g_77c1e004  Rentals can be compared across sites without re-entering filters.
 ```
 
 - Exactly one line per gap: id, two spaces, text.
+- Gaps print in **insertion order, oldest first** — the order they are stored
+  in `gaps.json` (`added_at` ascending). Resolved in
+  `09-open-items-resolved.md` (item A): a model reads the first line as most
+  important, so the first line must be the want that has waited longest.
+  Recency ordering would let a fresh want bury a stale one — the failure the
+  horizon exists to prevent. `gaps.json` order = `show` order = injected
+  order: one order everywhere, no re-sorting at any layer.
 - **No header, no footer, no dates, no counts, no colour, no trailing blank
   line.** Dates and move counts are for `horizon log` (HL-03 r2).
 - No gaps → prints nothing, exit **0**. Emptiness is not an error; the *nudge*
@@ -380,7 +387,10 @@ horizon — which has to mean the same words about it.
 
 `{{GAPS}}` is `horizon show` stdout **substituted verbatim, never
 re-formatted**. If bullets or numbering are ever wanted, they belong in §3.1's
-output, not in five adapters that would drift apart.
+output, not in five adapters that would drift apart. Injection order equals
+`show` order (§3.1, `09-open-items-resolved.md` item A): `{{GAPS}}` is
+substituted byte-for-byte, so the oldest gap is also the first line the model
+reads in an injected block. No adapter may re-sort.
 
 ### 10.1 The horizon block
 
@@ -450,8 +460,17 @@ to prevent a behaviour the shorter text doesn't especially invite.
 
 Not blockers for implementation; each is a fog patch on the map.
 
-- Injection order when a model may read the first gap as most important
-  (insertion order is the current default).
-- Whether the store is committed or gitignored by default.
+Three former items are **resolved** in `09-open-items-resolved.md` and bind
+from there — do not re-open them here:
+
+- Injection order → insertion order, oldest first (§3.1, §10). No CLI change;
+  a statement of existing behaviour.
+- Store in git → commit `gaps.json`, ignore `sessions.jsonl` and `*.tmp.*`
+  via a nested `.horizon/.gitignore` written by `horizon init`.
+- pi subagent exclusion → `HORIZON_SUBAGENT` env var, fail-open. Lands with
+  the pi adapter (research/02 §Part 2 Q4); nothing to do in the CLI.
+
+The one item still open:
+
 - Whether the 5-cap becomes a prompt-to-close rather than a hard reject, once
   the propose-and-confirm flow is real.

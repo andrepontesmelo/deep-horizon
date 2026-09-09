@@ -1077,3 +1077,49 @@ test("X5. a store directory named .Horizon is discovered (case-insensitive resol
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("X6. init writes .horizon/.gitignore (sessions.jsonl, *.tmp.*); gaps.json not ignored", async () => {
+  const dir = freshDir();
+  try {
+    const r = await run(["init", "--cwd", dir]);
+    assert.equal(r.code, 0);
+    const gi = join(dir, ".horizon", ".gitignore");
+    assert.ok(existsSync(gi), ".gitignore missing after init");
+    const body = readFileSync(gi, "utf8");
+    assert.match(body, /^sessions\.jsonl$/m, "sessions.jsonl entry missing");
+    assert.match(body, /^\*\.tmp\.\*$/m, "*.tmp.* entry missing");
+    // First add (store created by add, not init) also ships the .gitignore.
+    const dir2 = freshDir();
+    try {
+      await run(["add", "Ships gitignore too", "--cwd", dir2]);
+      assert.equal(readFileSync(join(dir2, ".horizon", ".gitignore"), "utf8"), body);
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+    // git itself honours the nested file: the JSONL files and the atomic-write
+    // tmp names are ignored; gaps.json (the traveling horizon) is not.
+    // core.excludesFile is blanked so the assertion cannot depend on the
+    // machine's global gitignore.
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    const checkIgnore = (paths) =>
+      execFileSync(
+        "git",
+        ["-c", "core.excludesFile=/dev/null", "check-ignore", "--", ...paths],
+        { cwd: dir, encoding: "utf8" },
+      ).trim().split("\n");
+    assert.deepEqual(
+      checkIgnore([".horizon/sessions.jsonl", ".horizon/.gaps.json.tmp.12345.1.0a1b2c3d4e5f"]),
+      [".horizon/sessions.jsonl", ".horizon/.gaps.json.tmp.12345.1.0a1b2c3d4e5f"],
+    );
+    let gapsIgnored = true;
+    try {
+      checkIgnore([".horizon/gaps.json"]);
+    } catch {
+      gapsIgnored = false; // exit 1: nothing ignored
+    }
+    assert.ok(!gapsIgnored, ".horizon/gaps.json must not be git-ignored");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

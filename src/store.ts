@@ -9,6 +9,7 @@ export const HORIZON_DIR = ".horizon";
 export const GAPS_FILE = "gaps.json";
 export const SESSIONS_FILE = "sessions.jsonl";
 export const CLOSES_FILE = "closes.jsonl";
+export const GITIGNORE_BODY = "sessions.jsonl\n*.tmp.*\n";
 
 export function usage() {
   return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|add|close|amend|log|session-end|init> [...]";
@@ -333,11 +334,18 @@ export function listTmpFiles(storeDir) {
 // honours .gitattributes in subdirectories, so a Windows checkout with
 // core.autocrlf=true cannot rewrite sessions.jsonl into CRLF. An existing
 // file is never clobbered (the user may have customised it).
+// .gitignore keeps sessions.jsonl (append-only machine noise: unbounded, and
+// two clones appending to one tracked file conflict on every pull) and the
+// atomic-write tmp files out of git, without touching the repo's root
+// .gitignore (spec: 09-open-items-resolved B). gaps.json stays committed —
+// the horizon is a repo-level artifact that travels. An existing file is
+// never clobbered.
 // materializeStoreDir makes a store directory complete: it creates the
-// directory, an absent gaps.json, and an absent .gitattributes. Idempotent
-// on every field. Returns true when it created anything, or
-// { code: 7, message } naming the path when the store cannot be created
-// (the path exists as a file, or the parent refuses mkdir/writes).
+// directory, an absent gaps.json, an absent .gitattributes, and an absent
+// .gitignore. Idempotent on every field. Returns true when it created
+// anything, or { code: 7, message } naming the path when the store cannot
+// be created (the path exists as a file, or the parent refuses
+// mkdir/writes).
 export function materializeStoreDir(dir) {
   let st = null;
   try {
@@ -360,6 +368,10 @@ export function materializeStoreDir(dir) {
     const attrPath = join(dir, ".gitattributes");
     if (!existsSync(attrPath)) {
       writeFileSync(attrPath, "* -text\n", "utf8");
+    }
+    const ignorePath = join(dir, ".gitignore");
+    if (!existsSync(ignorePath)) {
+      writeFileSync(ignorePath, GITIGNORE_BODY, "utf8");
     }
     return created;
   } catch (err) {
