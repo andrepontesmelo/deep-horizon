@@ -598,6 +598,13 @@ test("68. the Hermes pre_llm_call hook injects the block only for NEW tool-call 
       "hist3 = hist2 + [{'role': 'assistant', 'tool_calls': [",
       "    {'id': 'c3', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'cd ' + alpha + ' && ls', 'workdir': beta})}},",
       "]}]",
+      "# A fresh session always fires turn 1 with an empty history (HL-22f",
+      "# skip-on-first-sight: a first fire already carrying a full history is",
+      "# the restart-resume shape and must consume silently, so seed the",
+      "# turn-1 fire before the delta).",
+      "r = call('s-b', [], user_message='go', terminal_cwd='/tmp')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'turn-1 empty history must inject nothing: %r' % (ctx[:80],)",
       "r = call('s-b', hist3, user_message='go', terminal_cwd='/tmp')",
       "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
       "assert 'alpha gap' in ctx and 'beta gap' in ctx, 'fresh session sees both repos: %r' % (ctx[:120],)",
@@ -665,6 +672,190 @@ test("69. the Hermes pre_llm_call hook ignores tool results, user text, unknown 
       "r = call('s-first', hist4, user_message='go', is_first_turn=True, terminal_cwd=repo)",
       "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
       "assert not ctx, 'first-turn frozen repo must not duplicate: %r' % (ctx[:80],)",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("70. the Hermes pre_llm_call hook survives a simulated gateway restart: the restored history is consumed silently and new touches still inject", () => {
+  // DEF-A1: the per-session state (_seen, _scanned) dies with the gateway
+  // process. A resumed session's first post-restart fire carries the FULL
+  // restored history with an empty cursor, so the old delta logic
+  // reclassified every historical touch as new and RE-INJECTED the block the
+  // persisted sidecar already restored (it then existed twice in context).
+  // Skip-on-first-sight consumes that history silently instead; the cursor
+  // still advances past it, so the next real touch keeps working.
+  const dir = freshDir();
+  try {
+    const alpha = join(dir, "alpha");
+    const beta = join(dir, "beta");
+    seed(alpha, ["alpha gap"]);
+    seed(beta, ["beta gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "horizon_line._seen.clear()",
+      "horizon_line._scanned.clear()",
+      "def ctx(r):",
+      "    return r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "def call(session, history, **kw):",
+      "    return ctx(horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw))",
+      "alpha = " + JSON.stringify(alpha),
+      "beta = " + JSON.stringify(beta),
+      "hist1 = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'git -C ' + alpha + ' status'})}},",
+      "]}]",
+      "hist2 = hist1 + [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c2', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': beta + '/notes.md'})}},",
+      "]}]",
+      "# Pre-restart behavior: turn 1 empty, the alpha touch injects.",
+      "assert not call('s-r', [], user_message='go'), 'turn 1 must inject nothing'",
+      "c = call('s-r', hist1, user_message='go')",
+      "assert 'alpha gap' in c, 'pre-restart alpha touch must inject: %r' % (c[:80],)",
+      "# SIMULATED RESTART: clearing both dicts is exactly what a gateway",
+      "# restart produces; the same full history comes back from persistence.",
+      "horizon_line._seen.clear()",
+      "horizon_line._scanned.clear()",
+      "c = call('s-r', hist1, user_message='go')",
+      "assert not c, 'post-restart resume must NOT re-inject: %r' % (c[:80],)",
+      "# The cursor advanced past the restored history: a NEW touch works,",
+      "# and alpha does not re-appear alongside it.",
+      "c = call('s-r', hist2, user_message='go')",
+      "assert 'beta gap' in c, 'post-restart new touch must inject beta: %r' % (c[:80],)",
+      "assert 'alpha gap' not in c, 'restored alpha must not re-appear: %r' % (c[:120],)",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("71. the Hermes pre_llm_call hook survives turn-start compaction: the shrink guard rescans a shrunken history so the post-compaction touch still injects", () => {
+  // DEF-A2: Hermes turn-start compaction REWRITES conversation_history below
+  // the _scanned cursor, so the old delta logic skipped the re-indexed new
+  // touch (under-injection, once per compaction event). The shrink guard
+  // treats a fire whose history holds fewer tool_calls than the cursor as a
+  // rescan from zero; _seen keeps already-injected repos silent, so only the
+  // post-compaction touch can land.
+  const dir = freshDir();
+  try {
+    const alpha = join(dir, "alpha");
+    const beta = join(dir, "beta");
+    seed(alpha, ["alpha gap"]);
+    seed(beta, ["beta gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "horizon_line._seen.clear()",
+      "horizon_line._scanned.clear()",
+      "def ctx(r):",
+      "    return r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "def call(session, history, **kw):",
+      "    return ctx(horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw))",
+      "alpha = " + JSON.stringify(alpha),
+      "beta = " + JSON.stringify(beta),
+      "# hist1 carries two tool_calls (a non-repo filler + the alpha touch),",
+      "# so the cursor sits at 2 — above anything a one-call compaction keeps.",
+      "hist1 = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'ls /tmp'})}},",
+      "    {'id': 'c2', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'git -C ' + alpha + ' status'})}},",
+      "]}]",
+      "assert not call('s-c', [], user_message='go'), 'turn 1 must inject nothing'",
+      "c = call('s-c', hist1, user_message='go')",
+      "assert 'alpha gap' in c, 'alpha touch must inject: %r' % (c[:80],)",
+      "# Compaction rewrite: the shrunken history holds only the beta call",
+      "# (fewer tool_calls than the stored cursor).",
+      "shrunk = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c3', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': beta + '/notes.md'})}},",
+      "]}]",
+      "c = call('s-c', shrunk, user_message='go')",
+      "assert 'beta gap' in c, 'post-compaction touch must still inject: %r' % (c[:80],)",
+      "assert 'alpha gap' not in c, 'alpha must not re-inject (_seen holds it): %r' % (c[:120],)",
+      "# Normal delta behavior resumes on the same shrunken history.",
+      "c = call('s-c', shrunk, user_message='go')",
+      "assert not c, 'repeat shrunken history must not re-inject: %r' % (c[:80],)",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("72. the once-per-(session, repo) invariant holds across simulated gateway restarts", () => {
+  // Restart-resume end to end: every fire's context is recorded, and each
+  // repo's block must appear EXACTLY ONCE in the whole stream — never
+  // re-injected by a post-restart resume, never duplicated by a fresh
+  // touch of an already-seen repo.
+  const dir = freshDir();
+  try {
+    const alpha = join(dir, "alpha");
+    const beta = join(dir, "beta");
+    seed(alpha, ["alpha gap"]);
+    seed(beta, ["beta gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "horizon_line._seen.clear()",
+      "horizon_line._scanned.clear()",
+      "stream = []",
+      "def fire(session, history, **kw):",
+      "    r = horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw)",
+      "    c = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "    stream.append(c)",
+      "    return c",
+      "def restart():",
+      "    horizon_line._seen.clear()",
+      "    horizon_line._scanned.clear()",
+      "alpha = " + JSON.stringify(alpha),
+      "beta = " + JSON.stringify(beta),
+      "alpha_hist = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'git -C ' + alpha + ' status'})}},",
+      "]}]",
+      "both_hist = alpha_hist + [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c2', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': beta + '/notes.md'})}},",
+      "]}]",
+      "# touch alpha -> inject.",
+      "assert not fire('s-i', [], user_message='go'), 'turn 1 must inject nothing'",
+      "assert 'alpha gap' in fire('s-i', alpha_hist, user_message='go'), 'alpha must inject once'",
+      "# simulated restart; same history -> no inject.",
+      "restart()",
+      "assert not fire('s-i', alpha_hist, user_message='go'), 'resume must not re-inject alpha'",
+      "# touch beta -> inject beta only.",
+      "assert 'beta gap' in fire('s-i', both_hist, user_message='go'), 'beta must inject once'",
+      "assert 'alpha gap' not in stream[-1], 'alpha must not re-appear with beta'",
+      "# simulated restart; full history -> no inject.",
+      "restart()",
+      "assert not fire('s-i', both_hist, user_message='go'), 'resume must not re-inject either repo'",
+      "alpha_hits = sum(1 for c in stream if 'alpha gap' in c)",
+      "beta_hits = sum(1 for c in stream if 'beta gap' in c)",
+      "assert alpha_hits == 1, 'alpha block must appear exactly once, got %d: %r' % (alpha_hits, stream,)",
+      "assert beta_hits == 1, 'beta block must appear exactly once, got %d: %r' % (beta_hits, stream,)",
       "print('OK')",
       "",
     ].join("\n"));
