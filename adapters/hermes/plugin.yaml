@@ -1,6 +1,6 @@
-name: horizon-line
+name: deep-horizon
 description: >-
-  Horizon Line: a deterministic, human-authored horizon (open gaps + session
+  Deep Horizon: a deterministic, human-authored horizon (open gaps + session
   log) shared across agent harnesses. Registers a persistent system-prompt
   section composed by `horizon-inject --harness hermes` (the CLI is the single
   composer; this plugin never contains the section-10 texts itself) and closes

@@ -1,4 +1,4 @@
-"""horizon-line Hermes plugin.
+"""deep-horizon Hermes plugin.
 
 Glue only: this plugin spawns the horizon bins and hands their stdout to the
 core. It never composes the section-10 texts itself — ``horizon-inject`` is
@@ -6,7 +6,7 @@ the single composer (the spec's acceptance test 36 bans a literal copy of the
 injected strings in any adapter), and it deliberately does NOT import
 ``hermes_cli`` for composition (CLI-as-core, like every other harness).
 
-Injection: ``register_system_prompt_section("horizon-line", <callable>)`` —
+Injection: ``register_system_prompt_section("deep-horizon", <callable>)`` —
 the persistent, every-turn mechanism. The callable receives the core's
 read-only session-info mapping — ``types.MappingProxyType``, a ``Mapping`` but
 NOT a ``dict`` (``plugins_dispatch.py:396``) — carrying ``session_id``,
@@ -53,9 +53,9 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 
-logger = logging.getLogger("horizon-line")
+logger = logging.getLogger("deep-horizon")
 
-SECTION_ID = "horizon-line"
+SECTION_ID = "deep-horizon"
 HARNESS = "hermes"
 SPAWN_TIMEOUT_S = 15
 # Explicit subagent opt-out, mirroring the pi adapter's HORIZON_SUBAGENT. The
@@ -192,7 +192,7 @@ def _section_text(session_info) -> str:
             return ""
         return stdout if isinstance(stdout, str) else ""
     except Exception:  # noqa: BLE001 — the section must never break a session
-        logger.warning("horizon-line section render failed", exc_info=True)
+        logger.warning("deep-horizon section render failed", exc_info=True)
         return ""
 
 
@@ -209,7 +209,7 @@ async def _on_session_finalize(payload=None, **_ignored) -> None:
         except (FileNotFoundError, subprocess.SubprocessError, OSError):
             return  # fail open (D2)
     except Exception:  # noqa: BLE001
-        logger.warning("horizon-line session finalize failed", exc_info=True)
+        logger.warning("deep-horizon session finalize failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +468,7 @@ def _pre_llm_call(
                 blocks.append(stdout)
         return {"context": "\n\n".join(blocks)}
     except Exception:  # noqa: BLE001 — the hook must never break a turn
-        logger.warning("horizon-line pre_llm_call failed", exc_info=True)
+        logger.warning("deep-horizon pre_llm_call failed", exc_info=True)
         return {"context": ""}
 
 

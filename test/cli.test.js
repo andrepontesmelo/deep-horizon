@@ -624,7 +624,7 @@ test("34. exported texts equal the spec section 10 fence blocks byte-for-byte", 
   // (no trailing newline added or stripped; fence backticks are markdown,
   // not content). Extract the fences from the spec and compare characters.
   const SRC = new URL("../src/texts.ts", import.meta.url).pathname;
-  const SPEC = new URL("../.scratch/horizon-line/05-cli-contract.md", import.meta.url).pathname;
+  const SPEC = new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url).pathname;
   const spec = readFileSync(SPEC, "utf8").split("\n");
   function fenceAfter(heading) {
     const h = spec.findIndex((l) => l.startsWith(heading));

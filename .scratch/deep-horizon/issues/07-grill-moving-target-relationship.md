@@ -1,4 +1,4 @@
-# Grilling: horizon-line vs moving-target — supersede, coexist, or merge
+# Grilling: deep-horizon vs moving-target — supersede, coexist, or merge
 
 Type: grilling
 Status: done
@@ -10,7 +10,7 @@ Blocked by: —
 
 - **moving-target** — *what this project IS*: LLM-distilled, descriptive,
   frozen until you update it.
-- **horizon-line** — *what we steer toward next*: human-authored, directional,
+- **deep-horizon** — *what we steer toward next*: human-authored, directional,
   moves only with your yes.
 
 That pair goes in both READMEs; CONTEXT.md's Horizon gloss already carries it.
@@ -24,7 +24,7 @@ That pair goes in both READMEs; CONTEXT.md's Horizon gloss already carries it.
    no-copies rule (contract §10, test 36) would make it unmirrorable, and
    each block describes itself well enough that adjacency needs no
    explanation.
-3. **Injection order:** moving-target first, then horizon-line (identity
+3. **Injection order:** moving-target first, then deep-horizon (identity
    before direction). A fixed convention, decided in practice by harness
    mount order (cordis.patch.yml insert order in DSH). Not configurable,
    nothing enforced in code. Both gates already agree: startup/new sessions

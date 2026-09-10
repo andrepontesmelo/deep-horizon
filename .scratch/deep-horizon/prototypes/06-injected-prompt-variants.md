@@ -43,7 +43,7 @@ starts chasing the horizon anyway.
 ## Variant B — "Explicit"
 
 ```
-[Horizon line — human-owned, persisted; injected by horizon-line]
+[Horizon line — human-owned, persisted; injected by deep-horizon]
 "<LINE>"
 Set by <human> on <date>.
 
@@ -83,8 +83,8 @@ else injects third (worked example line; Variant B shown in the middle):
 ```
 [moving-target summary block]
 
-[Horizon line — human-owned, persisted; injected by horizon-line]
-"Get horizon-line v1 published: one core, five harness adapters, injection live-proven in all five."
+[Horizon line — human-owned, persisted; injected by deep-horizon]
+"Get deep-horizon v1 published: one core, five harness adapters, injection live-proven in all five."
 Set by Andre on 2026-09-08.
 
 This block is not a task. The horizon is this project's multi-session aim; …

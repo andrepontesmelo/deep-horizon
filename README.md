@@ -1,4 +1,4 @@
-# horizon-line
+# deep-horizon
 
 A deterministic, human-authored **horizon** — a short list of open gaps plus a
 session log — shared across AI agent harnesses, injected at the start of every
@@ -16,7 +16,7 @@ between sessions and between tools.
 is configured; hooks fail open (they inject nothing) when the bin is missing.
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 Status: this package ships the CLI core (`horizon`). Harness adapters and the
@@ -51,17 +51,17 @@ close` run only after the human says yes. Store files: `.horizon/gaps.json`
 ### 1. DeepSeek Harness (DSH) — reference implementation
 
 ```bash
-npm install -g horizon-line
-npm pack horizon-line          # or: git clone ... && cd horizon-line && npm pack
-dsh plugin --profile <profile> add file:./horizon-line-<version>.tgz
+npm install -g deep-horizon
+npm pack deep-horizon          # or: git clone ... && cd deep-horizon && npm pack
+dsh plugin --profile <profile> add file:./deep-horizon-<version>.tgz
 ```
 
 Mount in the profile's `cordis.patch.yml`:
 
 ```yaml
 - insert:
-    - id: horizon-line
-      name: horizon-line
+    - id: deep-horizon
+      name: deep-horizon
 ```
 
 Session-end uses the mid-session fallback: the adapter prompts the agent to
@@ -71,7 +71,7 @@ model text is still available.
 ### 2. Claude Code
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `.claude/settings.json` (project-local, checked into the repo):
@@ -99,13 +99,13 @@ fire on SIGINT/SIGTERM).
 ### 3. pi
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `~/.pi/agent/settings.json`:
 
 ```json
-{ "packages": ["npm:horizon-line"] }
+{ "packages": ["npm:deep-horizon"] }
 ```
 
 **Subagent opt-out:** pi has no discriminator for subagent sessions, so the
@@ -117,13 +117,13 @@ happens — a subagent that receives the horizon is noise, not harm.
 ### 4. opencode — DEGRADED
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `opencode.json` (project):
 
 ```json
-{ "plugin": ["horizon-line"] }
+{ "plugin": ["deep-horizon"] }
 ```
 
 opencode ships degraded, and the README says so plainly: injection is
@@ -135,10 +135,10 @@ other harness's.
 ### 5. Hermes
 
 ```bash
-npm install -g horizon-line
-git clone https://github.com/andrepontesmelo/horizon-line
-cp -r horizon-line/adapters/hermes ~/.hermes/plugins/horizon-line
-hermes plugins enable horizon-line
+npm install -g deep-horizon
+git clone https://github.com/andrepontesmelo/deep-horizon
+cp -r deep-horizon/adapters/hermes ~/.hermes/plugins/deep-horizon
+hermes plugins enable deep-horizon
 systemctl --user restart hermes-gateway   # the gateway loads plugins at start
 ```
 
@@ -168,8 +168,8 @@ error injects nothing and never blocks a session.
 ## Manual use, no global install
 
 ```
-npx -p horizon-line horizon show
-npx -p horizon-line horizon-inject --harness <name>
+npx -p deep-horizon horizon show
+npx -p deep-horizon horizon-inject --harness <name>
 ```
 
 (`-p` is required: the package name is not a bin name.)

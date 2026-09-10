@@ -5,21 +5,21 @@ This file is the DSH section of the README (packaging doc `08-packaging-distribu
 ## Install
 
 ```bash
-npm install -g horizon-line
-npm pack horizon-line          # or: git clone ... && cd horizon-line && npm pack
-dsh plugin --profile <profile> add file:./horizon-line-<version>.tgz
+npm install -g deep-horizon
+npm pack deep-horizon          # or: git clone ... && cd deep-horizon && npm pack
+dsh plugin --profile <profile> add file:./deep-horizon-<version>.tgz
 ```
 
 Mount in the profile's `cordis.patch.yml`:
 
 ```yaml
 - insert:
-    - id: horizon-line
-      name: horizon-line
+    - id: deep-horizon
+      name: deep-horizon
 ```
 
 Ceremony identical to moving-target's proven path (its README). Whether
-`dsh plugin add npm:horizon-line` works was not probed — the tgz path is the
+`dsh plugin add npm:deep-horizon` works was not probed — the tgz path is the
 documented one.
 
 ## Injection
@@ -48,7 +48,7 @@ mid-session, while the model can still write the summary. Omitting
 ### Install
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 ### Inject — `.claude/settings.json` (project-local, checked into the repo)
@@ -120,13 +120,13 @@ The record carries `summary: null` — the close hook cannot elicit model text
 ### Install
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `~/.pi/agent/settings.json`:
 
 ```json
-{ "packages": ["npm:horizon-line"] }
+{ "packages": ["npm:deep-horizon"] }
 ```
 
 The `git:` package specifier is proven live on this machine (pi-telegram);
@@ -161,13 +161,13 @@ carries `summary: null` unless a future version elicits one.
 ### Install
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `opencode.json` (project):
 
 ```json
-{ "plugin": ["horizon-line"] }
+{ "plugin": ["deep-horizon"] }
 ```
 
 **opencode ships degraded, and this README says so plainly:** injection is
@@ -180,10 +180,10 @@ opencode sessions are invisible to `sessions.jsonl`. Its gaps still read and
 write like every other harness's.
 
 If Bun does not resolve the npm package from the global install, the fallback
-is a local plugin at `.opencode/plugin/horizon-line.ts` (live-verified shape):
+is a local plugin at `.opencode/plugin/deep-horizon.ts` (live-verified shape):
 
 ```ts
-import { apply } from "horizon-line/opencode";
+import { apply } from "deep-horizon/opencode";
 export default async function HorizonLine(ctx) {
   return await apply(ctx);
 }
@@ -192,14 +192,14 @@ export default async function HorizonLine(ctx) {
 ## Hermes
 
 ```bash
-npm install -g horizon-line
-git clone https://github.com/andrepontesmelo/horizon-line
-cp -r horizon-line/adapters/hermes ~/.hermes/plugins/horizon-line
-hermes plugins enable horizon-line
+npm install -g deep-horizon
+git clone https://github.com/andrepontesmelo/deep-horizon
+cp -r deep-horizon/adapters/hermes ~/.hermes/plugins/deep-horizon
+hermes plugins enable deep-horizon
 ```
 
 The Python plugin registers a persistent system-prompt section (id
-`horizon-line`, capped at the core maximum of 4,000 chars — the worst-case
+`deep-horizon`, capped at the core maximum of 4,000 chars — the worst-case
 block fits with room to spare) whose callable spawns
 `horizon-inject --harness hermes`; the core renders it once per new session,
 freezes it, and persists it verbatim, so resumed sessions replay the original

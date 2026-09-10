@@ -56,7 +56,7 @@ test("35. inject prints the horizon block, gaps substituted verbatim, byte-for-b
     seed(dir, ["A person can hand a photo to the app and get the plant named.", "Rentals can be compared across sites without re-entering filters."]);
     const r = await run(["--cwd", dir]);
     assert.equal(r.code, 0);
-    const spec = readFileSync(new URL("../.scratch/horizon-line/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+    const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const show = "g_00000001  A person can hand a photo to the app and get the plant named.\ng_00000002  Rentals can be compared across sites without re-entering filters.\n";
     const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", show);
     assert.equal(r.stdout, expected);
@@ -66,7 +66,7 @@ test("35. inject prints the horizon block, gaps substituted verbatim, byte-for-b
 });
 
 test("36. inject prints the nudge, exactly, on an absent store; on an empty store; never both, never neither", async () => {
-  const spec = readFileSync(new URL("../.scratch/horizon-line/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+  const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
   const nudge = specFence(spec, "### 10.2");
   const absent = freshDir();
   try {

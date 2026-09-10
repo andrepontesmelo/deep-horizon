@@ -1,4 +1,4 @@
-// horizon-line DSH adapter (reference implementation, D3).
+// deep-horizon DSH adapter (reference implementation, D3).
 //
 // Glue only (D6): this module spawns the bins and hands their stdout to the
 // harness. It never composes the section-10 texts — those live in the core
@@ -37,7 +37,7 @@ function message(text) {
   return {
     role: "user",
     content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "horizon-line", form: "instructions" },
+    source: { kind: "plugin", plugin: "deep-horizon", form: "instructions" },
   };
 }
 

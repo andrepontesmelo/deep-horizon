@@ -34,7 +34,7 @@ https://code.claude.com/docs/en/goal (raw: .../goal.md)
 - Mechanism: not a new primitive — "a wrapper around a session-scoped
   prompt-based Stop hook", evaluated after each turn by the configured small
   fast model (Haiku default). Condition max 4,000 chars; one goal per session.
-- Contrast with horizon-line: `/goal` is a machine-authored, session-scoped
+- Contrast with deep-horizon: `/goal` is a machine-authored, session-scoped
   completion condition with a model-judged exit. It does NOT persist a
   human-authored aim across independent sessions, is not a repo-local artifact,
   and is unreadable by other tools (it lives in session state). Different
@@ -98,7 +98,7 @@ aim readable inside arbitrary local sessions.
 ## 3. Is there ANY Anthropic primitive that persists a human-authored aim across sessions, readable by other tools?
 
 Two exist — but neither is a new Anthropic "aim" product, and both have a gap
-horizon-line fills.
+deep-horizon fills.
 
 ### CLAUDE.md — the real nearest prior art
 
@@ -114,7 +114,7 @@ edit or delete at any time" — but it is Claude-authored ("Claude saves four
 kinds of notes for itself"), not human-authored.
 
 So "persist a human-authored, repo-local, plain-text aim injected every
-session" IS already shipping inside Claude Code. The gap horizon-line fills is
+session" IS already shipping inside Claude Code. The gap deep-horizon fills is
 exactly the cross-harness half: Claude Code "reads `CLAUDE.md`, not
 `AGENTS.md`"; the doc's own bridge is "If your repository already uses
 `AGENTS.md` for other coding agents, create a `CLAUDE.md` that imports it"
@@ -135,7 +135,7 @@ not a file in the repo that arbitrary local harnesses read.
 
 ## Verdict for the map
 
-- No Anthropic primitive is horizon-line: nothing persists a human-authored,
+- No Anthropic primitive is deep-horizon: nothing persists a human-authored,
   512-char, repo-local aim that ALL harnesses read. Q3's two primitives
   (CLAUDE.md, memory stores) each cover one half (local injection vs.
   cross-session persistence) and neither covers cross-harness interop.

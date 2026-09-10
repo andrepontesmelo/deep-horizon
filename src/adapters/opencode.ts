@@ -1,4 +1,4 @@
-// horizon-line opencode adapter — DEGRADED (D4).
+// deep-horizon opencode adapter — DEGRADED (D4).
 //
 // Glue only (D6): this module spawns the bin and prepends its stdout to the
 // first user message. It never composes the section-10 texts — those live in

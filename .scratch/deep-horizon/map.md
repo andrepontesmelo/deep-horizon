@@ -1,4 +1,4 @@
-# Horizon Line — wayfinder map
+# Deep Horizon — wayfinder map
 
 Label: `wayfinder:map`
 Started: 2026-09-08
@@ -36,7 +36,7 @@ decide before someone builds it.
 - Prior art in this house: `~/git/moving-target` — DSH plugin, same injection
   shape. Reuse its `agent/session-start` hook pattern, its `startup`-only
   guard, its subagent exclusion, and its pure/testable `injectionText()`
-  split. Do **not** reuse its LLM-mediated update path: Horizon Line's update
+  split. Do **not** reuse its LLM-mediated update path: Deep Horizon's update
   is deterministic CLI, human-authored.
 - Runtime locked: TypeScript/Node core + CLI; TS adapters for opencode and
   DSH; Claude Code, Hermes and pi shell out to the CLI.
@@ -47,7 +47,7 @@ decide before someone builds it.
 
 ## Decisions so far
 
-- [Name: horizon-line](#) — chosen over `natural-horizon` / `true-horizon` /
+- [Name: deep-horizon](#) — chosen over `natural-horizon` / `true-horizon` /
   `apparent-horizon`. Free on npm and on GitHub (`andrepontesmelo`) as of
   2026-09-08. Noted trade-off accepted: in aviation "horizon line" names the
   line on the *attitude indicator* (the artificial horizon); the real one out
@@ -68,13 +68,13 @@ decide before someone builds it.
   `agent.inject(createUserMessage(...))`, guarded on `source === "startup"`
   and on `delegationDepth`/`origin` to skip subagents. Proven live by
   moving-target; no research needed for DSH.
-- [Claude Code + opencode hook surfaces are known](.scratch/horizon-line/research/01-claude-opencode-hooks.md) —
+- [Claude Code + opencode hook surfaces are known](.scratch/deep-horizon/research/01-claude-opencode-hooks.md) —
   Claude Code 2.1.258: SessionStart hook injects before the first prompt with
   **exact** new-vs-resumed (`source` matcher) and **structural** subagent
   exclusion. opencode 1.18.29: no session-start hook — `chat.message` prepend,
   heuristic new-vs-resumed, `session.parentID` subagent exclusion; never
   live-probed (binary absent).
-- [Hermes + pi hook surfaces are known](.scratch/horizon-line/research/02-hermes-pi-hooks.md) —
+- [Hermes + pi hook surfaces are known](.scratch/deep-horizon/research/02-hermes-pi-hooks.md) —
   Hermes 0.21.1: `on_session_start` is observer-only; injection via
   `register_system_prompt_section` (persistent, 4k cap) or `pre_llm_call`
   (per-turn, `is_first_turn`). pi 0.73.1: `session_start` has explicit
@@ -118,7 +118,7 @@ decide before someone builds it.
   authorship path ruled out in Out of scope) and seeding from README/`.moving-
   target/summary.md` (deterministic but the wrong shape — descriptive "what this
   is", not directional "where next"). Sharpens the boundary with moving-target
-  for HL-07: moving-target answers *what is this*, horizon-line answers *where
+  for HL-07: moving-target answers *what is this*, deep-horizon answers *where
   next*, and neither reaches into the other's authorship model.
   **Amends the Q5 "silence on absence" decision**: injection on an unset project
   is a single nudge line, not literal silence. The zero-overhead intent survives
@@ -188,7 +188,7 @@ decide before someone builds it.
   read, no parse and no lock — which matters when two harnesses close at once —
   and a corrupt session log can never take the gaps with it.
   **Session record fields:** timestamp, harness name, that harness's own
-  session id (verbatim — the join key back into its transcripts; horizon-line
+  session id (verbatim — the join key back into its transcripts; deep-horizon
   never invents one), an optional summary, and `gaps_added` / `gaps_closed`.
   The gap deltas are filled **by the CLI**, which already knows what happened
   in the session; they cost nothing at write time and require nothing of the
@@ -239,7 +239,7 @@ decide before someone builds it.
   ahead of time: the summary field must be optional because at least one
   harness structurally cannot fill it.
 - [HL-05 done: the CLI contract is written](#) — full spec at
-  `.scratch/horizon-line/05-cli-contract.md`: seven commands (`show`, `add`,
+  `.scratch/deep-horizon/05-cli-contract.md`: seven commands (`show`, `add`,
   `close`, `amend`, `log`, `session-end`, `init`), the `gaps.json` /
   `sessions.jsonl` schemas, an eight-code exit table, and **33 acceptance
   tests** a TDD implementation turns red first. Two contract choices worth
@@ -283,27 +283,27 @@ decide before someone builds it.
   about it. Final strings are §10 of the CLI contract; 3 more acceptance tests
   (34–36) cover substitution fidelity, block-vs-nudge selection, and the
   no-copies rule.
-- [HL-07 resolved: horizon-line REPLACES moving-target](#) — not coexistence.
+- [HL-07 resolved: deep-horizon REPLACES moving-target](#) — not coexistence.
   Andre's call: this supersedes moving-target rather than sitting beside it.
   The two were close cousins — moving-target injects an LLM-distilled paragraph
-  describing *what a project is*; horizon-line injects human-originated gaps
+  describing *what a project is*; deep-horizon injects human-originated gaps
   describing *what is missing* — but running both means two goal-shaped blocks
   before the user's first word, and the newer object is the one worth keeping.
   Consequences: `.moving-target/` has no future; moving-target v0.1.5 (never
   published to npm, installed into three DSH profiles as a local `.tgz`) stays
-  archived as the origin of the pattern; horizon-line's README credits it as
+  archived as the origin of the pattern; deep-horizon's README credits it as
   the predecessor rather than positioning against it. **Code reuse: share the
   pattern, not the code** — the overlap is ~40 lines of DSH-specific guard
   logic (`startup`-only, `delegationDepth`/`origin` subagent exclusion, the
   pure/testable `injectionText()` split). Copy it, credit it in a comment, and
   avoid a versioning dependency between two projects with different cadences.
-- [HL-08 resolved: one package, DSH ships first](.scratch/horizon-line/08-packaging-distribution.md) — **one npm package with
-  multiple entrypoints**, not a monorepo: `horizon-line` ships the CLI as
-  `bin`, plus `horizon-line/dsh`, `/opencode`, `/pi` adapter exports. Hermes'
+- [HL-08 resolved: one package, DSH ships first](.scratch/deep-horizon/08-packaging-distribution.md) — **one npm package with
+  multiple entrypoints**, not a monorepo: `deep-horizon` ships the CLI as
+  `bin`, plus `deep-horizon/dsh`, `/opencode`, `/pi` adapter exports. Hermes'
   Python plugin and Claude Code's hook shell out to the binary and need no npm
   artifact. A monorepo buys independent versioning that five adapters *must
   not* have — they stay in lockstep with one CLI contract, and lockstep is the
-  point. **Install: `npm i -g horizon-line`** — three of five harnesses shell
+  point. **Install: `npm i -g deep-horizon`** — three of five harnesses shell
   out, so the binary must be on `PATH`; `npx` adds ~300 ms to every session
   start and needs network on a cold cache.
   **Reference harness: DSH** (Andre's call, overriding the Claude-Code-first
@@ -374,7 +374,7 @@ decide before someone builds it.
 - GitHub Issues. The repo and its releases live on GitHub; **task tracking is
   Kanban only** and no issues are opened for this project.
 
-## Kanban cards (board: horizon-line)
+## Kanban cards (board: deep-horizon)
 
 | Ticket | Card | Type | State |
 |---|---|---|---|
@@ -406,10 +406,10 @@ What implementation inherits:
 
 - `CONTEXT.md` — the glossary (horizon, gap, close, propose, gap log, session
   record, revision, provenance, nudge, resolution, injection).
-- `.scratch/horizon-line/05-cli-contract.md` — seven commands, two JSON
+- `.scratch/deep-horizon/05-cli-contract.md` — seven commands, two JSON
   schemas, an eight-code exit table, the two locked injection strings, and **36
   acceptance tests** to turn red first.
-- `.scratch/horizon-line/research/` — verified session-start *and* session-end
+- `.scratch/deep-horizon/research/` — verified session-start *and* session-end
   hook surfaces for all five harnesses, every claim carrying a file path or
   URL, plus the corrected prior-art record.
 

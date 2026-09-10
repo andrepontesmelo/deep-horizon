@@ -38,7 +38,7 @@ Mechanism: `horizon init` writes a nested `.horizon/.gitignore` containing
 `sessions.jsonl` and `*.tmp.*`. Nested `.gitignore` is honoured by git, so the
 plugin never touches the repo's root `.gitignore`.
 
-This also means horizon-line's own repo carries a real `.horizon/gaps.json` —
+This also means deep-horizon's own repo carries a real `.horizon/gaps.json` —
 the plugin's own horizon, dogfooded.
 
 ---

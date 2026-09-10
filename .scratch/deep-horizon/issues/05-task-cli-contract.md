@@ -18,5 +18,5 @@ deterministic CLI, so implementation is mechanical:
 - A `--json` mode, or an explicit decision that there isn't one.
 - The full acceptance-test list a TDD implementation would turn red first.
 
-Done when the spec file is committed under `.scratch/horizon-line/` and a
+Done when the spec file is committed under `.scratch/deep-horizon/` and a
 developer could implement against it without asking a question.

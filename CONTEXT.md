@@ -1,4 +1,4 @@
-# CONTEXT.md — horizon-line glossary
+# CONTEXT.md — deep-horizon glossary
 
 Vocabulary only. No implementation details, no spec, no scratch notes.
 
@@ -84,7 +84,7 @@ moved the horizon, and which did not.
 
 The identifier a harness uses for its own session, recorded verbatim on the
 session record. It is the join key back into that harness's own transcripts —
-horizon-line never invents its own.
+deep-horizon never invents its own.
 
 ## Amend
 

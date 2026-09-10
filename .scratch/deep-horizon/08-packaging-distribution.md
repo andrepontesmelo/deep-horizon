@@ -17,7 +17,7 @@ map had deferred to HL-08 is settled with measured numbers (D4).
 
 ## D1 — One npm package, not a monorepo
 
-One package, `horizon-line` (operator, verbatim rationale): a monorepo buys
+One package, `deep-horizon` (operator, verbatim rationale): a monorepo buys
 independent versioning that five adapters MUST NOT have — they stay in
 lockstep with one CLI contract, and lockstep is the point. The adapters are
 5–20-line glue; nobody installs an adapter without the CLI it wraps.
@@ -54,7 +54,7 @@ Package shape (the contract between core and adapters):
 
 ## D2 — Global install is the blessed PATH story
 
-`npm install -g horizon-line` is step 1 of every harness's README (operator:
+`npm install -g deep-horizon` is step 1 of every harness's README (operator:
 three of five harnesses shell out, so the binary must be on PATH). Adapters
 invoke the bare bins `horizon` / `horizon-inject`. Hooks fail open when the
 bin cannot be resolved — silently injecting nothing — so install order is
@@ -66,12 +66,12 @@ session of every project. The documented per-harness fallback for manual,
 no-global use:
 
 ```
-npx -p horizon-line horizon show
-npx -p horizon-line horizon-inject --harness <name>
+npx -p deep-horizon horizon show
+npx -p deep-horizon horizon-inject --harness <name>
 ```
 
 (`-p` is required: the package name is not a bin name, so plain
-`npx horizon-line …` would not resolve.) Vendoring a copy into each harness
+`npx deep-horizon …` would not resolve.) Vendoring a copy into each harness
 is rejected: three vendored copies of the store logic and the texts drift,
 which is exactly what D1's lockstep rule exists to prevent.
 
@@ -132,7 +132,7 @@ manual `horizon show` fallback exists everywhere regardless.
 ## D5 — MIT, public GitHub + npm; GitHub is not the tracker
 
 MIT, matching moving-target and the portfolio. Publish targets:
-`github.com/andrepontesmelo/horizon-line` and npm `horizon-line` (name
+`github.com/andrepontesmelo/deep-horizon` and npm `deep-horizon` (name
 confirmed free on both as of 2026-09-08, map "Name" decision). Operator
 constraint: **GitHub is for the repo and releases ONLY** — task tracking
 stays on Kanban and no GitHub Issues are created for this project. Note: the
@@ -156,10 +156,10 @@ The Hermes Python shim lives in this repo at `adapters/hermes/` (with its
 `plugin.yaml`) — no npm artifact, per D1:
 
 ```bash
-npm install -g horizon-line
-git clone https://github.com/andrepontesmelo/horizon-line
-cp -r horizon-line/adapters/hermes ~/.hermes/plugins/horizon-line
-hermes plugins enable horizon-line
+npm install -g deep-horizon
+git clone https://github.com/andrepontesmelo/deep-horizon
+cp -r deep-horizon/adapters/hermes ~/.hermes/plugins/deep-horizon
+hermes plugins enable deep-horizon
 ```
 
 Its injection mechanism: `register_system_prompt_section` with a callable that
@@ -178,17 +178,17 @@ render-time spawning proves problematic. Subagent exclusion via
 ### 1. DeepSeek Harness (DSH) — reference implementation
 
 ```bash
-npm install -g horizon-line
-npm pack horizon-line          # or: git clone … && cd horizon-line && npm pack
-dsh plugin --profile <profile> add file:./horizon-line-<version>.tgz
+npm install -g deep-horizon
+npm pack deep-horizon          # or: git clone … && cd deep-horizon && npm pack
+dsh plugin --profile <profile> add file:./deep-horizon-<version>.tgz
 ```
 
 Mount in the profile's `cordis.patch.yml`:
 
 ```yaml
 - insert:
-    - id: horizon-line
-      name: horizon-line
+    - id: deep-horizon
+      name: deep-horizon
 ```
 
 Ceremony identical to moving-target's proven path (its README). Injection:
@@ -197,13 +197,13 @@ Ceremony identical to moving-target's proven path (its README). Injection:
 the mid-session fallback from day one (D3) — the adapter prompts the agent
 to run `horizon session-end --harness dsh --session <id>` mid-session, where
 model text is still available; `agent/disposed` is too late. Whether
-`dsh plugin add npm:horizon-line` works was not probed — the tgz path is the
+`dsh plugin add npm:deep-horizon` works was not probed — the tgz path is the
 documented one.
 
 ### 2. Claude Code
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `.claude/settings.json` (project-local, checked into the repo):
@@ -233,13 +233,13 @@ to fire on SIGINT/SIGTERM, HL-10b).
 ### 3. pi
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `~/.pi/agent/settings.json`:
 
 ```json
-{ "packages": ["npm:horizon-line"] }
+{ "packages": ["npm:deep-horizon"] }
 ```
 
 Injection: `session_start` shells out and stashes, `before_agent_start`
@@ -253,13 +253,13 @@ in the same settings table but not yet run.
 ### 4. opencode — DEGRADED (D4)
 
 ```bash
-npm install -g horizon-line
+npm install -g deep-horizon
 ```
 
 `opencode.json` (project):
 
 ```json
-{ "plugin": ["horizon-line"] }
+{ "plugin": ["deep-horizon"] }
 ```
 
 The README must state the degradation plainly: injection is best-effort
@@ -267,8 +267,8 @@ The README must state the degradation plainly: injection is best-effort
 — no session-end hook exists. Verify at implementation: npm-plugin loading is
 documented (research/01 §1) but opencode was never live-probed; if Bun does
 not resolve the package from the global install, the fallback is a two-line
-local plugin at `.opencode/plugins/horizon-line.ts` importing
-`horizon-line/opencode` by path.
+local plugin at `.opencode/plugins/deep-horizon.ts` importing
+`deep-horizon/opencode` by path.
 
 ### 5. Hermes
 

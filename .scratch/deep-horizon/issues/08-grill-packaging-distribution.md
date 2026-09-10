@@ -9,7 +9,7 @@ Blocked by: 01, 02
 Given what tickets 01 and 02 find out about each harness's hook surface:
 
 - One repo, one npm package with optional adapter entrypoints — or a monorepo
-  publishing `horizon-line-core` plus `horizon-line-{dsh,opencode}`?
+  publishing `deep-horizon-core` plus `deep-horizon-{dsh,opencode}`?
 - Is the CLI installed globally (`npm i -g`), via `npx`, or vendored per
   harness? Claude Code / Hermes / pi shell out to it, so its PATH story is
   load-bearing.

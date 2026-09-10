@@ -1,16 +1,16 @@
 {
-  "name": "horizon-line",
+  "name": "deep-horizon",
   "version": "0.1.0",
-  "description": "Horizon Line CLI core: a deterministic, human-authored horizon (open gaps + session log) shared across agent harnesses.",
+  "description": "Deep Horizon CLI core: a deterministic, human-authored horizon (open gaps + session log) shared across agent harnesses.",
   "license": "MIT",
   "author": "Andre Melo",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/andrepontesmelo/horizon-line.git"
+    "url": "git+https://github.com/andrepontesmelo/deep-horizon.git"
   },
-  "homepage": "https://github.com/andrepontesmelo/horizon-line#readme",
+  "homepage": "https://github.com/andrepontesmelo/deep-horizon#readme",
   "bugs": {
-    "url": "https://github.com/andrepontesmelo/horizon-line"
+    "url": "https://github.com/andrepontesmelo/deep-horizon"
   },
   "keywords": [
     "ai",

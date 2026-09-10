@@ -60,14 +60,14 @@ test("50. the Claude Code adapter ships as a documented settings.json block with
 
 // --- Hermes: adapters/hermes/ Python plugin ---
 
-test("51. the Hermes plugin manifest is valid, names horizon-line, and the package imports without hermes_cli", () => {
+test("51. the Hermes plugin manifest is valid, names deep-horizon, and the package imports without hermes_cli", () => {
   assert.ok(existsSync(join(HERMES_PLUGIN_DIR, "plugin.yaml")), "plugin.yaml must exist");
-  assert.ok(existsSync(join(HERMES_PLUGIN_DIR, "horizon_line.py")), "the plugin module must exist");
+  assert.ok(existsSync(join(HERMES_PLUGIN_DIR, "deep_horizon.py")), "the plugin module must exist");
   const manifest = readFileSync(join(HERMES_PLUGIN_DIR, "plugin.yaml"), "utf8");
-  assert.match(manifest, /^name:\s*horizon-line\s*$/m);
+  assert.match(manifest, /^name:\s*deep-horizon\s*$/m);
   // The glue must not import hermes_cli (CLI-as-core, acceptance 36's spirit):
   // it spawns the bins like every other harness.
-  const py = readFileSync(join(HERMES_PLUGIN_DIR, "horizon_line.py"), "utf8");
+  const py = readFileSync(join(HERMES_PLUGIN_DIR, "deep_horizon.py"), "utf8");
   assert.ok(!/import\s+hermes_cli|from\s+hermes_cli/.test(py), "the plugin must not import hermes_cli");
 });
 
@@ -79,9 +79,9 @@ test("52. the Hermes section callable spawns horizon-inject --harness hermes and
     writeFileSync(script, [
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "info = {'session_id': 's-1', 'cwd': " + JSON.stringify(dir) + ", 'parent_session_id': '', 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'}",
-      "text = horizon_line._section_text(info)",
+      "text = deep_horizon._section_text(info)",
       "sys.stdout.write(text)",
       "",
     ].join("\n"));
@@ -102,11 +102,11 @@ test("53. the Hermes section returns empty text for subagent sessions (parent_se
     writeFileSync(script, [
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "base = {'session_id': 's-1', 'cwd': " + JSON.stringify(dir) + ", 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'}",
       "child = dict(base, parent_session_id='parent-9')",
-      "assert horizon_line._section_text(child) == '', 'subagent must render empty'",
-      "text = horizon_line._section_text(base)",
+      "assert deep_horizon._section_text(child) == '', 'subagent must render empty'",
+      "text = deep_horizon._section_text(base)",
       "assert len(text) < 4000, 'worst-case block must fit the Hermes cap: %d' % len(text)",
       "sys.stdout.write(str(len(text)))",
       "",
@@ -128,24 +128,24 @@ test("54. the Hermes plugin register() wires the section, the finalize hook, and
     writeFileSync(script, [
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "calls = []",
       "class Ctx:",
       "    def register_system_prompt_section(self, id, content, **kw):",
       "        calls.append(('section', id, content, kw))",
       "    def register_hook(self, name, cb):",
       "        calls.append(('hook', name, cb))",
-      "horizon_line.register(Ctx())",
+      "deep_horizon.register(Ctx())",
       "kinds = [c[0] for c in calls]",
       "assert kinds.count('section') == 1, kinds",
       "hooks = sorted(c[1] for c in calls if c[0] == 'hook')",
       "assert hooks == ['on_session_finalize', 'pre_llm_call'], hooks",
       "sec = [c for c in calls if c[0] == 'section'][0]",
-      "assert sec[1] == 'horizon-line', sec[1]",
+      "assert sec[1] == 'deep-horizon', sec[1]",
       "assert sec[3].get('max_chars') == 4000, sec[3]",
       "assert callable(sec[2]), 'content must be the callable'",
       "# A child session renders empty even with the bins missing (fail open).",
-      "assert horizon_line._section_text({'session_id': 'x', 'cwd': '/tmp', 'parent_session_id': 'p'}) == ''",
+      "assert deep_horizon._section_text({'session_id': 'x', 'cwd': '/tmp', 'parent_session_id': 'p'}) == ''",
       "# The finalize handler swallows everything with no store around.",
       "import inspect",
       "fin = [c for c in calls if c[0] == 'hook' and c[1] == 'on_session_finalize'][0][2]",
@@ -271,7 +271,7 @@ test("58. the pi adapter end-to-end: startup stash flows the real horizon-inject
     const first = await registered["before_agent_start"]({ prompt: "go" }, {});
     assert.ok(first.message.content.startsWith("This project has a horizon"));
     assert.ok(first.message.content.includes("g_00000001  End-to-end pi gap"));
-    assert.equal(first.message.customType, "horizon-line");
+    assert.equal(first.message.customType, "deep-horizon");
     // The nudge twin: empty store still injects the nudge (composition, not gap-detection).
     const empty = freshDir();
     try {
@@ -390,8 +390,8 @@ test("62. the Hermes section falls back to the process cwd when the core hands a
     writeFileSync(script, [
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
-      "text = horizon_line._section_text({'session_id': 's-1', 'cwd': '', 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
+      "import deep_horizon",
+      "text = deep_horizon._section_text({'session_id': 's-1', 'cwd': '', 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
       "sys.stdout.write(text)",
       "",
     ].join("\n"));
@@ -418,16 +418,16 @@ test("63. the Hermes section suppresses injection for every subagent discriminat
     writeFileSync(script, [
       "import os, sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "base = {'session_id': 's-1', 'cwd': " + JSON.stringify(dir) + ", 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'}",
-      "assert horizon_line._section_text(base), 'top-level session must receive the horizon'",
+      "assert deep_horizon._section_text(base), 'top-level session must receive the horizon'",
       "for key, val in (('parent_session_id', 'p'), ('is_subagent', True), ('delegation_depth', 1), ('origin', 'subagent')):",
       "    info = dict(base, **{key: val})",
-      "    assert horizon_line._section_text(info) == '', 'discriminator %s must render empty' % key",
+      "    assert deep_horizon._section_text(info) == '', 'discriminator %s must render empty' % key",
       "os.environ['HORIZON_SUBAGENT'] = '1'",
-      "assert horizon_line._section_text(base) == '', 'HORIZON_SUBAGENT=1 must render empty'",
+      "assert deep_horizon._section_text(base) == '', 'HORIZON_SUBAGENT=1 must render empty'",
       "os.environ['HORIZON_SUBAGENT'] = '0'",
-      "assert horizon_line._section_text(base), 'HORIZON_SUBAGENT=0 must still inject'",
+      "assert deep_horizon._section_text(base), 'HORIZON_SUBAGENT=0 must still inject'",
       "print('OK')",
       "",
     ].join("\n"));
@@ -446,8 +446,8 @@ test("64. the Hermes section never raises with no store and an empty cwd — it 
     writeFileSync(script, [
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
-      "text = horizon_line._section_text({'session_id': 's-1', 'cwd': '', 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
+      "import deep_horizon",
+      "text = deep_horizon._section_text({'session_id': 's-1', 'cwd': '', 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
       "sys.stdout.write(text)",
       "",
     ].join("\n"));
@@ -465,7 +465,7 @@ test("65. the Hermes plugin loads under the real directory-plugin contract: __in
   // hermes_cli/plugins_loader.py:429-431 requires __init__.py inside the plugin
   // directory (a bare module file cannot be imported that way), and :302 then does
   // getattr(module, "register", None) and calls register(PluginContext). Shipping
-  // only horizon_line.py + plugin.yaml makes `hermes plugins doctor` fail with
+  // only deep_horizon.py + plugin.yaml makes `hermes plugins doctor` fail with
   // "No __init__.py" and silently disables the whole Hermes adapter.
   assert.ok(existsSync(join(HERMES_PLUGIN_DIR, "__init__.py")),
     "the plugin directory must ship __init__.py or Hermes cannot register it");
@@ -482,7 +482,7 @@ test("65. the Hermes plugin loads under the real directory-plugin contract: __in
       "ns.__path__ = []",
       "ns.__package__ = 'hermes_plugins'",
       "sys.modules['hermes_plugins'] = ns",
-      "name = 'hermes_plugins.horizon_line'",
+      "name = 'hermes_plugins.deep_horizon'",
       "spec = importlib.util.spec_from_file_location(name, init_file, submodule_search_locations=[plugin_dir])",
       "mod = importlib.util.module_from_spec(spec)",
       "mod.__package__ = name",
@@ -523,12 +523,12 @@ test("66. every hook the Hermes plugin registers is declared in plugin.yaml prov
       "import re, sys",
       "plugin_dir = " + JSON.stringify(HERMES_PLUGIN_DIR),
       "sys.path.insert(0, plugin_dir)",
-      "import horizon_line",
+      "import deep_horizon",
       "calls = []",
       "class Ctx:",
       "    def register_system_prompt_section(self, i, c, **kw): calls.append(('section', i))",
       "    def register_hook(self, n, cb): calls.append(('hook', n))",
-      "horizon_line.register(Ctx())",
+      "deep_horizon.register(Ctx())",
       "registered = {c[1] for c in calls if c[0] == 'hook'}",
       "assert registered, 'the plugin must register at least the close hook'",
       "manifest = open(plugin_dir + '/plugin.yaml', encoding='utf-8').read()",
@@ -565,13 +565,13 @@ test("68. the Hermes pre_llm_call hook injects the block only for NEW tool-call 
     writeFileSync(script, [
       "import json, sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "import os",
       "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
-      "horizon_line._seen.clear()",
-      "horizon_line._scanned.clear()",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
       "def call(session, history, **kw):",
-      "    return horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw)",
+      "    return deep_horizon._pre_llm_call(session_id=session, conversation_history=history, **kw)",
       "alpha = " + JSON.stringify(alpha),
       "beta = " + JSON.stringify(beta),
       "# Positive: terminal command string with git -C.",
@@ -628,13 +628,13 @@ test("69. the Hermes pre_llm_call hook ignores tool results, user text, unknown 
     writeFileSync(script, [
       "import json, sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "import os",
       "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
-      "horizon_line._seen.clear()",
-      "horizon_line._scanned.clear()",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
       "def call(session, history, **kw):",
-      "    return horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw)",
+      "    return deep_horizon._pre_llm_call(session_id=session, conversation_history=history, **kw)",
       "repo = " + JSON.stringify(repo),
       "# Tool RESULT carrying a repo path: params carry nothing -> silence.",
       "hist = [{'role': 'assistant', 'tool_calls': [",
@@ -701,15 +701,15 @@ test("70. the Hermes pre_llm_call hook survives a simulated gateway restart: the
     writeFileSync(script, [
       "import json, sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "import os",
       "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
-      "horizon_line._seen.clear()",
-      "horizon_line._scanned.clear()",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
       "def ctx(r):",
       "    return r.get('context', '') if isinstance(r, dict) else (r or '')",
       "def call(session, history, **kw):",
-      "    return ctx(horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw))",
+      "    return ctx(deep_horizon._pre_llm_call(session_id=session, conversation_history=history, **kw))",
       "alpha = " + JSON.stringify(alpha),
       "beta = " + JSON.stringify(beta),
       "hist1 = [{'role': 'assistant', 'tool_calls': [",
@@ -724,8 +724,8 @@ test("70. the Hermes pre_llm_call hook survives a simulated gateway restart: the
       "assert 'alpha gap' in c, 'pre-restart alpha touch must inject: %r' % (c[:80],)",
       "# SIMULATED RESTART: clearing both dicts is exactly what a gateway",
       "# restart produces; the same full history comes back from persistence.",
-      "horizon_line._seen.clear()",
-      "horizon_line._scanned.clear()",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
       "c = call('s-r', hist1, user_message='go')",
       "assert not c, 'post-restart resume must NOT re-inject: %r' % (c[:80],)",
       "# The cursor advanced past the restored history: a NEW touch works,",
@@ -761,15 +761,15 @@ test("71. the Hermes pre_llm_call hook survives turn-start compaction: the shrin
     writeFileSync(script, [
       "import json, sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "import os",
       "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
-      "horizon_line._seen.clear()",
-      "horizon_line._scanned.clear()",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
       "def ctx(r):",
       "    return r.get('context', '') if isinstance(r, dict) else (r or '')",
       "def call(session, history, **kw):",
-      "    return ctx(horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw))",
+      "    return ctx(deep_horizon._pre_llm_call(session_id=session, conversation_history=history, **kw))",
       "alpha = " + JSON.stringify(alpha),
       "beta = " + JSON.stringify(beta),
       "# hist1 carries two tool_calls (a non-repo filler + the alpha touch),",
@@ -818,20 +818,20 @@ test("72. the once-per-(session, repo) invariant holds across simulated gateway 
     writeFileSync(script, [
       "import json, sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "import os",
       "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
-      "horizon_line._seen.clear()",
-      "horizon_line._scanned.clear()",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
       "stream = []",
       "def fire(session, history, **kw):",
-      "    r = horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw)",
+      "    r = deep_horizon._pre_llm_call(session_id=session, conversation_history=history, **kw)",
       "    c = r.get('context', '') if isinstance(r, dict) else (r or '')",
       "    stream.append(c)",
       "    return c",
       "def restart():",
-      "    horizon_line._seen.clear()",
-      "    horizon_line._scanned.clear()",
+      "    deep_horizon._seen.clear()",
+      "    deep_horizon._scanned.clear()",
       "alpha = " + JSON.stringify(alpha),
       "beta = " + JSON.stringify(beta),
       "alpha_hist = [{'role': 'assistant', 'tool_calls': [",
@@ -876,16 +876,16 @@ test("67. the section renders for the read-only mapping the core actually passes
   const dir = freshDir();
   try {
     const proj = join(dir, "proj");
-    seed(proj, ["ship horizon-line to npm"]);
+    seed(proj, ["ship deep-horizon to npm"]);
     const script = join(dir, "drive.py");
     writeFileSync(script, [
       "import sys, types",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
-      "import horizon_line",
+      "import deep_horizon",
       "info = {'session_id': 's1', 'model': 'm', 'provider': 'p', 'platform': 'cli',",
       "        'profile_name': 'default', 'cwd': " + JSON.stringify(proj) + "}",
       "frozen = types.MappingProxyType(dict(info))  # exactly what the core passes",
-      "out = horizon_line._section_text(frozen)",
+      "out = deep_horizon._section_text(frozen)",
       "assert isinstance(out, str), 'section must return str, got %s' % type(out).__name__",
       "assert out.strip(), 'section returned nothing for the core read-only mapping'",
       "assert 'g_00000001' in out, 'gap id missing from the rendered block'",

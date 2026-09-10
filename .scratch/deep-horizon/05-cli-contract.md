@@ -1,4 +1,4 @@
-# horizon-line CLI contract (HL-05)
+# deep-horizon CLI contract (HL-05)
 
 Status: draft for review
 Date: 2026-09-08
@@ -78,7 +78,7 @@ One object per line, appended, never rewritten:
 - `gaps_added` / `gaps_closed` — arrays of gap ids, filled **by the CLI** from
   what it recorded during the session (§3.6). Never supplied by the agent.
 - `harness` + `session_id` — the harness's own id, recorded verbatim. It is the
-  join key back into that harness's transcripts; horizon-line never invents an
+  join key back into that harness's transcripts; deep-horizon never invents an
   id of its own.
 
 ---
@@ -228,7 +228,7 @@ explicit `\n`. No read, no parse, no lock.
 
 The CLI must install and run on all three with **no native dependency**.
 
-- **No native modules.** `npm i -g horizon-line` must not invoke a compiler.
+- **No native modules.** `npm i -g deep-horizon` must not invoke a compiler.
   This rules out `os-lock` (fcntl/LockFileEx binding, `install: node-gyp
   rebuild`) and `fs-ext`.
 - **No symlinks.** Creating one on Windows needs Developer Mode or admin.

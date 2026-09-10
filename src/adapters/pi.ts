@@ -1,4 +1,4 @@
-// horizon-line pi adapter.
+// deep-horizon pi adapter.
 //
 // Glue only (D6): this module spawns the bins and hands their stdout to the
 // harness. It never composes the section-10 texts — those live in the core
@@ -64,7 +64,7 @@ function message(text) {
   return {
     role: "user",
     content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "horizon-line", form: "instructions" },
+    source: { kind: "plugin", plugin: "deep-horizon", form: "instructions" },
   };
 }
 
@@ -113,7 +113,7 @@ export function apply(ctx, overrides = {}) {
       if (!stashed) return undefined;
       const text = stashed.text;
       stashed = null; // once per session, exactly
-      return { message: { customType: "horizon-line", content: text, display: false } };
+      return { message: { customType: "deep-horizon", content: text, display: false } };
     } catch {
       return undefined;
     }

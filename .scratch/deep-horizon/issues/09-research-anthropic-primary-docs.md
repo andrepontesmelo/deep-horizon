@@ -22,7 +22,7 @@ or its bundled docs, `claude --help` on this machine if installed):
 3. Is there ANY Anthropic primitive that persists a human-authored aim across
    sessions and is readable by other tools?
 
-If any of these turns out to already be horizon-line, that is the single most
+If any of these turns out to already be deep-horizon, that is the single most
 valuable finding on this map — say so loudly.
 
 ## Anti-fabrication

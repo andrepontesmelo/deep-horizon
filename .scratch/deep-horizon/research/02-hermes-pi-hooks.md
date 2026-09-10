@@ -156,7 +156,7 @@ Working precedent for "collect at session_start, inject per prompt": the bundled
 rules listing to the system prompt in `before_agent_start`. `examples/extensions/subagent/`
 shows a full extension-registering custom tools + child `pi` processes.
 
-So a horizon-line pi adapter = extension whose `session_start` shells out and stashes the
+So a deep-horizon pi adapter = extension whose `session_start` shells out and stashes the
 output, then returns a `message`/`systemPrompt` from `before_agent_start` (gated on first
 prompt) — or returns it on every prompt via `context`.
 
@@ -174,7 +174,7 @@ lifecycle diagram at :273-317. A new session is `reason: "startup"` at process l
 (`README.md` intro) — subagents are an extension-provided pattern
 (`examples/extensions/subagent/` spawns a separate `pi` process per child). Consequence: a
 child `pi` process is a fresh pi runtime, so `session_start` fires there too and a globally
-installed horizon-line extension WOULD also inject into child sessions. Exclusion is the
+installed deep-horizon extension WOULD also inject into child sessions. Exclusion is the
 adapter's job (e.g. environment variable / flag check, or install the extension
 project-locally). Pi core does not provide a discriminator for "this session was spawned by
 the subagent extension."
@@ -201,7 +201,7 @@ matches `"lastChangelogVersion": "0.73.1"` in `/home/andre/.pi/agent/settings.js
 
 1. **Language split**: Hermes adapter = Python plugin (in-process); pi adapter = TypeScript
    extension. A single npm package cannot serve Hermes unless Hermes shells out to a CLI —
-   which Hermes plugins can do (Q5) — or a horizon-line-core CLI is the shared artifact and
+   which Hermes plugins can do (Q5) — or a deep-horizon-core CLI is the shared artifact and
    each harness adapter is a thin (5-20 line) shim around it. Both harnesses can consume a
    CLI's stdout; this strongly favors the CLI-as-core packaging option.
 2. **Injection mechanics differ**: Hermes has a purpose-built persistent mechanism
