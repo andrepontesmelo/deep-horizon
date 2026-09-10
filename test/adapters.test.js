@@ -459,3 +459,53 @@ test("64. the Hermes section never raises with no store and an empty cwd — it 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("65. the Hermes plugin loads under the real directory-plugin contract: __init__.py exporting register()", () => {
+  // hermes_cli/plugins_loader.py:429-431 requires __init__.py inside the plugin
+  // directory (a bare module file cannot be imported that way), and :302 then does
+  // getattr(module, "register", None) and calls register(PluginContext). Shipping
+  // only horizon_line.py + plugin.yaml makes `hermes plugins doctor` fail with
+  // "No __init__.py" and silently disables the whole Hermes adapter.
+  assert.ok(existsSync(join(HERMES_PLUGIN_DIR, "__init__.py")),
+    "the plugin directory must ship __init__.py or Hermes cannot register it");
+  const dir = freshDir();
+  try {
+    const script = join(dir, "drive.py");
+    // Faithful reproduction of _load_directory_module: import __init__.py as
+    // hermes_plugins.<slug> with the plugin dir as the package search path.
+    writeFileSync(script, [
+      "import importlib.util, sys, types",
+      "plugin_dir = " + JSON.stringify(HERMES_PLUGIN_DIR),
+      "init_file = plugin_dir + '/__init__.py'",
+      "ns = types.ModuleType('hermes_plugins')",
+      "ns.__path__ = []",
+      "ns.__package__ = 'hermes_plugins'",
+      "sys.modules['hermes_plugins'] = ns",
+      "name = 'hermes_plugins.horizon_line'",
+      "spec = importlib.util.spec_from_file_location(name, init_file, submodule_search_locations=[plugin_dir])",
+      "mod = importlib.util.module_from_spec(spec)",
+      "mod.__package__ = name",
+      "mod.__path__ = [plugin_dir]",
+      "sys.modules[name] = mod",
+      "spec.loader.exec_module(mod)",
+      "register = getattr(mod, 'register', None)",
+      "assert register is not None, 'no register() reachable from __init__.py'",
+      "calls = []",
+      "class Ctx:",
+      "    def register_system_prompt_section(self, i, c, **kw): calls.append(('section', i, c, kw))",
+      "    def register_hook(self, n, cb): calls.append(('hook', n, cb))",
+      "register(Ctx())",
+      "assert [c[0] for c in calls].count('section') == 1, calls",
+      "hook = [c for c in calls if c[0] == 'hook'][0]",
+      "assert hook[1] == 'on_session_finalize', hook[1]",
+      "assert callable([c for c in calls if c[0] == 'section'][0][2]), 'section content must stay callable'",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
