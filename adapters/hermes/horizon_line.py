@@ -18,11 +18,22 @@ core's hard maximum); the worst-case block (5 gaps x 512 code points plus
 boilerplate) renders at ~3.5k chars, and an oversized render is dropped by the
 core rather than breaking the session (fail open).
 
-Subagent exclusion: delegate_task children run the same conversation loop, and
-the session-info mapping mirrors the ``pre_llm_call`` payload's
-``parent_session_id`` convention (research/02 Part 1 §4). A child render sees
-a non-empty ``parent_session_id`` and returns ``""`` — the parent already
-carries the horizon; a child must not.
+Subagent exclusion: delegate_task children run the same conversation loop, so
+the section must render nothing for them. The live session-info mapping exposes
+only ``session_id``, ``model``, ``provider``, ``platform``, ``profile_name`` and
+``cwd`` — it carries NO parent/depth discriminator, so the guard accepts every
+convention the core might adopt (``parent_session_id``, ``is_subagent``,
+``delegation_depth``, ``origin: "subagent"``) and adds an explicit
+``HORIZON_SUBAGENT=1`` opt-out mirroring the pi adapter. None of those keys
+arrive today, so the guard is best-effort and fails open, exactly like pi.
+
+Working directory: ``cwd`` is the only selector, and it arrives as ``""`` when
+``resolve_context_cwd()`` returns ``None`` (no ``terminal.cwd`` configured — the
+local CLI's "relies on the launch dir" fallback lives in ``resolve_agent_cwd()``,
+not in ``resolve_context_cwd()``). An empty cwd falls back to the process working
+directory, so a session launched from a project root still receives that
+project's horizon; if even the process cwd is unavailable, the section returns
+nothing rather than raising.
 
 Close: ``on_session_finalize`` (the real close hook: process exit, /new,
 /reset — research/10, Hermes row) runs ``horizon session-end --harness hermes
@@ -43,6 +54,11 @@ logger = logging.getLogger("horizon-line")
 SECTION_ID = "horizon-line"
 HARNESS = "hermes"
 SPAWN_TIMEOUT_S = 15
+# Explicit subagent opt-out, mirroring the pi adapter's HORIZON_SUBAGENT. The
+# Hermes session-info mapping exposes no parent/depth discriminator today, so
+# this env var is the one signal an embedder can always set.
+SUBAGENT_ENV = "HORIZON_SUBAGENT"
+_TRUTHY = ("1", "true", "yes", "on")
 
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_BIN_DIR = os.path.normpath(os.path.join(_PLUGIN_DIR, "..", "..", "bin"))
@@ -72,21 +88,49 @@ def _spawn_bin(bin_name: str, args: list[str]) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
+def _is_subagent(session_info) -> bool:
+    """Best-effort subagent detection for the section callable.
+
+    The live mapping carries no parent/depth discriminator, so accept every
+    convention the core might adopt, plus the HORIZON_SUBAGENT env opt-out.
+    """
+    parent = session_info.get("parent_session_id")
+    if isinstance(parent, str) and parent.strip():
+        return True
+    if session_info.get("is_subagent") is True:
+        return True
+    origin = session_info.get("origin")
+    if isinstance(origin, str) and origin.strip() == "subagent":
+        return True
+    try:
+        if int(session_info.get("delegation_depth") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(os.environ.get(SUBAGENT_ENV, "")).strip().lower() in _TRUTHY
+
+
 def _section_text(session_info) -> str:
     """The system-prompt section callable. Returns the composed horizon block
-    (or nudge) for top-level sessions with a cwd, "" for subagent sessions and
-    whenever the bin is missing or fails. Must never raise: the core freezes a
-    render-time failure as an absent section."""
+    (or nudge) for top-level sessions with a working directory, "" for subagent
+    sessions and whenever the bin is missing or fails. Must never raise: the core
+    freezes a render-time failure as an absent section."""
     try:
         if not isinstance(session_info, dict):
             return ""
-        # Subagent exclusion via the parent_session_id convention: a child
-        # sees a non-empty parent session id.
-        parent = session_info.get("parent_session_id")
-        if isinstance(parent, str) and parent.strip():
+        if _is_subagent(session_info):
             return ""
         cwd = session_info.get("cwd")
-        if not isinstance(cwd, str) or not cwd:
+        if not isinstance(cwd, str) or not cwd.strip():
+            # The core hands "" when resolve_context_cwd() is None (no
+            # terminal.cwd configured). Fall back to the process working
+            # directory — the launch dir the CLI actually relies on — so a
+            # session started in a project root still gets that horizon.
+            try:
+                cwd = os.getcwd()
+            except OSError:
+                return ""
+        if not cwd:
             return ""
         try:
             status, stdout, _stderr = _spawn_bin("horizon-inject", ["--harness", HARNESS, "--cwd", cwd])

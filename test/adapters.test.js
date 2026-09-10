@@ -373,3 +373,89 @@ test("61. the opencode adapter fails open: client errors, spawn errors, and abse
   await hooks["chat.message"]({ sessionID: "s" }, { message: { id: "m" }, parts });
   assert.deepEqual(parts, [{ type: "text", text: "x" }]);
 });
+
+test("62. the Hermes section falls back to the process cwd when the core hands an empty cwd", () => {
+  // _plugin_session_info() sets cwd=str(resolve_context_cwd() or ""), and
+  // resolve_context_cwd() returns None when terminal.cwd is unset. The runtime
+  // docstring says the local CLI "leaves it unset and relies on the launch dir",
+  // but that launch-dir fallback lives in resolve_agent_cwd(), NOT in
+  // resolve_context_cwd() — so the plugin is handed cwd="". Injecting nothing
+  // there means a session launched from a project root silently loses its
+  // horizon. The section falls back to the process working directory instead.
+  const dir = freshDir();
+  try {
+    seed(dir, ["Hermes cwd fallback gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "text = horizon_line._section_text({'session_id': 's-1', 'cwd': '', 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
+      "sys.stdout.write(text)",
+      "",
+    ].join("\n"));
+    const r = runPython([script], { cwd: dir });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.ok(r.stdout.startsWith("This project has a horizon"),
+      `empty cwd must fall back to the process cwd, got: ${JSON.stringify(r.stdout.slice(0, 80))}`);
+    assert.ok(r.stdout.includes("Hermes cwd fallback gap"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("63. the Hermes section suppresses injection for every subagent discriminator the core could expose, plus HORIZON_SUBAGENT", () => {
+  // The live mapping exposes only session_id/model/provider/platform/
+  // profile_name/cwd — no parent_session_id. So the guard must accept any of the
+  // conventions the core might adopt (parent_session_id, is_subagent,
+  // delegation_depth, origin) AND an explicit env opt-out mirroring the pi
+  // adapter, rather than depending on the single key that never arrives.
+  const dir = freshDir();
+  try {
+    seed(dir, ["Hermes subagent gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import os, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "base = {'session_id': 's-1', 'cwd': " + JSON.stringify(dir) + ", 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'}",
+      "assert horizon_line._section_text(base), 'top-level session must receive the horizon'",
+      "for key, val in (('parent_session_id', 'p'), ('is_subagent', True), ('delegation_depth', 1), ('origin', 'subagent')):",
+      "    info = dict(base, **{key: val})",
+      "    assert horizon_line._section_text(info) == '', 'discriminator %s must render empty' % key",
+      "os.environ['HORIZON_SUBAGENT'] = '1'",
+      "assert horizon_line._section_text(base) == '', 'HORIZON_SUBAGENT=1 must render empty'",
+      "os.environ['HORIZON_SUBAGENT'] = '0'",
+      "assert horizon_line._section_text(base), 'HORIZON_SUBAGENT=0 must still inject'",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("64. the Hermes section never raises with no store and an empty cwd — it returns the nudge", () => {
+  const dir = freshDir();
+  try {
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "text = horizon_line._section_text({'session_id': 's-1', 'cwd': '', 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
+      "sys.stdout.write(text)",
+      "",
+    ].join("\n"));
+    const r = runPython([script], { cwd: dir });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.ok(r.stdout.includes("Horizon: none set"),
+      `no store must yield the nudge, not silence: ${JSON.stringify(r.stdout.slice(0, 80))}`);
+    assert.ok(r.stdout.length < 4000, "the nudge must fit the cap");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
