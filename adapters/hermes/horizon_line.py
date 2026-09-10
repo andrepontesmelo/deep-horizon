@@ -169,6 +169,15 @@ def _section_text(session_info) -> str:
             # terminal.cwd configured). Fall back to the process working
             # directory — the launch dir the CLI actually relies on — so a
             # session started in a project root still gets that horizon.
+            #
+            # Documented hazard (no code change): in the gateway the process
+            # cwd is the gateway's WorkingDirectory (/home/andre/.hermes),
+            # and horizon-inject's resolveStore walks ANCESTORS from there —
+            # so a store appearing at /home/andre/.horizon would resolve for
+            # every cwd-less session and freeze into EVERY session's system
+            # prompt. The recorded mitigation choice is an exact-check in
+            # resolveStore (only the given cwd's own store counts); noted
+            # here so the latent blast radius stays visible.
             try:
                 cwd = os.getcwd()
             except OSError:
@@ -222,9 +231,15 @@ async def _on_session_finalize(payload=None, **_ignored) -> None:
 # the first LLM call after its first tool-touch. Keyed by session because the
 # gateway caches agents across turns — module state alone would leak.
 _seen: dict[tuple[str, str], int] = {}
-# Highest assistant-tool_calls index already scanned per session (the delta
-# cursor). A plain count works because conversation_history only ever grows
-# within + across turns of one session; a new session_id starts at zero.
+# Highest assistant-tool_calls count already scanned per session (the delta
+# cursor). The count is NOT a monotone clock over the history: a session_id
+# absent from this dict is "first sight" — fresh session turn 1 (empty,
+# tool-call-free history) or a resumed session after a gateway restart (FULL
+# restored history) — and first sight consumes the whole history silently, so
+# the restored past can never re-inject. And turn-start compaction can REWRITE
+# the history below the cursor, so a fire whose history holds fewer tool_calls
+# than the stored cursor resets the cursor to zero and rescans (the shrink
+# guard); see _pre_llm_call.
 _scanned: dict[str, int] = {}
 
 # Allowlist: which tools' params are scanned, and which string params per
@@ -309,6 +324,44 @@ def _new_tool_calls(conversation_history: object, session_id: str) -> list:
     return new_calls
 
 
+def _tool_call_count(conversation_history: object) -> int:
+    """Total assistant tool_calls carried by a history, shape-tolerantly."""
+    if not isinstance(conversation_history, list):
+        return 0
+    count = 0
+    for msg in conversation_history:
+        if isinstance(msg, dict) and isinstance(msg.get("tool_calls"), list):
+            count += len(msg["tool_calls"])
+    return count
+
+
+def _mark_history_seen(conversation_history: object, session_id: str) -> set[str]:
+    """Classify every repo touch in a history and mark it seen — never inject.
+
+    Shared consume-without-inject path: the history handed to a first sight is
+    one the session already lived through (a fresh session's empty turn 1, or
+    the byte-exact restored transcript after a gateway restart), so marking
+    every touched repo seen without spawning horizon-inject is what keeps the
+    once-per-(session, repo) invariant across restarts. Shape-tolerant like
+    _new_tool_calls: anything off-shape is skipped, never raised on.
+    """
+    touched: set[str] = set()
+    if not isinstance(conversation_history, list):
+        return touched
+    for msg in conversation_history:
+        if not isinstance(msg, dict):
+            continue
+        calls = msg.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            name, args = _call_args(call)
+            touched.update(_repos_in_params(name, args))
+    for repo in touched:
+        _seen[(session_id, repo)] = 1
+    return touched
+
+
 def _call_args(call: object) -> tuple[str, object]:
     """(tool name, args) from a persisted tool_call dict; ("", {}) when off-shape."""
     if not isinstance(call, dict):
@@ -333,10 +386,13 @@ def _call_args(call: object) -> tuple[str, object]:
 def _first_turn_frozen_repo(is_first_turn: object, terminal_cwd: object) -> str | None:
     """The repo the frozen section already covers on turn one, if any.
 
-    On is_first_turn the core resolves the session into its launch context
-    (desktop setCwd / Kanban TERMINAL_CWD paths); when that resolves inside a
-    repo the frozen section already carries it, so the per-turn hook must not
-    duplicate for that same repo. Reads terminal_cwd (what the test passes)
+    When a turn-one touch lands inside the session's launch repo, the frozen
+    section (rendered once at session start, persisted verbatim) already
+    carries that repo's horizon, so the per-turn hook must stay silent for it.
+    terminal_cwd is a test seam / defensive fallback only: the production core
+    sends no cwd in pre_llm_call payloads and TERMINAL_CWD is unset in the
+    gateway env, so the guard is inert in production — and harmless, because
+    turn 1 has no tool_calls. Reads terminal_cwd (what the tests pass)
     falling back to the live TERMINAL_CWD env — never os.getcwd().
     """
     if is_first_turn is not True:
@@ -371,6 +427,23 @@ def _pre_llm_call(
             return {"context": ""}
         if not isinstance(session_id, str) or not session_id:
             return {"context": ""}
+        if session_id not in _scanned:
+            # Skip-on-first-sight (DEF-A1): absent from the cursor means a
+            # fresh session's turn 1 (empty, tool-call-free history) or a
+            # resumed session after a gateway restart (FULL restored
+            # history). Either way consume the whole history silently —
+            # mark its touches seen without injecting — so the restored
+            # past can never re-inject a block the session already has.
+            _scanned[session_id] = _tool_call_count(conversation_history)
+            _mark_history_seen(conversation_history, session_id)
+            return {"context": ""}
+        if _tool_call_count(conversation_history) < _scanned[session_id]:
+            # Compaction shrink guard (DEF-A2): turn-start compaction
+            # rewrote the history below the cursor, so per-call indexes
+            # shifted. Rescan from zero — every already-injected repo stays
+            # silent via _seen, so only touches the stale cursor never
+            # reached (the post-compaction ones) can inject.
+            _scanned[session_id] = 0
         frozen_repo = _first_turn_frozen_repo(is_first_turn, terminal_cwd)
         repos: set[str] = set()
         for call in _new_tool_calls(conversation_history, session_id):
