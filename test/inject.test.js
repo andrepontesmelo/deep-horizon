@@ -283,7 +283,7 @@ test("45. no adapter contains a literal of either section-10 text (spec acceptan
   }
   const needles = [...phrases(HORIZON_BLOCK_TEMPLATE), ...phrases(NUDGE_TEXT)];
   assert.ok(needles.length >= 20);
-  const roots = ["src/adapters"];
+  const roots = ["src/adapters", "adapters/hermes"];
   for (const root of roots) {
     const dir = new URL(`../${root}`, import.meta.url).pathname;
     const files = [];

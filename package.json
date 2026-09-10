@@ -37,15 +37,12 @@
     "./pi": "./src/adapters/pi.ts",
     "./texts": "./src/texts.ts"
   },
+  "files": ["bin", "dist", "src", "adapters", "README.md", "LICENSE"],
   "pi": { "extensions": ["./src/adapters/pi.ts"] },
-  "files": [
-    "bin/",
-    "src/",
-    "README.md",
-    "LICENSE"
-  ],
   "scripts": {
-    "test": "node --test test/*.test.js",
+    "build": "node scripts/build-dist.cjs",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test test/*.test.js",
     "prepublishOnly": "npm test"
   }
 }
