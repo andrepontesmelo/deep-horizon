@@ -139,13 +139,33 @@ other harness's.
 
 ### 5. Hermes
 
+Upgrading from horizon-line: disable and remove the old plugin first, or both
+inject — `hermes plugins disable horizon-line`, then delete
+`~/.hermes/plugins/horizon-line`, before installing deep-horizon.
+
 ```bash
 npm install -g deep-horizon
 git clone https://github.com/andrepontesmelo/deep-horizon
-cp -r deep-horizon/adapters/hermes ~/.hermes/plugins/deep-horizon
+rsync -a --exclude __pycache__ deep-horizon/adapters/hermes/ ~/.hermes/plugins/deep-horizon/
+# no rsync? coreutils only:
+#   cp -r deep-horizon/adapters/hermes ~/.hermes/plugins/deep-horizon && \
+#     rm -rf ~/.hermes/plugins/deep-horizon/__pycache__
 hermes plugins enable deep-horizon
 systemctl --user restart hermes-gateway   # the gateway loads plugins at start
 ```
+
+(rsync form shown: a bare `cp -r` ships the clone's stale `__pycache__`
+bytecode; the `cp` + `rm -rf` fallback needs coreutils only.)
+
+cwd contract: gateway sessions get their working directory from `terminal.cwd`
+in hermes config. A placeholder value (`.`) resolves to the home directory —
+set it to the real project root, or export `TERMINAL_CWD`. The plugin
+distrusts a session cwd with no `.horizon/` store visible and falls back to
+the launch directory when it has one.
+
+Known hermes-side limitation: one-shot (`-z`) sessions skip
+`on_session_finalize`, so `horizon session-end` never runs for them (filed
+upstream as kanban task `t_87aa52a7` on the hermes-agent board).
 
 The Python plugin wires the horizon into Hermes at three points. All spawning
 goes through the `horizon` / `horizon-inject` bins (the plugin never composes

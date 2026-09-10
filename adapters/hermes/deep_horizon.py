@@ -29,19 +29,34 @@ convention the core might adopt (``parent_session_id``, ``is_subagent``,
 ``HORIZON_SUBAGENT=1`` opt-out mirroring the pi adapter. None of those keys
 arrive today, so the guard is best-effort and fails open, exactly like pi.
 
-Working directory: ``cwd`` is the only selector, and it arrives as ``""`` when
-``resolve_context_cwd()`` returns ``None`` (no ``terminal.cwd`` configured — the
-local CLI's "relies on the launch dir" fallback lives in ``resolve_agent_cwd()``,
-not in ``resolve_context_cwd()``). An empty cwd falls back to the process working
-directory, so a session launched from a project root still receives that
-project's horizon; if even the process cwd is unavailable, the section returns
-nothing rather than raising.
+Working directory: ``cwd`` is the only selector for session-derived spawns, and
+it arrives as ``""`` when ``resolve_context_cwd()`` returns ``None`` (no
+``terminal.cwd`` configured — the local CLI's "relies on the launch dir"
+fallback lives in ``resolve_agent_cwd()``, not in ``resolve_context_cwd()``).
+It can also arrive NON-EMPTY BUT WRONG: a placeholder ``terminal.cwd: "."``
+resolves to the home fallback (/home/andre). The trust rule
+(``_resolve_horizon_cwd``): a non-empty session cwd with no visible store is
+distrusted; the launch dir (the process working directory) wins when it has
+one. Store visibility is directory-existence only — an ancestor walk from the
+candidate to the root looking for a directory named ``.horizon`` (lowercased
+compare, mirroring the CLI's resolveStore discovery); the plugin never reads
+or writes store contents. When no candidate has a store the first candidate
+stands, so a genuinely storeless project dir still gets its nudge (correct
+behavior); with no candidates at all the section returns nothing rather than
+raising. Both session-derived spawns — the frozen section and ``horizon
+session-end --cwd ...`` — resolve this way; the pre_llm_call path never does
+(its repo paths come from the model's own tool-call parameters and are ground
+truth). Documented hazard: in the gateway the process cwd is the gateway's
+WorkingDirectory (/home/andre/.hermes) and the walk climbs ancestors, so a
+store appearing at /home/andre/.horizon would now also win the fallback for
+storeless sessions (and receive their session records).
 
 Close: ``on_session_finalize`` (the real close hook: process exit, /new,
 /reset — research/10, Hermes row) runs ``horizon session-end --harness hermes
---session <id>`` with no ``--summary``: the record carries ``summary: null``,
-never a fabricated summary. Hooks fail open (D2): an unresolvable or failing
-bin injects nothing, records nothing, and the session proceeds.
+--session <id> --cwd <resolved via _resolve_horizon_cwd>`` with no
+``--summary``: the record carries ``summary: null``, never a fabricated
+summary. Hooks fail open (D2): an unresolvable or failing bin injects nothing,
+records nothing, and the session proceeds.
 """
 
 from __future__ import annotations
@@ -149,6 +164,70 @@ def _is_subagent(session_info) -> bool:
     return str(os.environ.get(SUBAGENT_ENV, "")).strip().lower() in _TRUTHY
 
 
+def _store_visible(start_dir: object) -> bool:
+    """True when a horizon store is discoverable from start_dir.
+
+    Mirrors the CLI's resolveStore discovery walk (src/store.ts): climb from
+    start_dir to the filesystem root and match any entry whose lowercased name
+    is ``.horizon`` and that is a directory. Directory EXISTENCE ONLY
+    (os.scandir / entry.is_dir) — the plugin stays a pure spawner and never
+    reads or writes store contents. An unreadable ancestor keeps the walk
+    going, exactly like resolveStore's readdirSync catch; an unstattable
+    candidate is not a store.
+    """
+    try:
+        cur = os.path.abspath(start_dir) if isinstance(start_dir, str) and start_dir else ""
+    except (TypeError, ValueError):
+        return False
+    if not cur:
+        return False
+    while True:
+        try:
+            with os.scandir(cur) as entries:
+                for entry in entries:
+                    if entry.name.lower() != ".horizon":
+                        continue
+                    try:
+                        if entry.is_dir():
+                            return True
+                    except OSError:
+                        continue  # vanished/unstattable: not a store
+        except OSError:
+            pass  # unreadable ancestor: keep walking up, like resolveStore
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+
+
+def _resolve_horizon_cwd(session_cwd: object) -> str:
+    """The cwd to hand the bins for a session-derived spawn, "" when unusable.
+
+    Trust rule: candidates are the session cwd (when a non-empty string), then
+    the process working directory (when it differs). The FIRST candidate with a
+    VISIBLE store (see _store_visible) wins — a non-empty session cwd with no
+    visible store is distrusted, because the gateway resolves a placeholder
+    ``terminal.cwd: "."`` to the home fallback (/home/andre): non-empty but
+    wrong, and spawning there finds no store and freezes the nudge instead of
+    the project's horizon. When no candidate has a store the FIRST candidate
+    stands, so a genuinely storeless project dir still gets its nudge (correct
+    behavior); with no candidates at all, "".
+    """
+    candidates: list[str] = []
+    if isinstance(session_cwd, str) and session_cwd.strip():
+        candidates.append(session_cwd)
+    try:
+        proc_cwd = os.getcwd()
+    except OSError:
+        proc_cwd = ""
+    if proc_cwd and proc_cwd not in candidates:
+        candidates.append(proc_cwd)
+    for candidate in candidates:
+        if _store_visible(candidate):
+            return candidate
+    return candidates[0] if candidates else ""
+
+
 def _section_text(session_info) -> str:
     """The system-prompt section callable. Returns the composed horizon block
     (or nudge) for top-level sessions with a working directory, "" for subagent
@@ -163,25 +242,24 @@ def _section_text(session_info) -> str:
             return ""
         if _is_subagent(session_info):
             return ""
-        cwd = session_info.get("cwd")
-        if not isinstance(cwd, str) or not cwd.strip():
-            # The core hands "" when resolve_context_cwd() is None (no
-            # terminal.cwd configured). Fall back to the process working
-            # directory — the launch dir the CLI actually relies on — so a
-            # session started in a project root still gets that horizon.
-            #
-            # Documented hazard (no code change): in the gateway the process
-            # cwd is the gateway's WorkingDirectory (/home/andre/.hermes),
-            # and horizon-inject's resolveStore walks ANCESTORS from there —
-            # so a store appearing at /home/andre/.horizon would resolve for
-            # every cwd-less session and freeze into EVERY session's system
-            # prompt. The recorded mitigation choice is an exact-check in
-            # resolveStore (only the given cwd's own store counts); noted
-            # here so the latent blast radius stays visible.
-            try:
-                cwd = os.getcwd()
-            except OSError:
-                return ""
+        # The cwd trust rule (_resolve_horizon_cwd): candidates are the
+        # session cwd, then the process working directory (the launch dir);
+        # the first candidate with a VISIBLE store wins. A non-empty session
+        # cwd with no visible store is DISTRASTED — the gateway resolves a
+        # placeholder terminal.cwd ("." on this machine) to the home fallback
+        # /home/andre, non-empty but wrong, so trusting it verbatim froze the
+        # nudge instead of the launch dir's real horizon. When no candidate
+        # has a store the first candidate stands: a genuinely storeless
+        # project dir still gets its nudge.
+        #
+        # Documented hazard (kept visible): in the gateway the process cwd is
+        # the gateway's WorkingDirectory (/home/andre/.hermes), and both this
+        # visibility walk and horizon-inject's resolveStore climb ANCESTORS
+        # from there — so a store appearing at /home/andre/.horizon would now
+        # also win the fallback for storeless sessions and freeze into EVERY
+        # such session's system prompt. The recorded mitigation choice is an
+        # exact-check in resolveStore (only the given cwd's own store counts).
+        cwd = _resolve_horizon_cwd(session_info.get("cwd"))
         if not cwd:
             return ""
         try:
@@ -204,8 +282,17 @@ async def _on_session_finalize(payload=None, **_ignored) -> None:
         session_id = info.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return
+        # Same cwd trust rule as the section (_resolve_horizon_cwd): the
+        # record must land in the store the session actually injected from —
+        # the launch dir's store when the payload's session cwd has none (the
+        # placeholder home fallback). Without --cwd the bin would walk up from
+        # the gateway's own WorkingDirectory instead.
+        cwd = _resolve_horizon_cwd(info.get("cwd"))
+        args = ["session-end", "--harness", HARNESS, "--session", session_id]
+        if cwd:
+            args += ["--cwd", cwd]
         try:
-            _spawn_bin("horizon", ["session-end", "--harness", HARNESS, "--session", session_id])
+            _spawn_bin("horizon", args)
         except (FileNotFoundError, subprocess.SubprocessError, OSError):
             return  # fail open (D2)
     except Exception:  # noqa: BLE001

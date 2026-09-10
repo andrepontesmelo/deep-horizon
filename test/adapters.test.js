@@ -900,3 +900,150 @@ test("67. the section renders for the read-only mapping the core actually passes
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("73. the Hermes section distrusts a storeless session cwd: the launch dir's store wins (terminal.cwd '.' resolves to the home fallback)", () => {
+  // The live bug: hermes config carries terminal.cwd: "." (a placeholder), so
+  // the core resolves the session cwd to the home fallback /home/andre —
+  // non-empty but wrong. Trusting it verbatim spawned horizon-inject in a dir
+  // with no store, which injected the nudge: the project's about line and gaps
+  // never landed. The fix: a non-empty session cwd with no VISIBLE store is
+  // distrusted, and the process cwd (the launch dir) wins when it has one.
+  const dir = freshDir();
+  try {
+    const launch = join(dir, "launch");
+    const sessionCwd = join(dir, "session-cwd");
+    mkdirSync(launch, { recursive: true });
+    mkdirSync(sessionCwd, { recursive: true });
+    seed(launch, ["launch dir gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "text = deep_horizon._section_text({'session_id': 's-1', 'cwd': " + JSON.stringify(sessionCwd) + ", 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
+      "sys.stdout.write(text)",
+      "",
+    ].join("\n"));
+    const r = runPython([script], { cwd: launch });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.ok(r.stdout.startsWith("This project has a horizon"),
+      `storeless session cwd must defer to the launch dir's store, got: ${JSON.stringify(r.stdout.slice(0, 80))}`);
+    assert.ok(r.stdout.includes("launch dir gap"), "the injection must be composed from the launch dir's store");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("74. the Hermes section prefers the session cwd when it has a store, even if the launch dir also has one", () => {
+  const dir = freshDir();
+  try {
+    const launch = join(dir, "launch");
+    const sessionCwd = join(dir, "session-cwd");
+    mkdirSync(launch, { recursive: true });
+    mkdirSync(sessionCwd, { recursive: true });
+    seed(launch, ["launch dir gap"]);
+    seed(sessionCwd, ["session cwd gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "text = deep_horizon._section_text({'session_id': 's-1', 'cwd': " + JSON.stringify(sessionCwd) + ", 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
+      "sys.stdout.write(text)",
+      "",
+    ].join("\n"));
+    const r = runPython([script], { cwd: launch });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.ok(r.stdout.includes("session cwd gap"), "a stored session cwd must win");
+    assert.ok(!r.stdout.includes("launch dir gap"), "the launch dir's store must not bleed into a stored session cwd's block");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("75. the Hermes section keeps the first candidate when neither cwd has a store — the nudge for the session cwd, not silence", () => {
+  // A genuinely storeless project dir must still get its nudge (that is
+  // correct behavior), and the first candidate (the session cwd) stands —
+  // the launch dir never hijacks a storeless session.
+  const dir = freshDir();
+  try {
+    const launch = join(dir, "launch");
+    const sessionCwd = join(dir, "session-cwd");
+    mkdirSync(launch, { recursive: true });
+    mkdirSync(sessionCwd, { recursive: true });
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "assert deep_horizon._resolve_horizon_cwd(" + JSON.stringify(sessionCwd) + ") == " + JSON.stringify(sessionCwd) + ", 'storeless: first candidate stands'",
+      "text = deep_horizon._section_text({'session_id': 's-1', 'cwd': " + JSON.stringify(sessionCwd) + ", 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
+      "sys.stdout.write(text)",
+      "",
+    ].join("\n"));
+    const r = runPython([script], { cwd: launch });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.ok(r.stdout.includes("Horizon: none set"),
+      `both storeless must yield the nudge, got: ${JSON.stringify(r.stdout.slice(0, 80))}`);
+    assert.ok(r.stdout.length < 4000, "the nudge must fit the cap");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("76. the Hermes session-end spawn resolves --cwd with the same rule: the launch dir's store wins, the first candidate otherwise", () => {
+  // The close record must land in the store the session actually injected
+  // from. Without --cwd the bin would resolve from the gateway's own working
+  // directory instead, so the finalize hook passes the _resolve_horizon_cwd
+  // result explicitly.
+  const dir = freshDir();
+  try {
+    const launch = join(dir, "launch");
+    const sessionCwd = join(dir, "session-cwd");
+    const other = join(dir, "other");
+    mkdirSync(launch, { recursive: true });
+    mkdirSync(sessionCwd, { recursive: true });
+    mkdirSync(other, { recursive: true });
+    seed(launch, ["launch dir gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import asyncio, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "spawns = []",
+      "def fake_spawn(bin_name, args):",
+      "    spawns.append((bin_name, list(args)))",
+      "    return (0, '', '')",
+      "deep_horizon._spawn_bin = fake_spawn",
+      "def ran_args():",
+      "    assert len(spawns) == 1, spawns",
+      "    name, args = spawns[0]",
+      "    assert name == 'horizon', name",
+      "    assert args[:3] == ['session-end', '--harness', 'hermes'], args",
+      "    i = args.index('--cwd')",
+      "    assert args[args.index('--session') + 1] == 's-end', args",
+      "    return args[i + 1]",
+      "# Storeless session cwd + stored launch dir: the launch dir wins.",
+      "asyncio.run(deep_horizon._on_session_finalize({'session_id': 's-end', 'cwd': " + JSON.stringify(sessionCwd) + ", 'reason': 'shutdown'}))",
+      "assert ran_args() == " + JSON.stringify(launch) + ", 'session-end must spawn --cwd <launch dir>'",
+      "# Both storeless: the first candidate (the session cwd) stands.",
+      "import os",
+      "os.chdir(" + JSON.stringify(other) + ")",
+      "spawns.clear()",
+      "asyncio.run(deep_horizon._on_session_finalize({'session_id': 's-end', 'cwd': " + JSON.stringify(sessionCwd) + ", 'reason': 'shutdown'}))",
+      "assert ran_args() == " + JSON.stringify(sessionCwd) + ", 'storeless: session-end must spawn --cwd <session cwd>'",
+      "# No cwd in the payload at all: the process cwd is the only candidate.",
+      "os.chdir(" + JSON.stringify(launch) + ")",
+      "spawns.clear()",
+      "asyncio.run(deep_horizon._on_session_finalize({'session_id': 's-end', 'reason': 'shutdown'}))",
+      "assert ran_args() == " + JSON.stringify(launch) + ", 'cwd-less payload must spawn --cwd <process cwd>'",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script], { cwd: launch });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
