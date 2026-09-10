@@ -8,3 +8,8 @@ description: >-
   horizon binary is not installed: sessions proceed with no injected horizon.
 version: 0.1.0
 author: Andre Pontes Melo
+# The close hook register() actually subscribes to. `hermes plugins doctor`
+# warns when a registered hook is not declared here; keep the two in step
+# (test 66 asserts this list equals what register() subscribes).
+provides_hooks:
+  - on_session_finalize
