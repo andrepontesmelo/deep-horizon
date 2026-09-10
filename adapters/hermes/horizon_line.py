@@ -8,8 +8,10 @@ injected strings in any adapter), and it deliberately does NOT import
 
 Injection: ``register_system_prompt_section("horizon-line", <callable>)`` —
 the persistent, every-turn mechanism. The callable receives the core's
-read-only session-info mapping (``session_id``, ``cwd``, ``profile_name``,
-...) and returns ``horizon-inject --harness hermes --cwd <cwd>`` stdout, or
+read-only session-info mapping — ``types.MappingProxyType``, a ``Mapping`` but
+NOT a ``dict`` (``plugins_dispatch.py:396``) — carrying ``session_id``,
+``cwd``, ``profile_name``, ..., and returns
+``horizon-inject --harness hermes --cwd <cwd>`` stdout, or
 ``""`` when nothing should be injected. The core renders the section once for
 a new session, freezes it on the agent, and persists it verbatim; on resume
 the stored bytes are recovered from the persisted prompt, so the horizon is
@@ -48,6 +50,7 @@ import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Mapping
 
 logger = logging.getLogger("horizon-line")
 
@@ -116,7 +119,11 @@ def _section_text(session_info) -> str:
     sessions and whenever the bin is missing or fails. Must never raise: the core
     freezes a render-time failure as an absent section."""
     try:
-        if not isinstance(session_info, dict):
+        # The core hands a read-only view, not a dict: plugins_dispatch.py:396
+        # does ``types.MappingProxyType(dict(session_info))``. A dict-only guard
+        # is False for that object and silently renders nothing in every real
+        # session, so accept any Mapping (test 67 pins this).
+        if not isinstance(session_info, Mapping):
             return ""
         if _is_subagent(session_info):
             return ""

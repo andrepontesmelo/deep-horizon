@@ -548,3 +548,37 @@ test("66. every hook the Hermes plugin registers is declared in plugin.yaml prov
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("67. the section renders for the read-only mapping the core actually passes", () => {
+  // hermes_cli/plugins_dispatch.py:396 builds the object the callable receives:
+  //     frozen_info = types.MappingProxyType(dict(session_info))
+  // `isinstance(MappingProxyType({...}), dict)` is False, so a dict-only guard
+  // returns "" in production while every plain-dict unit test keeps passing —
+  // the section then renders into exactly zero real sessions.
+  const dir = freshDir();
+  try {
+    const proj = join(dir, "proj");
+    seed(proj, ["ship horizon-line to npm"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import sys, types",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "info = {'session_id': 's1', 'model': 'm', 'provider': 'p', 'platform': 'cli',",
+      "        'profile_name': 'default', 'cwd': " + JSON.stringify(proj) + "}",
+      "frozen = types.MappingProxyType(dict(info))  # exactly what the core passes",
+      "out = horizon_line._section_text(frozen)",
+      "assert isinstance(out, str), 'section must return str, got %s' % type(out).__name__",
+      "assert out.strip(), 'section returned nothing for the core read-only mapping'",
+      "assert 'g_00000001' in out, 'gap id missing from the rendered block'",
+      "assert len(out) < 4000, 'the block must fit the registered cap'",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
