@@ -509,3 +509,42 @@ test("65. the Hermes plugin loads under the real directory-plugin contract: __in
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("66. every hook the Hermes plugin registers is declared in plugin.yaml provides_hooks", () => {
+  // `hermes plugins doctor` WARNs when register() subscribes to a hook the
+  // manifest does not declare, and ERRORS when a declared hook name is not in
+  // VALID_HOOKS. Declaring the close hook makes the manifest a truthful contract
+  // rather than documentation.
+  const dir = freshDir();
+  try {
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import re, sys",
+      "plugin_dir = " + JSON.stringify(HERMES_PLUGIN_DIR),
+      "sys.path.insert(0, plugin_dir)",
+      "import horizon_line",
+      "calls = []",
+      "class Ctx:",
+      "    def register_system_prompt_section(self, i, c, **kw): calls.append(('section', i))",
+      "    def register_hook(self, n, cb): calls.append(('hook', n))",
+      "horizon_line.register(Ctx())",
+      "registered = {c[1] for c in calls if c[0] == 'hook'}",
+      "assert registered, 'the plugin must register at least the close hook'",
+      "manifest = open(plugin_dir + '/plugin.yaml', encoding='utf-8').read()",
+      "m = re.search(r'provides_hooks:\\s*(?:\\[(?P<inline>[^\\]]*)\\]|(?P<block>(?:\\s*-\\s*[A-Za-z0-9_]+\\s*)+))', manifest)",
+      "assert m, 'plugin.yaml must declare provides_hooks'",
+      "if m.group('inline') is not None:",
+      "    declared = {n.strip() for n in m.group('inline').split(',') if n.strip()}",
+      "else:",
+      "    declared = set(re.findall(r'-\\s*([A-Za-z0-9_]+)', m.group('block')))",
+      "assert declared == registered, 'manifest declares %s but register() subscribes %s' % (sorted(declared), sorted(registered))",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
