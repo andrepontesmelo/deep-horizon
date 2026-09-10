@@ -35,3 +35,13 @@ export const NUDGE_TEXT =
 export function horizonBlock(gapsStdout) {
   return HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => gapsStdout);
 }
+
+// The about-line composition (spec 10.3): when the store carries an about
+// line, the injected text opens with `This project is about: <about>` and a
+// blank line ahead of the locked block or the nudge. Unset (or not a
+// string), the prefix is empty and the composed output is exactly the
+// block/nudge alone — the locked strings never change to carry it.
+// Composed by horizon-inject (D6: single-sourced there, never per-adapter).
+export function aboutPrefix(about) {
+  return typeof about === "string" ? `This project is about: ${about}\n\n` : "";
+}

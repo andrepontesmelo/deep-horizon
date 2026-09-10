@@ -404,3 +404,66 @@ test("49. inject embeds show stdout byte-for-byte even when gap texts carry $-re
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- about-line composition (spec 10.3) ---
+
+// Write an about line into a seeded store, the way `horizon about` would.
+function setAbout(dir, about) {
+  const p = join(dir, ".horizon", "gaps.json");
+  const state = JSON.parse(readFileSync(p, "utf8"));
+  state.about = about;
+  writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+}
+
+test("about-inject-1. about + gaps: the about line, a blank line, then the byte-identical horizon block", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["A person can hand a photo to the app and get the plant named."]);
+    setAbout(dir, "AI plugin to help agents with long term goals");
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+    const show = "g_00000001  A person can hand a photo to the app and get the plant named.\n";
+    const expected =
+      "This project is about: AI plugin to help agents with long term goals\n\n" +
+      specFence(spec, "### 10.1").replace("{{GAPS}}", show);
+    assert.equal(r.stdout, expected);
+    // --json carries the same composed text in the text field.
+    const j = await run(["--cwd", dir, "--json"]);
+    assert.equal(j.code, 0);
+    assert.equal(JSON.parse(j.stdout).text, expected);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-inject-2. about + no gaps: the about line, a blank line, then the nudge", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, []);
+    setAbout(dir, "AI plugin to help agents with long term goals");
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+    const expected =
+      "This project is about: AI plugin to help agents with long term goals\n\n" + specFence(spec, "### 10.2");
+    assert.equal(r.stdout, expected);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-inject-3. without an about line: output is byte-identical to the pre-about composition", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Only one gap"]);
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0);
+    const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+    const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "g_00000001  Only one gap\n");
+    assert.equal(r.stdout, expected); // no prefix, no extra blank line
+    assert.ok(!r.stdout.startsWith("This project is about"), "about prefix leaked into an unset store");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

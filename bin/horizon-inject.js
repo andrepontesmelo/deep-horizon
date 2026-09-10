@@ -9,7 +9,7 @@
 // callers. Unknown flags are a usage error (exit 2).
 import { existsSync, readFileSync } from "node:fs";
 import { resolveStore, readGapsFile } from "../dist/store.js";
-import { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT } from "../dist/texts.js";
+import { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT, aboutPrefix } from "../dist/texts.js";
 
 const GLOBAL_FLAGS = new Set(["--cwd", "--json", "--help", "--version", "--harness", "--session", "--origin"]);
 
@@ -50,7 +50,8 @@ function main() {
     process.stdout.write(
       "usage: horizon-inject [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>]\n" +
         "\n" +
-        "Prints the section-10 horizon block when the store has open gaps, the nudge when it does not.\n" +
+        "Prints the about line (when set) and a blank line, then the section-10 horizon block when\n" +
+        "the store has open gaps, the nudge when it does not.\n" +
         "Read-only: never writes the store. The composition twin of `horizon show` (spec D6).\n",
     );
     return;
@@ -73,6 +74,7 @@ function main() {
     // sweep and store materialization stay CLI-only side effects.
     const found = resolveStore(cwd ?? process.cwd(), { readonly: true });
     let stdoutText = "";
+    let about;
     if (found) {
       if (found.open.code !== undefined) {
         process.stderr.write(`${found.open.message}\n`);
@@ -82,13 +84,21 @@ function main() {
         if (!g.ok) {
           process.stderr.write(`${g.message}\n`);
           exitCode = g.code;
-        } else if (g.data.gaps.length > 0) {
-          stdoutText = g.data.gaps.map((gap) => `${gap.id}  ${gap.text}`).join("\n") + "\n";
+        } else {
+          about = g.data.about;
+          if (g.data.gaps.length > 0) {
+            stdoutText = g.data.gaps.map((gap) => `${gap.id}  ${gap.text}`).join("\n") + "\n";
+          }
         }
       }
     }
     if (exitCode === 0) {
-      text = stdoutText.length > 0 ? HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => stdoutText) : NUDGE_TEXT;
+      const core =
+        stdoutText.length > 0 ? HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => stdoutText) : NUDGE_TEXT;
+      // aboutPrefix is empty when the store carries no about line, so an
+      // unset store composes to exactly the block/nudge, byte-identical to
+      // the pre-about output (spec 10.3).
+      text = aboutPrefix(about) + core;
     }
   } catch {
     process.stderr.write("horizon-inject: store read failed\n");

@@ -59,6 +59,10 @@ repo-root store unless they carry their own `.horizon/`.
   A counter, not a compare-and-swap token (§4).
 - `gaps` — **open gaps only**, ordered by `added_at` ascending (insertion
   order). Never more than 5. A closed gap is *removed* from this array.
+- `about` — **optional** top-level string: the one human-authored line saying
+  what this project *is*, distinct from the gaps, which say where the work is
+  heading (§10.3). Absent = unset; present but not a string is malformed
+  (exit 7). Version stays 1 — old stores remain valid.
 - `provenance.origin` — one of `human`, `agent-proposed`. Advisory only; the
   CLI cannot actually tell (§6).
 
@@ -111,6 +115,10 @@ g_77c1e004  Rentals can be compared across sites without re-entering filters.
 ```
 
 - Exactly one line per gap: id, two spaces, text.
+- When the store carries an `about` line, `show` prints it first as
+  `about  <text>` — the token `about`, two spaces, the text — ahead of the
+  gap lines, and alone when there are no gaps. Unset, no such line (§10.3).
+  `--json` output is unchanged: the bare gaps array.
 - Gaps print in **insertion order, oldest first** — the order they are stored
   in `gaps.json` (`added_at` ascending). Resolved in
   `09-open-items-resolved.md` (item A): a model reads the first line as most
@@ -444,7 +452,40 @@ overwhelming majority have no horizon. A longer variant carrying "don't prompt
 them unasked" was rejected: it spends a line in every session on every project
 to prevent a behaviour the shorter text doesn't especially invite.
 
-### 10.3 Acceptance tests for the texts
+### 10.3 The about line and the `about` command
+
+When the store carries an `about` line (§1.1), the injected text opens with
+one line and a blank line ahead of the block or the nudge:
+
+```
+This project is about: <about text>
+
+<the horizon block from 10.1, or the nudge from 10.2 — byte-identical>
+```
+
+The about line is the one human-authored sentence saying what this project
+**is**. Gaps say where the work is heading; the about line is the constant
+underneath it. It is written by the `about` command, not the add/close flow:
+
+- `horizon about "<text>"` — set or **replace** the line. Validation is
+  identical in shape to gap text (§1.1: one line, no `\n`/`\r`, at most 512
+  code points, exit 3 on failure). The write increments `revision` and
+  preserves the gaps; it creates `.horizon/` in `--cwd` if no store exists.
+- `horizon about` — print the current line and exit 0; print nothing, exit 0,
+  when unset (emptiness is not an error, same shape as `show`).
+- `horizon about --clear` — unset it: rewrite with `revision` + 1 **without**
+  the field, gaps preserved.
+
+`show` prints the line as a header ahead of the gap lines — the token
+`about`, two spaces, the text, the gap line format (§3.1). `--json` output is
+unchanged.
+
+Unset, the injected text is exactly §10.1/§10.2 — the about line adds a
+prefix and nothing else, so the locked strings never change to carry it. The
+prefix is composed by `horizon-inject` from the core package's `aboutPrefix`
+helper (D6: composition stays single-sourced there, never per-adapter).
+
+### 10.4 Acceptance tests for the texts
 
 34. The horizon block substitutes `{{GAPS}}` with `show` stdout byte-for-byte,
     with no added bullets, indentation, or trailing newline changes.
@@ -453,6 +494,14 @@ to prevent a behaviour the shorter text doesn't especially invite.
 36. Both strings are exported from the core package and imported by every
     adapter; no adapter contains a literal copy. (Enforced by a test that greps
     the adapter sources for a distinctive phrase from each string.)
+37. The about line, when set, is injected as `This project is about: <text>`
+    followed by a blank line ahead of the block (gaps present) or the nudge
+    (none); when unset, the injected text is byte-identical to §10.1/§10.2
+    alone.
+38. The about line survives every whole-file rewrite (`add`, `close`,
+    `amend`, `about` itself) and is removed only by `about --clear`, which
+    preserves the gaps. A non-string `about` in `gaps.json` is malformed
+    (exit 7), and an unset store never gains the field from a rewrite.
 
 ---
 

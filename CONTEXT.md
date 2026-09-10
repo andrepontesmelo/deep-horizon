@@ -10,8 +10,13 @@ start of every new agent session, on every harness, from a store shared by all
 of them.
 
 The horizon says where the work is *heading*. It is not what the project *is*
-(that is `AGENTS.md` / `CLAUDE.md`, and moving-target's distilled paragraph),
-and it is not what to do this session.
+(that is `AGENTS.md` / `CLAUDE.md`, the about line, and moving-target's
+distilled paragraph), and it is not what to do this session.
+
+## About
+
+One human-authored line saying what this project **is** — as opposed to the
+horizon, which says where the work is heading.
 
 ## Gap
 

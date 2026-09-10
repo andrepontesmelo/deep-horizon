@@ -29,10 +29,13 @@ Run `horizon` inside a project; the store lives in `.horizon/` (found upward,
 like git finds `.git`). `horizon init` creates it.
 
 ```
-usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|add|close|amend|log|session-end|init> [...]
+usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|log|session-end|init> [...]
 
 commands:
   show                      print open gaps (id + two spaces + text)
+  about                     print the about line
+  about "<text>"            set or replace the about line (what this project is)
+  about --clear             unset the about line
   add "<text>"              append a gap; prints the new id
   close <id>                remove a gap; frees a slot
   amend <id> "<text>"       rewrite a gap's text in place
@@ -42,9 +45,11 @@ commands:
 ```
 
 Only the human closes a gap. The agent proposes — `horizon add` / `horizon
-close` run only after the human says yes. Store files: `.horizon/gaps.json`
-(the open gaps), `.horizon/sessions.jsonl` and `.horizon/closes.jsonl`
-(append-only history).
+close` run only after the human says yes. The about line is one human-authored
+line saying what this project **is** (gaps say where the work is heading);
+when set, it is injected ahead of the horizon block. Store files:
+`.horizon/gaps.json` (the open gaps + the about line), `.horizon/sessions.jsonl`
+and `.horizon/closes.jsonl` (append-only history).
 
 ## Per-harness setup
 

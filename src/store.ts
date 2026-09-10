@@ -12,7 +12,7 @@ export const CLOSES_FILE = "closes.jsonl";
 export const GITIGNORE_BODY = "sessions.jsonl\n*.tmp.*\n";
 
 export function usage() {
-  return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|add|close|amend|log|session-end|init> [...]";
+  return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|log|session-end|init> [...]";
 }
 
 export function codePoints(s) {
@@ -157,6 +157,13 @@ export function readGapsFile(storeDir) {
   }
   if (!Number.isInteger(data.revision) || data.revision < 0) {
     return { ok: false, code: 7, message: `horizon: ${path}: invalid store: bad revision` };
+  }
+  // `about` (the human-authored one line saying what this project IS) is
+  // optional: absent = unset, and version stays 1 either way. Present, it
+  // must be a string — anything else is the same malformed-store exit as the
+  // checks above, never a silent drop (spec 1.1, 10.3).
+  if (data.about !== undefined && typeof data.about !== "string") {
+    return { ok: false, code: 7, message: `horizon: ${path}: invalid store: about is not a string` };
   }
   if (!Array.isArray(data.gaps)) {
     return { ok: false, code: 7, message: `horizon: ${path}: invalid store: gaps is not an array` };

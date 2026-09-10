@@ -20,9 +20,9 @@ import {
   writeGapsFile,
 } from "./store.ts";
 
-const COMMANDS = ["show", "add", "close", "amend", "log", "session-end", "init"];
+const COMMANDS = ["show", "about", "add", "close", "amend", "log", "session-end", "init"];
 const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin", "--summary", "--limit"]);
-const BOOL_FLAGS = new Set(["--json", "--help", "--version"]);
+const BOOL_FLAGS = new Set(["--json", "--help", "--version", "--clear"]);
 
 function flagKey(name) {
   return name.slice(2);
@@ -50,6 +50,9 @@ function helpText() {
     usage() +
     "\n\ncommands:\n" +
     "  show                      print open gaps (id + two spaces + text)\n" +
+    "  about                     print the about line\n" +
+    "  about \"<text>\"            set or replace the about line (what this project is)\n" +
+    "  about --clear             unset the about line\n" +
     "  add \"<text>\"             append a gap; prints the new id\n" +
     "  close <id>                remove a gap; frees a slot\n" +
     "  amend <id> \"<text>\"        rewrite a gap's text in place\n" +
@@ -114,17 +117,34 @@ function parseFlags(tokens, opts, explicit) {
   return { positionals };
 }
 
-function validateGapText(text) {
-  if (text.length === 0) return "horizon: gap text is empty; not saved.";
-  if (text.trim().length === 0) return "horizon: gap text is blank; not saved.";
+// One-line text validation shared by gap text and the about line (spec 10.3:
+// the about line is validated identically in shape to gap text). `label`
+// names the field in the message so the failure is never mysterious.
+function validateOneLineText(text, label) {
+  if (text.length === 0) return `horizon: ${label} is empty; not saved.`;
+  if (text.trim().length === 0) return `horizon: ${label} is blank; not saved.`;
   if (text.includes("\n") || text.includes("\r")) {
-    return "horizon: gap text contains a newline; not saved.";
+    return `horizon: ${label} contains a newline; not saved.`;
   }
   const n = codePoints(text);
   if (n > MAX_TEXT_POINTS) {
-    return `horizon: gap text is ${n} code points; the limit is ${MAX_TEXT_POINTS}. Not saved.`;
+    return `horizon: ${label} is ${n} code points; the limit is ${MAX_TEXT_POINTS}. Not saved.`;
   }
   return null;
+}
+
+function validateGapText(text) {
+  return validateOneLineText(text, "gap text");
+}
+
+// Every whole-file gaps.json rewrite goes through here. Rebuilding the store
+// as a bare {version, revision, gaps} would silently drop the about line
+// (spec 10.3), so it is carried forward — but only when the current store
+// carries it: an unset store stays without the field.
+function nextStore(cur, gaps) {
+  const next = { version: 1, revision: cur.revision + 1, gaps };
+  if (cur.about !== undefined) next.about = cur.about;
+  return next;
 }
 
 function capMessage(gaps) {
@@ -167,8 +187,8 @@ export async function main(argv) {
   if (command === undefined) return fail(2, "horizon: no command given");
   if (!COMMANDS.includes(command)) return fail(2, `horizon: unknown command: ${command}`);
 
-  // Per-command parsing: add/amend take their text positionally first so a
-  // text starting with dashes is still treated as text.
+  // Per-command parsing: add/amend/about take their text positionally first
+  // so a text starting with dashes is still treated as text.
   let text = null;
   let targetId = null;
   if (command === "add") {
@@ -182,9 +202,20 @@ export async function main(argv) {
     if (rest.length === 1) return fail(2, "horizon: amend requires <text>");
     targetId = rest[0];
     text = rest[1];
+  } else if (command === "about") {
+    // Optional single positional: `about "<text>"` sets, bare `about` prints.
+    if (rest.length > 0) text = rest[0];
   }
   const flagTokens =
-    command === "add" ? rest.slice(1) : command === "close" ? rest.slice(1) : command === "amend" ? rest.slice(2) : rest;
+    command === "add"
+      ? rest.slice(1)
+      : command === "close"
+        ? rest.slice(1)
+        : command === "amend"
+          ? rest.slice(2)
+          : command === "about"
+            ? rest.slice(1)
+            : rest;
   const cmdOpts = {};
   const cmdExplicit = new Set();
   const p2 = parseFlags(flagTokens, cmdOpts, cmdExplicit);
@@ -216,9 +247,58 @@ export async function main(argv) {
       if (!g.ok) return fail(g.code, g.message);
       if (json) {
         stdout(JSON.stringify(g.data.gaps) + "\n");
-      } else if (g.data.gaps.length > 0) {
-        stdout(g.data.gaps.map((gap) => `${gap.id}  ${gap.text}`).join("\n") + "\n");
+      } else {
+        // The about line prints as a header (`about` + two spaces + text,
+        // the gap line format) ahead of the gap lines — and alone when the
+        // store has an about but no gaps. --json output stays the bare gaps
+        // array, unchanged (spec 3.1, 10.3).
+        const lines = [];
+        if (typeof g.data.about === "string") lines.push(`about  ${g.data.about}`);
+        for (const gap of g.data.gaps) lines.push(`${gap.id}  ${gap.text}`);
+        if (lines.length > 0) stdout(lines.join("\n") + "\n");
       }
+      return 0;
+    }
+
+    case "about": {
+      const clear = !!opts.clear;
+      if (clear && text !== null) return fail(2, "horizon: about --clear takes no text");
+      if (!clear && text === null) {
+        // Print mode: the current line, or nothing at all when unset —
+        // emptiness is not an error (same shape as `show` on an empty store).
+        const r = resolveStore(cwd);
+        if (!r) return 0;
+        if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
+        const g = readGapsFile(r.dir);
+        if (!g.ok) return fail(g.code, g.message);
+        if (typeof g.data.about === "string") stdout(`${g.data.about}\n`);
+        return 0;
+      }
+      if (!clear) {
+        const bad = validateOneLineText(text, "about text");
+        if (bad) return fail(3, bad);
+      }
+      // Write mode: set/replace, or clear. Both rewrite the whole file with
+      // revision + 1, gaps preserved — clear writes the store WITHOUT the
+      // about field, so an unset store stays without it (spec 10.3).
+      const found = resolveStore(cwd);
+      let storeDir;
+      if (!found) {
+        if (clear) return 0; // nothing to unset, and no store to create
+        const m = ensureStoreDir(cwd);
+        if (m.code !== undefined) return fail(m.code, m.message);
+        storeDir = m.dir;
+        if (m.created) stderr(`horizon: created ${storeDir}\n`);
+      } else {
+        if (found.open.code !== undefined) return fail(found.open.code, found.open.message);
+        storeDir = found.dir;
+      }
+      const cur = readGapsFile(storeDir);
+      if (!cur.ok) return fail(cur.code, cur.message);
+      const next = { version: 1, revision: cur.data.revision + 1, gaps: cur.data.gaps };
+      if (!clear) next.about = text;
+      const w = writeGapsFile(storeDir, next);
+      if (w) return fail(w.code, w.message);
       return 0;
     }
 
@@ -255,7 +335,7 @@ export async function main(argv) {
           origin,
         },
       };
-      const next = { version: 1, revision: cur.data.revision + 1, gaps: [...cur.data.gaps, gap] };
+      const next = nextStore(cur.data, [...cur.data.gaps, gap]);
       const w = writeGapsFile(storeDir, next);
       if (w) return fail(w.code, w.message);
       stdout(`${id}\n`);
@@ -271,11 +351,10 @@ export async function main(argv) {
       if (!cur.ok) return fail(cur.code, cur.message);
       const gap = cur.data.gaps.find((g) => g.id === targetId);
       if (!gap) return fail(5, `horizon: unknown gap id: ${targetId}`);
-      const next = {
-        version: 1,
-        revision: cur.data.revision + 1,
-        gaps: cur.data.gaps.filter((g) => g.id !== targetId),
-      };
+      const next = nextStore(
+        cur.data,
+        cur.data.gaps.filter((g) => g.id !== targetId),
+      );
       // Record first (ADV-3): the close record lands in closes.jsonl before
       // gaps.json shrinks, so an append failure leaves the gap open and the
       // store unchanged. A close record whose gap is still open (crash
@@ -306,7 +385,7 @@ export async function main(argv) {
       const bad = validateGapText(text);
       if (bad) return fail(3, bad);
       const gaps = cur.data.gaps.map((g) => (g.id === targetId ? { ...g, text } : g));
-      const w = writeGapsFile(storeDir, { version: 1, revision: cur.data.revision + 1, gaps });
+      const w = writeGapsFile(storeDir, nextStore(cur.data, gaps));
       if (w) return fail(w.code, w.message);
       return 0;
     }

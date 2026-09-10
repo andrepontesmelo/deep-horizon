@@ -1123,3 +1123,170 @@ test("X6. init writes .horizon/.gitignore (sessions.jsonl, *.tmp.*); gaps.json n
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- about (spec 1.1, 10.3: the human-authored about line) ---
+
+test("about-1. about \"<text>\" sets and replaces the line, bumps revision, preserves gaps; bare about prints it", async () => {
+  const dir = freshDir();
+  try {
+    const gaps = seed(dir, ["Existing gap"]);
+    const r = await run(["about", "AI plugin to help agents with long term goals", "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const state = readGaps(dir);
+    assert.equal(state.about, "AI plugin to help agents with long term goals");
+    assert.equal(state.revision, gaps.length + 1);
+    assert.deepEqual(state.gaps, gaps);
+    const print = await run(["about", "--cwd", dir]);
+    assert.equal(print.code, 0);
+    assert.equal(print.stdout, "AI plugin to help agents with long term goals\n");
+    // A second set REPLACES rather than appends.
+    const r2 = await run(["about", "A different line", "--cwd", dir]);
+    assert.equal(r2.code, 0, `stderr: ${r2.stderr}`);
+    assert.equal(readGaps(dir).about, "A different line");
+    assert.equal(readGaps(dir).gaps.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-2. bare about on an unset store and on no store: prints nothing, exit 0", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["A gap without an about"]);
+    const r = await run(["about", "--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, "");
+    const none = freshDir();
+    try {
+      const r2 = await run(["about", "--cwd", none]);
+      assert.equal(r2.code, 0);
+      assert.equal(r2.stdout, "");
+    } finally {
+      rmSync(none, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-3. show prints the about header before gaps, alone when gapless; --json shape unchanged", async () => {
+  const dir = freshDir();
+  try {
+    const gaps = seed(dir, ["First gap", "Second gap"]);
+    await run(["about", "AI plugin to help agents with long term goals", "--cwd", dir]);
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.equal(
+      r.stdout,
+      `about  AI plugin to help agents with long term goals\n${gaps[0].id}  First gap\n${gaps[1].id}  Second gap\n`,
+    );
+    const j = await run(["show", "--cwd", dir, "--json"]);
+    assert.equal(j.code, 0);
+    assert.deepEqual(JSON.parse(j.stdout), gaps); // bare gaps array, no about
+    // About set, no gaps: the header line alone.
+    const bare = freshDir();
+    try {
+      seed(bare, []);
+      await run(["about", "Only an about", "--cwd", bare]);
+      const b = await run(["show", "--cwd", bare]);
+      assert.equal(b.code, 0);
+      assert.equal(b.stdout, "about  Only an about\n");
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-4. validation: empty/blank/newline/513 code points -> exit 3 (same style as gap text); unknown flag or extra positional -> exit 2", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const empty = await run(["about", "", "--cwd", dir]);
+    assert.equal(empty.code, 3);
+    assert.match(empty.stderr, /about text is empty; not saved\./);
+    assert.equal((await run(["about", "   ", "--cwd", dir])).code, 3);
+    assert.equal((await run(["about", "\t ", "--cwd", dir])).code, 3);
+    const nl = await run(["about", "line one\nline two", "--cwd", dir]);
+    assert.equal(nl.code, 3);
+    assert.match(nl.stderr, /about text contains a newline/);
+    const over = await run(["about", "x".repeat(513), "--cwd", dir]);
+    assert.equal(over.code, 3);
+    assert.match(over.stderr, /about text is 513 code points; the limit is 512\. Not saved\./);
+    assert.equal((await run(["about", "x".repeat(512), "--cwd", dir])).code, 0);
+    // Usage errors: unknown flag, extra positional, --clear with text.
+    assert.equal((await run(["about", "text", "--bogus", "--cwd", dir])).code, 2);
+    assert.equal((await run(["about", "one", "two", "--cwd", dir])).code, 2);
+    assert.equal((await run(["about", "text", "--clear", "--cwd", dir])).code, 2);
+    // The rejected sets did not overwrite the accepted 512-point one.
+    const state = readGaps(dir);
+    assert.equal(state.about, "x".repeat(512));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-5. --clear removes the field, bumps revision, preserves gaps", async () => {
+  const dir = freshDir();
+  try {
+    const gaps = seed(dir, ["Survives the clear"]);
+    await run(["about", "Doomed about line", "--cwd", dir]);
+    const before = readGaps(dir);
+    const r = await run(["about", "--clear", "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const state = readGaps(dir);
+    assert.equal(state.about, undefined);
+    assert.ok(!("about" in state), "the about field must be absent, not null");
+    assert.equal(state.revision, before.revision + 1);
+    assert.deepEqual(state.gaps, gaps);
+    const print = await run(["about", "--cwd", dir]);
+    assert.equal(print.stdout, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-6. about survives add, close, and amend rewrites; an unset store never gains the field", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const a = await run(["add", "First", "--cwd", dir]);
+    assert.equal(a.code, 0);
+    // Unset store: add must not write an about key.
+    assert.ok(!("about" in readGaps(dir)), "unset store gained an about field");
+    await run(["about", "AI plugin to help agents with long term goals", "--cwd", dir]);
+    const id1 = a.stdout.trim();
+    const b = await run(["add", "Second", "--cwd", dir]);
+    assert.equal(b.code, 0);
+    assert.equal(readGaps(dir).about, "AI plugin to help agents with long term goals");
+    const m = await run(["amend", id1, "Reworded", "--cwd", dir]);
+    assert.equal(m.code, 0, `stderr: ${m.stderr}`);
+    assert.equal(readGaps(dir).about, "AI plugin to help agents with long term goals");
+    const c = await run(["close", id1, "--cwd", dir]);
+    assert.equal(c.code, 0, `stderr: ${c.stderr}`);
+    const state = readGaps(dir);
+    assert.equal(state.about, "AI plugin to help agents with long term goals");
+    assert.deepEqual(state.gaps.map((g) => g.text), ["Second"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("about-7. non-string about in gaps.json: exit 7 naming the file, store untouched", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    const raw = '{"version":1,"revision":1,"about":42,"gaps":[]}';
+    writeFileSync(join(dir, ".horizon", "gaps.json"), raw + "\n");
+    const r = await run(["about", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /gaps\.json/);
+    assert.match(r.stderr, /about is not a string/);
+    const s = await run(["show", "--cwd", dir]);
+    assert.equal(s.code, 7);
+    assert.equal(readFileSync(join(dir, ".horizon", "gaps.json"), "utf8"), raw + "\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
