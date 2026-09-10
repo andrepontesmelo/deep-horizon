@@ -13,3 +13,4 @@ author: Andre Pontes Melo
 # (test 66 asserts this list equals what register() subscribes).
 provides_hooks:
   - on_session_finalize
+  - pre_llm_call

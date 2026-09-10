@@ -138,7 +138,8 @@ test("54. the Hermes plugin register() wires the section, the finalize hook, and
       "horizon_line.register(Ctx())",
       "kinds = [c[0] for c in calls]",
       "assert kinds.count('section') == 1, kinds",
-      "assert kinds.count('hook') == 1 and calls[[k[0] for k in calls].index('hook')][1] == 'on_session_finalize', kinds",
+      "hooks = sorted(c[1] for c in calls if c[0] == 'hook')",
+      "assert hooks == ['on_session_finalize', 'pre_llm_call'], hooks",
       "sec = [c for c in calls if c[0] == 'section'][0]",
       "assert sec[1] == 'horizon-line', sec[1]",
       "assert sec[3].get('max_chars') == 4000, sec[3]",
@@ -147,7 +148,7 @@ test("54. the Hermes plugin register() wires the section, the finalize hook, and
       "assert horizon_line._section_text({'session_id': 'x', 'cwd': '/tmp', 'parent_session_id': 'p'}) == ''",
       "# The finalize handler swallows everything with no store around.",
       "import inspect",
-      "fin = [c for c in calls if c[0] == 'hook'][0][2]",
+      "fin = [c for c in calls if c[0] == 'hook' and c[1] == 'on_session_finalize'][0][2]",
       "assert inspect.iscoroutinefunction(fin) or callable(fin)",
       "fin({'session_id': 'nope', 'platform': 'cli', 'reason': 'shutdown'})",
       "print('OK')",
@@ -496,8 +497,8 @@ test("65. the Hermes plugin loads under the real directory-plugin contract: __in
       "    def register_hook(self, n, cb): calls.append(('hook', n, cb))",
       "register(Ctx())",
       "assert [c[0] for c in calls].count('section') == 1, calls",
-      "hook = [c for c in calls if c[0] == 'hook'][0]",
-      "assert hook[1] == 'on_session_finalize', hook[1]",
+      "hooks = sorted(c[1] for c in calls if c[0] == 'hook')",
+      "assert hooks == ['on_session_finalize', 'pre_llm_call'], hooks",
       "assert callable([c for c in calls if c[0] == 'section'][0][2]), 'section content must stay callable'",
       "print('OK')",
       "",
@@ -538,6 +539,132 @@ test("66. every hook the Hermes plugin registers is declared in plugin.yaml prov
       "else:",
       "    declared = set(re.findall(r'-\\s*([A-Za-z0-9_]+)', m.group('block')))",
       "assert declared == registered, 'manifest declares %s but register() subscribes %s' % (sorted(declared), sorted(registered))",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("68. the Hermes pre_llm_call hook injects the block only for NEW tool-call params touching a stored repo", () => {
+  // Locked design: scan assistant tool_calls (PARAMS only, delta since the last
+  // call) for /home/andre/git/<repo> paths. Tool RESULTS and user text are
+  // never scanned. No store -> silence (nudge never fires from params).
+  // parent_session_id set -> skip. Same (session, repo) twice -> once.
+  const dir = freshDir();
+  try {
+    const alpha = join(dir, "alpha");
+    const beta = join(dir, "beta");
+    seed(alpha, ["alpha gap"]);
+    seed(beta, ["beta gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "horizon_line._seen.clear()",
+      "horizon_line._scanned.clear()",
+      "def call(session, history, **kw):",
+      "    return horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw)",
+      "alpha = " + JSON.stringify(alpha),
+      "beta = " + JSON.stringify(beta),
+      "# Positive: terminal command string with git -C.",
+      "r = call('s-a', [], user_message='go', terminal_cwd='/tmp')",
+      "assert r == '' or r is None or (isinstance(r, dict) and not r.get('context')), 'no tool touch yet: %r' % (r,)",
+      "hist1 = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'git -C ' + alpha + ' status'})}},",
+      "]}]",
+      "r = call('s-a', hist1, user_message='go', terminal_cwd='/tmp')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert 'alpha gap' in ctx, 'git -C touch must inject alpha: %r' % (ctx[:80],)",
+      "# Delta: same history again injects nothing (already seen).",
+      "r = call('s-a', hist1, user_message='go', terminal_cwd='/tmp')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'repeat history must not re-inject: %r' % (ctx[:80],)",
+      "# Distinct repo on the next delta injects its own block.",
+      "hist2 = hist1 + [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c2', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': beta + '/notes.md'})}},",
+      "]}]",
+      "r = call('s-a', hist2, user_message='go', terminal_cwd='/tmp')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert 'beta gap' in ctx, 'read_file touch must inject beta: %r' % (ctx[:80],)",
+      "# workdir arg + cd inside the command string.",
+      "hist3 = hist2 + [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c3', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'cd ' + alpha + ' && ls', 'workdir': beta})}},",
+      "]}]",
+      "r = call('s-b', hist3, user_message='go', terminal_cwd='/tmp')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert 'alpha gap' in ctx and 'beta gap' in ctx, 'fresh session sees both repos: %r' % (ctx[:120],)",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("69. the Hermes pre_llm_call hook ignores tool results, user text, unknown tools, and store-less repos", () => {
+  const dir = freshDir();
+  try {
+    const repo = join(dir, "repo");
+    seed(repo, ["repo gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import horizon_line",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "horizon_line._seen.clear()",
+      "horizon_line._scanned.clear()",
+      "def call(session, history, **kw):",
+      "    return horizon_line._pre_llm_call(session_id=session, conversation_history=history, **kw)",
+      "repo = " + JSON.stringify(repo),
+      "# Tool RESULT carrying a repo path: params carry nothing -> silence.",
+      "hist = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'ls /tmp'})}},",
+      "]}, {'role': 'tool', 'content': 'files under ' + repo + ': a, b, c'}]",
+      "r = call('s-neg', hist, user_message='go')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'tool results must never trigger: %r' % (ctx[:80],)",
+      "# User message carrying a repo path: never scanned -> silence.",
+      "r = call('s-neg', [], user_message='look at ' + repo + '/notes.md')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'user text must never trigger: %r' % (ctx[:80],)",
+      "# Unknown tool (mcp_*, skill): params ignored.",
+      "hist2 = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c2', 'function': {'name': 'mcp__x__read', 'arguments': json.dumps({'path': repo + '/f'})}},",
+      "]}]",
+      "r = call('s-neg', hist2, user_message='go')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'unknown tools must be ignored: %r' % (ctx[:80],)",
+      "# ~/git root without a store: silence, never the nudge.",
+      "hist3 = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c3', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': os.environ['HORIZON_GIT_ROOT'] + 'nostore-xyz/README.md'})}},",
+      "]}]",
+      "r = call('s-neg', hist3, user_message='go')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'store-less repo must stay silent: %r' % (ctx[:80],)",
+      "# parent_session_id set: subagent skip even with a real touch.",
+      "hist4 = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c4', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': repo + '/notes.md'})}},",
+      "]}]",
+      "r = call('s-neg', hist4, user_message='go', parent_session_id='p-1')",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'subagent must be skipped: %r' % (ctx[:80],)",
+      "# First-turn launch-cwd repo: the frozen section owns it, not this hook.",
+      "r = call('s-first', hist4, user_message='go', is_first_turn=True, terminal_cwd=repo)",
+      "ctx = r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "assert not ctx, 'first-turn frozen repo must not duplicate: %r' % (ctx[:80],)",
       "print('OK')",
       "",
     ].join("\n"));
