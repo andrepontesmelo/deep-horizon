@@ -139,11 +139,31 @@ npm install -g horizon-line
 git clone https://github.com/andrepontesmelo/horizon-line
 cp -r horizon-line/adapters/hermes ~/.hermes/plugins/horizon-line
 hermes plugins enable horizon-line
+systemctl --user restart hermes-gateway   # the gateway loads plugins at start
 ```
 
-The Python plugin registers a persistent system-prompt section that spawns
-`horizon-inject --harness hermes`, and closes with `on_session_finalize` →
-`horizon session-end --harness hermes --session <id>`.
+The Python plugin wires the horizon into Hermes at three points. All spawning
+goes through the `horizon` / `horizon-inject` bins (the plugin never composes
+the texts itself) and every hook fails open — a missing bin, a timeout, or an
+error injects nothing and never blocks a session.
+
+- **Session start (frozen section):** a persistent system-prompt section spawns
+  `horizon-inject --harness hermes` for the session's working directory. The
+  core renders it once, freezes it into the prompt, and persists it verbatim,
+  so resumes never duplicate it. Subagent sessions render nothing.
+- **Every turn (param trigger):** after each user turn the plugin scans ONLY
+  the new assistant tool-call parameters — `terminal` (command + workdir),
+  `read_file` / `write_file` / `patch` / `search_files` (path),
+  `execute_code` (code) — for touches under the git root (`/home/andre/git/`
+  or `~/git/`). When a touched repo has a `.horizon/` store, its horizon is
+  injected into that turn once per (session, repo). Tool results and user
+  messages are never scanned (asking "list all files in my workspace" injects
+  nothing), store-less repos stay silent (the nudge never fires here), and
+  subagents are skipped. The horizon arrives on the turn **after** the first
+  touch: the first action in a repo is uninformed by design.
+- **Session end:** `on_session_finalize` →
+  `horizon session-end --harness hermes --session <id>` (summary omitted, so
+  the record carries `summary: null`).
 
 ## Manual use, no global install
 
