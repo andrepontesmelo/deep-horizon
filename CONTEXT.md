@@ -115,7 +115,8 @@ The **bootstrap nudge** lands when there is no about line either (store absent
 or empty): the agent may offer once, unprompted, to set the about line or add
 the first gap — with a draft, and only after the human's yes. A decline ends
 the offering for this session; being asked again in a later session is
-expected.
+expected. One exception: a storeless launch from the home directory is
+silence — $HOME is not a project.
 
 The **warm nudge** lands when an about line is set but no gaps exist: offer to
 add a gap when the human voices a lasting want, and offer to update the about
@@ -130,9 +131,12 @@ everything below inherits the nearest one.
 
 ## Injection
 
-Placing the current open gaps into an agent session's context before the
-human's first turn. Only genuinely new sessions — never resumed, compacted, or
-subagent sessions, which already carry context.
+Placing the horizon into an agent session's context — the block when gaps are
+open, a nudge when they are not. The startup injection lands once, at the
+start of a genuinely new session — never resumed, compacted, or subagent
+sessions, which already carry context. Harnesses with no usable close hook
+add the **session-end steer**: a mid-session prompt asking the agent to run
+`horizon session-end` while it can still write the summary.
 
 ## Revision
 

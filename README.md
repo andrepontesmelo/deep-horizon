@@ -19,9 +19,9 @@ is configured; hooks fail open (they inject nothing) when the bin is missing.
 npm install -g deep-horizon
 ```
 
-Status: this package ships the CLI core (`horizon`). Harness adapters and the
-`horizon-inject` composer land in subsequent releases — the per-harness setup
-below documents the target wiring.
+Status: this package ships the CLI core (`horizon`), the `horizon-inject`
+composer, and adapters for every harness below (Claude Code has no npm
+artifact — its settings block is the adapter).
 
 ## CLI
 
@@ -55,11 +55,21 @@ and `.horizon/closes.jsonl` (append-only history).
 
 ### 1. DeepSeek Harness (DSH) — reference implementation
 
+Install from a built checkout, CLI first:
+
 ```bash
 npm install -g deep-horizon
-npm pack deep-horizon          # or: git clone ... && cd deep-horizon && npm pack
-dsh plugin --profile <profile> add file:./deep-horizon-<version>.tgz
+git clone https://github.com/andrepontesmelo/deep-horizon
+cd deep-horizon && npm pack     # prepare runs the build, so the tgz is never stale
+dsh --profile <profile> --from-default-profile sdk-minimal --dump-config
+dsh plugin --profile <profile> add file:/abs/path/deep-horizon-<version>.tgz
 ```
+
+`npm pack deep-horizon` (by name) packs the registry copy, not this code. The
+`plugin add` warns that deep-horizon "declares no dsh.bundle — installed as a
+plain dependency, not a profile layer". That is expected; the manual step it
+implies is the mount row below. Whether `dsh plugin add npm:deep-horizon`
+works was not probed — the tgz path is the documented one.
 
 Mount in the profile's `cordis.patch.yml`:
 
@@ -69,9 +79,28 @@ Mount in the profile's `cordis.patch.yml`:
       name: deep-horizon/dsh
 ```
 
-Session-end uses the mid-session fallback: the adapter prompts the agent to
-run `horizon session-end --harness dsh --session <id>` mid-session, where
-model text is still available.
+then verify the wiring with `dsh --profile <profile> --dump-config`.
+
+At session start (`agent/session-start`) the adapter composes one block via
+`horizon-inject` and seeds it once per agent — fresh, top-level startups only
+(`source === "startup"`; resumed or compacted sessions replay their original
+injection, subagents never get one, and a fail-open miss stays retryable).
+The block is one of the composer's three variants: the bootstrap nudge on a
+project with no store or an empty one, the warm nudge when an about line is
+set but no gaps are, the horizon block when gaps are open (the about line
+prefixes it when set). A storeless launch from the home directory stays
+silent — $HOME is not a project.
+
+Session end is best-effort by necessity: DSH has no usable close hook —
+`agent/disposed` fires unawaited after the loop stops, when model text is
+already gone. So on the first turn stop of a top-level session the adapter
+steers the agent once to run, mid-session and with the user's approval:
+
+```
+horizon session-end --harness dsh --session <id> [--summary "<text>"]
+```
+
+Omitting `--summary` records `summary: null` — a summary is never fabricated.
 
 ### 2. Claude Code
 
@@ -91,15 +120,26 @@ npm install -g deep-horizon
           { "type": "command", "command": "horizon-inject --harness claude-code" }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "horizon session-end --harness claude-code --session \"$(jq -r .session_id)\""
+          }
+        ]
+      }
     ]
   }
 }
 ```
 
 `startup` only: resumed/compacted/forked sessions replay the original
-injection from their transcript, so re-injecting would duplicate it. Close
-hook: `SessionEnd` → `horizon session-end` (the only close hook proven to
-fire on SIGINT/SIGTERM).
+injection from their transcript, so re-injecting would duplicate it.
+`SessionEnd` is the only close hook proven to fire on SIGINT/SIGTERM; its
+stdin JSON carries the session id (`jq -r .session_id` reads it), and the
+record carries `summary: null` — the close hook cannot elicit model text.
 
 ### 3. pi
 
@@ -118,6 +158,9 @@ adapter skips injection when `HORIZON_SUBAGENT` is set to a truthy value
 (`1`, `true`, `yes`). Subagent extensions should export `HORIZON_SUBAGENT=1`
 in the child process environment. Fail-open: absent the variable, injection
 happens — a subagent that receives the horizon is noise, not harm.
+
+Close: `session_shutdown` runs `horizon session-end --harness pi --session
+<id>` — no `--summary`, so the record carries `summary: null`.
 
 ### 4. opencode — DEGRADED
 
