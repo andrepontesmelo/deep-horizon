@@ -28,7 +28,7 @@ function seed(dir, texts) {
   const store = join(dir, ".horizon");
   mkdirSync(store, { recursive: true });
   const gaps = texts.map((text, i) => ({
-    id: `g_${(i + 1).toString(16).padStart(8, "0")}`,
+    id: `gap-${i + 1}`,
     text,
     added_at: `2026-09-08T15:0${i}:11Z`,
     provenance: { harness: "test", session_id: "seed", tty: false, origin: "human" },
@@ -131,9 +131,9 @@ test("7. 512 code points accepted; 513 rejected with exit 3 and count in stderr"
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const ok = await run(["add", "x".repeat(512), "--cwd", dir]);
+    const ok = await run(["add", "long-text", "x".repeat(512), "--cwd", dir]);
     assert.equal(ok.code, 0);
-    const bad = await run(["add", "x".repeat(513), "--cwd", dir]);
+    const bad = await run(["add", "longer-text", "x".repeat(513), "--cwd", dir]);
     assert.equal(bad.code, 3);
     assert.match(bad.stderr, /513/);
   } finally {
@@ -145,7 +145,7 @@ test("8. 512 astral-plane emoji accepted (code points, not UTF-16 units)", async
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const r = await run(["add", "🐟".repeat(512), "--cwd", dir]);
+    const r = await run(["add", "emoji-flood", "🐟".repeat(512), "--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -157,7 +157,7 @@ test("9. ção-heavy text near the cap accepted (code points, not bytes)", async
   try {
     await run(["init", "--cwd", dir]);
     // "ção" = 3 code points, 5 bytes in UTF-8, 170 repetitions = 510 points.
-    const r = await run(["add", "ção".repeat(170), "--cwd", dir]);
+    const r = await run(["add", "cao-text", "ção".repeat(170), "--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     const state = readGaps(dir);
     assert.equal([...state.gaps[0].text].length, 510);
@@ -170,7 +170,7 @@ test("10. embedded newline rejected, exit 3", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const r = await run(["add", "line one\nline two", "--cwd", dir]);
+    const r = await run(["add", "two-lines", "line one\nline two", "--cwd", dir]);
     assert.equal(r.code, 3);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -181,9 +181,9 @@ test("11. empty and whitespace-only text rejected, exit 3", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    assert.equal((await run(["add", "", "--cwd", dir])).code, 3);
-    assert.equal((await run(["add", "   ", "--cwd", dir])).code, 3);
-    assert.equal((await run(["add", "\t ", "--cwd", dir])).code, 3);
+    assert.equal((await run(["add", "empty-text", "", "--cwd", dir])).code, 3);
+    assert.equal((await run(["add", "blank-text", "   ", "--cwd", dir])).code, 3);
+    assert.equal((await run(["add", "tab-text", "\t ", "--cwd", dir])).code, 3);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -194,10 +194,10 @@ test("12. 6th add rejected with exit 4, store still has 5", async () => {
   try {
     await run(["init", "--cwd", dir]);
     for (let i = 0; i < 5; i++) {
-      const r = await run(["add", `Gap ${i}`, "--cwd", dir]);
+      const r = await run(["add", `gap-${i}`, `Gap ${i}`, "--cwd", dir]);
       assert.equal(r.code, 0);
     }
-    const r = await run(["add", "One too many", "--cwd", dir]);
+    const r = await run(["add", "gap-5", "One too many", "--cwd", dir]);
     assert.equal(r.code, 4);
     assert.equal(readGaps(dir).gaps.length, 5);
   } finally {
@@ -209,9 +209,9 @@ test("13. rejected add does not increment revision", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    for (let i = 0; i < 5; i++) await run(["add", `Gap ${i}`, "--cwd", dir]);
+    for (let i = 0; i < 5; i++) await run(["add", `gap-${i}`, `Gap ${i}`, "--cwd", dir]);
     const before = readGaps(dir).revision;
-    const r = await run(["add", "One too many", "--cwd", dir]);
+    const r = await run(["add", "gap-5", "One too many", "--cwd", dir]);
     assert.equal(r.code, 4);
     assert.equal(readGaps(dir).revision, before);
   } finally {
@@ -219,17 +219,152 @@ test("13. rejected add does not increment revision", async () => {
   }
 });
 
-test("14. ids differ and match ^g_[0-9a-f]{8}$", async () => {
+test("14. add prints the caller-supplied id; ids match the slug grammar", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const a = await run(["add", "First", "--cwd", dir]);
-    const b = await run(["add", "Second", "--cwd", dir]);
-    assert.equal(a.code, 0);
-    assert.equal(b.code, 0);
-    assert.match(a.stdout.trim(), /^g_[0-9a-f]{8}$/);
-    assert.match(b.stdout.trim(), /^g_[0-9a-f]{8}$/);
-    assert.notEqual(a.stdout.trim(), b.stdout.trim());
+    const a = await run(["add", "first-gap", "First", "--cwd", dir]);
+    const b = await run(["add", "second-gap", "Second", "--cwd", dir]);
+    assert.equal(a.code, 0, `stderr: ${a.stderr}`);
+    assert.equal(b.code, 0, `stderr: ${b.stderr}`);
+    assert.equal(a.stdout.trim(), "first-gap");
+    assert.equal(b.stdout.trim(), "second-gap");
+    assert.match(a.stdout.trim(), /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("14a. add without an id, or without text, is a usage error: exit 2", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const bare = await run(["add", "--cwd", dir]);
+    assert.equal(bare.code, 2);
+    assert.match(bare.stderr, /add requires <id> <text>/);
+    const noText = await run(["add", "lonely-id", "--cwd", dir]);
+    assert.equal(noText.code, 2);
+    assert.match(noText.stderr, /add requires <text>/);
+    assert.equal(readGaps(dir).gaps.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("14b. an id off the slug grammar is rejected, exit 2, stating the id", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const bad = ["Big-Camel", "ab", "-lead", "trail-", "g_deadbeef", "double--hyphen", "under_score", "has space", "a".repeat(41)];
+    for (const id of bad) {
+      const r = await run(["add", id, "text", "--cwd", dir]);
+      assert.equal(r.code, 2, `${JSON.stringify(id)}: exit ${r.code}: ${r.stderr}`);
+      assert.ok(r.stderr.includes(id), `${JSON.stringify(id)}: id not named in stderr: ${r.stderr}`);
+    }
+    // Grammar edges that must pass: shortest, longest, digits after the head.
+    assert.equal((await run(["add", "abc", "min length", "--cwd", dir])).code, 0);
+    assert.equal((await run(["add", `${"a".repeat(39)}9`, "max length", "--cwd", dir])).code, 0);
+    assert.equal((await run(["add", "gap2", "digits after the head", "--cwd", dir])).code, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("14c. adding an id that is already an open gap: exit 8, store unchanged", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    assert.equal((await run(["add", "dupe-me", "First", "--cwd", dir])).code, 0);
+    const before = readGaps(dir);
+    const r = await run(["add", "dupe-me", "Second", "--cwd", dir]);
+    assert.equal(r.code, 8);
+    assert.match(r.stderr, /dupe-me/);
+    const after = readGaps(dir);
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.gaps.length, 1);
+    assert.equal(after.gaps[0].text, "First");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("14d. adding an id that was closed: exit 8 — ids are never reused", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const a = await run(["add", "reusable", "Doomed", "--cwd", dir]);
+    assert.equal(a.code, 0, `stderr: ${a.stderr}`);
+    const c = await run(["close", "reusable", "--cwd", dir]);
+    assert.equal(c.code, 0, `stderr: ${c.stderr}`);
+    const r = await run(["add", "reusable", "Reborn", "--cwd", dir]);
+    assert.equal(r.code, 8);
+    assert.match(r.stderr, /reusable/);
+    assert.equal(readGaps(dir).gaps.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("14e. close appends to closed_ids; a legacy store without the field reads empty and gains it on the next save", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    assert.deepEqual(readGaps(dir).closed_ids, []);
+    assert.equal((await run(["add", "gone-soon", "Doomed", "--cwd", dir])).code, 0);
+    const c = await run(["close", "gone-soon", "--cwd", dir]);
+    assert.equal(c.code, 0, `stderr: ${c.stderr}`);
+    assert.deepEqual(readGaps(dir).closed_ids, ["gone-soon"]);
+    // A store written before closed_ids existed: missing reads as empty, and
+    // the next whole-file save writes the field.
+    const legacy = freshDir();
+    try {
+      mkdirSync(join(legacy, ".horizon"), { recursive: true });
+      writeFileSync(
+        join(legacy, ".horizon", "gaps.json"),
+        JSON.stringify({
+          version: 1,
+          revision: 3,
+          gaps: [{ id: "old-gap", text: "Legacy", added_at: "2026-09-08T15:00:00Z", provenance: { harness: "t", session_id: "s", tty: false, origin: "human" } }],
+        }) + "\n",
+      );
+      assert.equal(readGaps(legacy).closed_ids, undefined);
+      const m = await run(["amend", "old-gap", "Legacy amended", "--cwd", legacy]);
+      assert.equal(m.code, 0, `stderr: ${m.stderr}`);
+      assert.deepEqual(readGaps(legacy).closed_ids, []);
+    } finally {
+      rmSync(legacy, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("14f. old g_<hex> gap ids and bad closed_ids make the store malformed: exit 7", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    const legacy = {
+      version: 1,
+      revision: 1,
+      gaps: [{ id: "g_00000001", text: "Old shape", added_at: "2026-09-08T15:00:00Z" }],
+    };
+    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(legacy) + "\n");
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /gaps\.json/);
+    assert.match(r.stderr, /invalid gap id/);
+    assert.equal(readFileSync(join(dir, ".horizon", "gaps.json"), "utf8"), JSON.stringify(legacy) + "\n");
+    // A closed_ids entry off the grammar is the same exit-7 family...
+    writeFileSync(
+      join(dir, ".horizon", "gaps.json"),
+      JSON.stringify({ version: 1, revision: 1, gaps: [], closed_ids: ["not a slug!"] }) + "\n",
+    );
+    const r2 = await run(["show", "--cwd", dir]);
+    assert.equal(r2.code, 7);
+    assert.match(r2.stderr, /closed_ids/);
+    // ...and so is a closed_ids that is not an array.
+    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify({ version: 1, revision: 1, gaps: [], closed_ids: "nope" }) + "\n");
+    assert.equal((await run(["show", "--cwd", dir])).code, 7);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -238,7 +373,7 @@ test("14. ids differ and match ^g_[0-9a-f]{8}$", async () => {
 test("15. add with no store creates one and says so", async () => {
   const dir = freshDir();
   try {
-    const r = await run(["add", "First gap", "--cwd", dir]);
+    const r = await run(["add", "first-gap", "First gap", "--cwd", dir]);
     assert.equal(r.code, 0);
     assert.match(r.stderr, /created/i);
     assert.equal(readGaps(dir).gaps.length, 1);
@@ -255,13 +390,13 @@ test("16. close removes the gap and frees a slot", async () => {
     await run(["init", "--cwd", dir]);
     const ids = [];
     for (let i = 0; i < 5; i++) {
-      const r = await run(["add", `Gap ${i}`, "--cwd", dir]);
+      const r = await run(["add", `gap-${i}`, `Gap ${i}`, "--cwd", dir]);
       ids.push(r.stdout.trim());
     }
     const c = await run(["close", ids[0], "--cwd", dir]);
     assert.equal(c.code, 0);
     assert.equal(readGaps(dir).gaps.length, 4);
-    const again = await run(["add", "Replacement", "--cwd", dir]);
+    const again = await run(["add", "replacement-gap", "Replacement", "--cwd", dir]);
     assert.equal(again.code, 0);
     assert.equal(readGaps(dir).gaps.length, 5);
   } finally {
@@ -274,10 +409,26 @@ test("17. close on unknown id: exit 5, store unchanged", async () => {
   try {
     seed(dir, ["Keep me"]);
     const before = readFileSync(join(dir, ".horizon", "gaps.json"), "utf8");
-    const r = await run(["close", "g_deadbeef", "--cwd", dir]);
+    const r = await run(["close", "no-such-gap", "--cwd", dir]);
     assert.equal(r.code, 5);
-    assert.match(r.stderr, /g_deadbeef/);
+    assert.match(r.stderr, /no-such-gap/);
     assert.equal(readFileSync(join(dir, ".horizon", "gaps.json"), "utf8"), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("17b. close or amend with an id off the grammar: exit 5, stating the id", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Keep me"]);
+    for (const argv of [["close", "g_deadbeef"], ["amend", "Big-Camel", "new text"]]) {
+      const r = await run([...argv, "--cwd", dir]);
+      assert.equal(r.code, 5, `${argv[0]}: exit ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /invalid gap id/);
+      assert.ok(r.stderr.includes(argv[1]), `${argv[0]}: id not named in stderr: ${r.stderr}`);
+    }
+    assert.equal(readGaps(dir).gaps.length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -287,7 +438,7 @@ test("18. close twice: second is exit 5", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const a = await run(["add", "Doomed", "--cwd", dir]);
+    const a = await run(["add", "doomed-gap", "Doomed", "--cwd", dir]);
     const id = a.stdout.trim();
     assert.equal((await run(["close", id, "--cwd", dir])).code, 0);
     assert.equal((await run(["close", id, "--cwd", dir])).code, 5);
@@ -300,7 +451,7 @@ test("19. amend changes text but not id or added_at", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const a = await run(["add", "Original wording", "--cwd", dir]);
+    const a = await run(["add", "original-wording", "Original wording", "--cwd", dir]);
     const id = a.stdout.trim();
     const before = readGaps(dir).gaps[0].added_at;
     const m = await run(["amend", id, "Better wording", "--cwd", dir]);
@@ -318,7 +469,7 @@ test("20. amend past the cap rejected, exit 3, text unchanged", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const a = await run(["add", "Original", "--cwd", dir]);
+    const a = await run(["add", "original-gap", "Original", "--cwd", dir]);
     const id = a.stdout.trim();
     const m = await run(["amend", id, "y".repeat(513), "--cwd", dir]);
     assert.equal(m.code, 3);
@@ -337,7 +488,7 @@ test("21. no reader ever sees a partial document: 200 reads concurrent with a wr
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const added = await run(["add", "Seed", "--cwd", dir]);
+    const added = await run(["add", "seed-gap", "Seed", "--cwd", dir]);
     assert.equal(added.code, 0);
     const gapId = added.stdout.trim();
     const { spawn } = await import("node:child_process");
@@ -378,14 +529,14 @@ test("22. no .tmp remains after a successful write; a SIGKILLed writer's tmp doe
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    assert.equal((await run(["add", "Seed", "--cwd", dir])).code, 0);
+    assert.equal((await run(["add", "seed-gap", "Seed", "--cwd", dir])).code, 0);
     // (a) successful write leaves no .tmp behind
-    assert.equal((await run(["add", "Tidy", "--cwd", dir])).code, 0);
+    assert.equal((await run(["add", "tidy-gap", "Tidy", "--cwd", dir])).code, 0);
     assert.deepEqual(readdirSync(join(dir, ".horizon")).filter((n) => n.includes(".tmp")), []);
     // (b) a stray tmp (as a SIGKILLed writer strands) does not block the next write
     const stray = join(dir, ".horizon", `.gaps.json.tmp.999999`);
     writeFileSync(stray, "{}\n");
-    const r = await run(["add", "After stray tmp", "--cwd", dir]);
+    const r = await run(["add", "after-stray-tmp", "After stray tmp", "--cwd", dir]);
     assert.equal(r.code, 0, `stray tmp blocked the write: ${r.stderr}`);
     assert.equal(readGaps(dir).gaps.length, 3);
     // (c) a stray tmp backdated past TMP_SWEEP_MS is swept by the next store
@@ -408,9 +559,9 @@ test("23. two concurrent adds: gaps.json parses, gap count 1 or 2 (last-writer-w
   // with both children spawned simultaneously makes a genuine overlap
   // plausible; the assertion is corruption-freedom, not winner-prediction.
   const { execFile } = await import("node:child_process");
-  function startAdd(cwd, text) {
+  function startAdd(cwd, id, text) {
     return new Promise((resolve) => {
-      execFile(BIN, ["add", text, "--cwd", cwd], { encoding: "utf8" }, (error, stdout, stderr) => {
+      execFile(BIN, ["add", id, text, "--cwd", cwd], { encoding: "utf8" }, (error, stdout, stderr) => {
         resolve({
           code: error && typeof error.code === "number" ? error.code : 0,
           stdout: stdout.trim(),
@@ -423,7 +574,10 @@ test("23. two concurrent adds: gaps.json parses, gap count 1 or 2 (last-writer-w
     const dir = freshDir();
     try {
       await run(["init", "--cwd", dir]);
-      const [a, b] = await Promise.all([startAdd(dir, `alpha ${round}`), startAdd(dir, `beta ${round}`)]);
+      const [a, b] = await Promise.all([
+        startAdd(dir, `alpha-${round}`, `alpha ${round}`),
+        startAdd(dir, `beta-${round}`, `beta ${round}`),
+      ]);
       // Either exit code is fine (last-writer-wins); no crash, no corruption.
       assert.ok([0, 6].includes(a.code), `round ${round}: a exit ${a.code}: ${a.stderr}`);
       assert.ok([0, 6].includes(b.code), `round ${round}: b exit ${b.code}: ${b.stderr}`);
@@ -446,10 +600,10 @@ test("24. rename EPERM retried; later success exits 0; exhaustion exits 6 with f
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    assert.equal((await run(["add", "Seed", "--cwd", dir])).code, 0);
+    assert.equal((await run(["add", "seed-gap", "Seed", "--cwd", dir])).code, 0);
     // (a) fail the first 2 attempts: 10 ms + 50 ms real backoff, then success.
     const t0 = Date.now();
-    const r = await run(["add", "Retried", "--cwd", dir], {
+    const r = await run(["add", "retried-gap", "Retried", "--cwd", dir], {
       env: { ...process.env, HORIZON_CLI_TEST_FAIL_RENAMES: "2" },
     });
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
@@ -458,7 +612,7 @@ test("24. rename EPERM retried; later success exits 0; exhaustion exits 6 with f
     assert.equal(readGaps(dir).gaps.length, 2);
     assert.ok(readGaps(dir).gaps.some((g) => g.text === "Retried"));
     // (b) hook=99: every attempt fails -> exit 6 naming the file and the errno.
-    const r2 = await run(["add", "Doomed", "--cwd", dir], {
+    const r2 = await run(["add", "doomed-gap", "Doomed", "--cwd", dir], {
       env: { ...process.env, HORIZON_CLI_TEST_FAIL_RENAMES: "99" },
     });
     assert.equal(r2.code, 6, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
@@ -510,7 +664,7 @@ test("27. gaps_added computed from the session's own mutations", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const a = await run(["add", "Mine", "--cwd", dir, "--session", "s1"]);
+    const a = await run(["add", "mine-gap", "Mine", "--cwd", dir, "--session", "s1"]);
     // Flag-injected arrays are not a thing: passing one is a usage error.
     const bad = await run(["session-end", "--harness", "t", "--session", "s1", "--gaps-added", a.stdout.trim(), "--cwd", dir]);
     assert.notEqual(bad.code, 0);
@@ -667,7 +821,7 @@ test("ADV-1b. gap with non-string text: exit 7 (no crash, store untouched)", asy
     mkdirSync(join(dir, ".horizon"), { recursive: true });
     writeFileSync(
       join(dir, ".horizon", "gaps.json"),
-      JSON.stringify({ version: 1, revision: 1, gaps: [{ id: "g_00000001", text: 7 }] }) + "\n",
+      JSON.stringify({ version: 1, revision: 1, gaps: [{ id: "numeric-text", text: 7 }] }) + "\n",
     );
     const r = await run(["show", "--cwd", dir]);
     assert.equal(r.code, 7);
@@ -734,7 +888,7 @@ test("ADV-3. append failure at close: exit 7, gap still open, store unchanged", 
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const add = await run(["add", "Doomed close", "--cwd", dir]);
+    const add = await run(["add", "doomed-close", "Doomed close", "--cwd", dir]);
     assert.equal(add.code, 0);
     const id = add.stdout.trim();
     // closes.jsonl is created by the first close, so touch it first; an
@@ -762,7 +916,7 @@ test("ADV-3b. append failure at session-end: exit 7, no session record written",
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    await run(["add", "Recorded gap", "--cwd", dir, "--session", "s9"]);
+    await run(["add", "recorded-gap", "Recorded gap", "--cwd", dir, "--session", "s9"]);
     const sessions = join(dir, ".horizon", "sessions.jsonl");
     await run(["session-end", "--harness", "t", "--session", "s9", "--cwd", dir]);
     chmodSync(sessions, 0o444);
@@ -782,7 +936,7 @@ test("ADV-3c. close record with the gap still open: counted once, by real closes
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    await run(["add", "Half closed", "--cwd", dir, "--session", "s1"]);
+    await run(["add", "half-closed", "Half closed", "--cwd", dir, "--session", "s1"]);
     const store = join(dir, ".horizon");
     const id = readGaps(dir).gaps[0].id;
     writeFileSync(join(store, "closes.jsonl"), JSON.stringify({ ts: "2026-09-08T15:00:00Z", session_id: "s1", gap_id: id, added_session_id: "s1" }) + "\n");
@@ -807,7 +961,7 @@ test("ADV-3d. orphan close record while gap still open: that session's gaps_clos
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    await run(["add", "Orphan close", "--cwd", dir, "--session", "s1"]);
+    await run(["add", "orphan-close", "Orphan close", "--cwd", dir, "--session", "s1"]);
     const store = join(dir, ".horizon");
     const id = readGaps(dir).gaps[0].id;
     // Crash simulation: the close record lands while the gap is still open.
@@ -834,7 +988,7 @@ test("ADV-4. .horizon as a regular file: init and add exit 7 naming the path", a
   const dir = freshDir();
   try {
     writeFileSync(join(dir, ".horizon"), "not a directory\n");
-    for (const argv of [["init"], ["add", "X"]]) {
+    for (const argv of [["init"], ["add", "x-gap", "X"]]) {
       const r = await run([...argv, "--cwd", dir]);
       assert.equal(r.code, 7, `${argv[0]}: ${r.stderr}`);
       assert.match(r.stderr, /\.horizon/);
@@ -851,7 +1005,7 @@ test("ADV-4b. mkdir EACCES on new-store add: exit 7 naming the path, no raw stac
   const dir = freshDir();
   try {
     chmodSync(dir, 0o555);
-    const r = await run(["add", "No permission", "--cwd", dir]);
+    const r = await run(["add", "no-permission", "No permission", "--cwd", dir]);
     assert.equal(r.code, 7);
     assert.match(r.stderr, /\.horizon/);
     assert.ok(!/at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
@@ -873,7 +1027,7 @@ test("ADV-4c. mkdir EACCES on new store: init exits 7 naming the path, store abs
     assert.equal(i.code, 7, `init stderr: ${i.stderr}`);
     assert.match(i.stderr, /\.horizon/);
     assert.ok(!/at /m.test(i.stderr), `raw stack leaked: ${i.stderr}`);
-    const a = await run(["add", "No permission", "--cwd", dir]);
+    const a = await run(["add", "no-permission", "No permission", "--cwd", dir]);
     assert.equal(a.code, 7, `add stderr: ${a.stderr}`);
     assert.match(a.stderr, /\.horizon/);
     assert.ok(!/at /m.test(a.stderr), `raw stack leaked: ${a.stderr}`);
@@ -923,10 +1077,10 @@ test("ADV-6. rename ENOENT after retries: distinct swept-tmp message, exit 6", a
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    assert.equal((await run(["add", "Seed", "--cwd", dir])).code, 0);
+    assert.equal((await run(["add", "seed-gap", "Seed", "--cwd", dir])).code, 0);
     // The old message blamed "EPERM" and hid the real cause; a swept tmp is
     // the one deterministic way a rename fails with ENOENT.
-    const r = await run(["add", "Vanished", "--cwd", dir], {
+    const r = await run(["add", "vanished-gap", "Vanished", "--cwd", dir], {
       env: { ...process.env, HORIZON_CLI_TEST_FAIL_RENAMES: "99", HORIZON_CLI_TEST_RENAME_ERRNO: "ENOENT" },
     });
     assert.equal(r.code, 6);
@@ -1037,13 +1191,13 @@ test("X4. init writes .horizon/.gitattributes (* -text); JSONL reader tolerates 
     // First add (store created by add, not init) also ships the .gitattributes.
     const dir2 = freshDir();
     try {
-      await run(["add", "Ships gitattributes too", "--cwd", dir2]);
+      await run(["add", "ships-attrs", "Ships gitattributes too", "--cwd", dir2]);
       assert.equal(readFileSync(join(dir2, ".horizon", ".gitattributes"), "utf8"), "* -text\n");
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }
     // JSONL reader: CRLF line endings and blank lines are tolerated.
-    await run(["add", "CRLF gap", "--cwd", dir, "--session", "s1"]);
+    await run(["add", "crlf-gap", "CRLF gap", "--cwd", dir, "--session", "s1"]);
     await run(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
     const sessions = join(dir, ".horizon", "sessions.jsonl");
     const raw = readFileSync(sessions, "utf8");
@@ -1065,7 +1219,7 @@ test("X5. a store directory named .Horizon is discovered (case-insensitive resol
       join(store, "gaps.json"),
       JSON.stringify({ version: 1, revision: 0, gaps: [] }, null, 2) + "\n",
     );
-    const r = await run(["add", "Found .Horizon", "--cwd", dir]);
+    const r = await run(["add", "found-horizon", "Found .Horizon", "--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     // The write landed in the real (case-variant) directory, not a new .horizon.
     const { existsSync, readdirSync } = await import("node:fs");
@@ -1092,7 +1246,7 @@ test("X6. init writes .horizon/.gitignore (sessions.jsonl, *.tmp.*); gaps.json n
     // First add (store created by add, not init) also ships the .gitignore.
     const dir2 = freshDir();
     try {
-      await run(["add", "Ships gitignore too", "--cwd", dir2]);
+      await run(["add", "ships-ignore", "Ships gitignore too", "--cwd", dir2]);
       assert.equal(readFileSync(join(dir2, ".horizon", ".gitignore"), "utf8"), body);
     } finally {
       rmSync(dir2, { recursive: true, force: true });
@@ -1252,13 +1406,13 @@ test("about-6. about survives add, close, and amend rewrites; an unset store nev
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const a = await run(["add", "First", "--cwd", dir]);
+    const a = await run(["add", "first-gap", "First", "--cwd", dir]);
     assert.equal(a.code, 0);
     // Unset store: add must not write an about key.
     assert.ok(!("about" in readGaps(dir)), "unset store gained an about field");
     await run(["about", "AI plugin to help agents with long term goals", "--cwd", dir]);
     const id1 = a.stdout.trim();
-    const b = await run(["add", "Second", "--cwd", dir]);
+    const b = await run(["add", "second-gap", "Second", "--cwd", dir]);
     assert.equal(b.code, 0);
     assert.equal(readGaps(dir).about, "AI plugin to help agents with long term goals");
     const m = await run(["amend", id1, "Reworded", "--cwd", dir]);
@@ -1290,4 +1444,260 @@ test("about-7. non-string about in gaps.json: exit 7 naming the file, store unto
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- per-gap details (optional extended context, HL gap-details) ---
+
+test("detail-1. add --detail stores details; human show is unchanged; show --json carries the field", async () => {
+  const dir = freshDir();
+  try {
+    const a = await run(["add", "one-line-want", "One-line want", "--detail", "Origin: the user's complaint about X.\nWhy: it costs an hour a week.", "--cwd", dir]);
+    assert.equal(a.code, 0, `stderr: ${a.stderr}`);
+    const id = a.stdout.trim();
+    // Human show output unchanged: exactly one `id␣␣text` line per gap, no details.
+    const s = await run(["show", "--cwd", dir]);
+    assert.equal(s.code, 0);
+    assert.equal(s.stdout, `${id}  One-line want\n`);
+    // --json gains the details field (present when set).
+    const j = await run(["show", "--cwd", dir, "--json"]);
+    assert.equal(j.code, 0);
+    const parsed = JSON.parse(j.stdout);
+    assert.equal(parsed[0].details, "Origin: the user's complaint about X.\nWhy: it costs an hour a week.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-2. a plain add writes no details field; show --json omits it", async () => {
+  const dir = freshDir();
+  try {
+    await run(["add", "no-details", "No details here", "--cwd", dir]);
+    const gap = JSON.parse((await run(["show", "--cwd", dir, "--json"])).stdout)[0];
+    assert.ok(!("details" in gap), "unset details must be absent, not null");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-3. detail <id> prints the stored details verbatim, multi-line included", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "want", "Want", "--detail", "line one\nline two", "--cwd", dir])).stdout.trim();
+    const r = await run(["detail", id, "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.stdout, "line one\nline two\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-4. detail <id> with no stored details prints the explicit no-details message, exit 0 — never silence", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "bare-gap", "Bare gap", "--cwd", dir])).stdout.trim();
+    const r = await run(["detail", id, "--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /^no details for bare-gap\n$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-5. detail <id> \"<text>\" sets and rewrites; each write bumps revision; title and id untouched", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "want", "Want", "--cwd", dir])).stdout.trim();
+    const r1 = await run(["detail", id, "First context", "--cwd", dir]);
+    assert.equal(r1.code, 0, `stderr: ${r1.stderr}`);
+    assert.equal(readGaps(dir).gaps[0].details, "First context");
+    const rev1 = readGaps(dir).revision;
+    const r2 = await run(["detail", id, "Second context", "--cwd", dir]);
+    assert.equal(r2.code, 0, `stderr: ${r2.stderr}`);
+    const state = readGaps(dir);
+    assert.equal(state.gaps[0].details, "Second context");
+    assert.equal(state.revision, rev1 + 1);
+    assert.equal(state.gaps[0].text, "Want");
+    assert.equal(state.gaps[0].id, id);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-6. detail <id> --clear removes the field entirely, bumps revision, preserves the title", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "want", "Want", "--detail", "Context", "--cwd", dir])).stdout.trim();
+    const before = readGaps(dir).revision;
+    const r = await run(["detail", id, "--clear", "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const state = readGaps(dir);
+    assert.ok(!("details" in state.gaps[0]), "details must be absent, not null");
+    assert.equal(state.gaps[0].text, "Want");
+    assert.equal(state.revision, before + 1);
+    // Print mode now reports no details.
+    const p = await run(["detail", id, "--cwd", dir]);
+    assert.equal(p.code, 0);
+    assert.match(p.stdout, /no details/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-7. caps and code points: 2048 accepted (astral emoji counted as code points); 2049 rejected with the count; empty and blank rejected; multi-line allowed", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "want", "Want", "--cwd", dir])).stdout.trim();
+    const over = await run(["detail", id, "x".repeat(2049), "--cwd", dir]);
+    assert.equal(over.code, 3);
+    assert.match(over.stderr, /gap details are 2049 code points; the limit is 2048\. Not saved\./);
+    assert.ok(!("details" in readGaps(dir).gaps[0]), "a rejected write must not create the field");
+    assert.equal((await run(["detail", id, "x".repeat(2048), "--cwd", dir])).code, 0);
+    assert.equal((await run(["detail", id, "🐟".repeat(2048), "--cwd", dir])).code, 0, `astral code points miscounted: stderr`);
+    const emojiOver = await run(["detail", id, "🐟".repeat(2049), "--cwd", dir]);
+    assert.equal(emojiOver.code, 3);
+    assert.match(emojiOver.stderr, /2049/);
+    const nl = await run(["detail", id, "a\nb", "--cwd", dir]);
+    assert.equal(nl.code, 0, "multi-line details must be allowed");
+    assert.equal((await run(["detail", id, "", "--cwd", dir])).code, 3);
+    assert.equal((await run(["detail", id, "   ", "--cwd", dir])).code, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-8. unknown id: exit 5 (no store, store without the id, set and print modes); invalid id: exit 5, named as invalid; usage errors: exit 2", async () => {
+  const dir = freshDir();
+  try {
+    // No store anywhere: the id cannot exist, same exit as close/amend.
+    assert.equal((await run(["detail", "no-such-gap", "--cwd", dir])).code, 5);
+    await run(["init", "--cwd", dir]);
+    const bad = await run(["detail", "no-such-gap", "--cwd", dir]);
+    assert.equal(bad.code, 5);
+    assert.match(bad.stderr, /no-such-gap/);
+    // An id off the slug grammar is named as invalid — the same split
+    // close/amend apply (acceptance 17b, D7).
+    const invalid = await run(["detail", "g_deadbeef", "--cwd", dir]);
+    assert.equal(invalid.code, 5);
+    assert.match(invalid.stderr, /invalid gap id/);
+    assert.match(invalid.stderr, /g_deadbeef/);
+    assert.equal((await run(["detail", "--cwd", dir])).code, 2);
+    await run(["add", "want", "Want", "--detail", "C", "--cwd", dir]);
+    assert.equal((await run(["detail", "no-such-gap", "text", "--cwd", dir])).code, 5);
+    const invalidSet = await run(["detail", "g_deadbeef", "text", "--cwd", dir]);
+    assert.equal(invalidSet.code, 5);
+    assert.match(invalidSet.stderr, /invalid gap id/);
+    const id = readGaps(dir).gaps[0].id;
+    assert.equal((await run(["detail", id, "text", "--clear", "--cwd", dir])).code, 2);
+    assert.equal((await run(["detail", id, "one", "two", "--cwd", dir])).code, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-9. add --detail validation: over-cap details reject the whole add (exit 3, no gap created); empty details reject; a bad title still wins", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const over = await run(["add", "want", "Want", "--detail", "x".repeat(2049), "--cwd", dir]);
+    assert.equal(over.code, 3);
+    assert.match(over.stderr, /2049/);
+    assert.equal(readGaps(dir).gaps.length, 0, "no gap may be created");
+    assert.equal((await run(["add", "want", "Want", "--detail", "", "--cwd", dir])).code, 3);
+    assert.equal(readGaps(dir).gaps.length, 0);
+    assert.equal((await run(["add", "want", "", "--detail", "fine", "--cwd", dir])).code, 3);
+    const ok = await run(["add", "want", "Want", "--detail", "fine", "--cwd", dir]);
+    assert.equal(ok.code, 0, `stderr: ${ok.stderr}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-10. amend stays title-only: details survive amend; amend takes no details argument", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "original", "Original", "--detail", "Keep me", "--cwd", dir])).stdout.trim();
+    const m = await run(["amend", id, "Reworded", "--cwd", dir]);
+    assert.equal(m.code, 0);
+    const gap = readGaps(dir).gaps[0];
+    assert.equal(gap.text, "Reworded");
+    assert.equal(gap.details, "Keep me");
+    // Three positionals is still a usage error: amend has no details form.
+    assert.equal((await run(["amend", id, "Reworded", "extra", "--cwd", dir])).code, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-11. details survive whole-file rewrites (close of another gap, about set)", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const a = (await run(["add", "first", "First", "--detail", "First context", "--cwd", dir])).stdout.trim();
+    const b = (await run(["add", "second", "Second", "--cwd", dir])).stdout.trim();
+    await run(["close", b, "--cwd", dir]);
+    await run(["about", "About line", "--cwd", dir]);
+    const state = readGaps(dir);
+    assert.equal(state.gaps.length, 1);
+    assert.equal(state.gaps[0].id, a);
+    assert.equal(state.gaps[0].details, "First context");
+    assert.equal(state.about, "About line");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-12. non-string details in gaps.json: exit 7 naming the file, store untouched", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    const raw = '{"version":1,"revision":1,"gaps":[{"id":"gap-1","text":"T","details":42,"added_at":"2026-09-08T15:00:11Z","provenance":{}}]}';
+    writeFileSync(join(dir, ".horizon", "gaps.json"), raw + "\n");
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /gaps\.json/);
+    assert.match(r.stderr, /details is not a string/);
+    assert.equal(readFileSync(join(dir, ".horizon", "gaps.json"), "utf8"), raw + "\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-13. a rejected detail write does not bump revision", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "want", "Want", "--detail", "C", "--cwd", dir])).stdout.trim();
+    const before = readGaps(dir).revision;
+    assert.equal((await run(["detail", id, "x".repeat(2049), "--cwd", dir])).code, 3);
+    assert.equal(readGaps(dir).revision, before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-14. detail changes log nothing (amend's treatment): no sessions.jsonl or closes.jsonl entries", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "want", "Want", "--cwd", dir])).stdout.trim();
+    await run(["detail", id, "C", "--cwd", dir]);
+    await run(["detail", id, "--clear", "--cwd", dir]);
+    const { existsSync } = await import("node:fs");
+    assert.ok(!existsSync(join(dir, ".horizon", "sessions.jsonl")), "detail writes must not append session records");
+    assert.ok(!existsSync(join(dir, ".horizon", "closes.jsonl")), "detail writes must not append close records");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-15. help lists the detail verb", async () => {
+  const r = await run(["--help"]);
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /detail <id>/);
 });

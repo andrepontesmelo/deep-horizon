@@ -29,27 +29,42 @@ Run `horizon` inside a project; the store lives in `.horizon/` (found upward,
 like git finds `.git`). `horizon init` creates it.
 
 ```
-usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|log|session-end|init> [...]
+usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init> [...]
 
 commands:
   show                      print open gaps (id + two spaces + text)
   about                     print the about line
   about "<text>"            set or replace the about line (what this project is)
   about --clear             unset the about line
-  add "<text>"              append a gap; prints the new id
+  add <id> "<text>"         append a gap under a caller-chosen slug id; prints the id (--detail "<text>" attaches details)
   close <id>                remove a gap; frees a slot
   amend <id> "<text>"       rewrite a gap's text in place
+  detail <id>               print a gap's details
+  detail <id> "<text>"      set or rewrite a gap's details (2048 code points max)
+  detail <id> --clear       remove a gap's details
   log [--limit N]           print session records, newest first
   session-end --harness <name> --session <id> [--summary "<text>"]
   init                      create .horizon/ in --cwd
 ```
 
+A gap's title is one line; it may also carry optional **details** — the
+extended context (what, why, where it came from) that must not crowd the
+line. Details may be multi-line, at most 2048 Unicode code points, set at
+creation with `add --detail "<text>"` or later with `horizon detail`. They
+are never injected: the injected horizon carries the one line only, plus a
+pointer that `horizon detail <id>` retrieves the rest on demand.
+
 Only the human closes a gap. The agent proposes — `horizon add` / `horizon
-close` run only after the human says yes. The about line is one human-authored
-line saying what this project **is** (gaps say where the work is heading);
-when set, it is injected ahead of the horizon block. Store files:
-`.horizon/gaps.json` (the open gaps + the about line), `.horizon/sessions.jsonl`
-and `.horizon/closes.jsonl` (append-only history).
+close` run only after the human says yes. Gap ids are chosen, not minted:
+`horizon add plant-photo-lookup "A person can hand a photo to the app and get
+the plant named."` — a slug of 3–40 lowercase letters, digits, and hyphens,
+starting with a letter. An id is never reused, even after its gap closes, so a
+name always means the same gap for the life of the project. The about line is
+one human-authored line saying what this project **is** (gaps say where the
+work is heading); when set, it is injected ahead of the horizon block. Store
+files: `.horizon/gaps.json` (the open gaps, the retired ids of closed gaps,
+and the about line), `.horizon/sessions.jsonl` and `.horizon/closes.jsonl`
+(append-only history).
 
 ## Per-harness setup
 

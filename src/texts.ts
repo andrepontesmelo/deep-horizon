@@ -25,6 +25,9 @@ export const HORIZON_BLOCK_TEMPLATE =
   "may sit open for weeks across many sessions and that is the normal case. Do not\n" +
   "plan around closing them, and do not report progress against them.\n" +
   "\n" +
+  "Some gaps carry extended context beyond their one line —\n" +
+  "`horizon detail <id>` prints it.\n" +
+  "\n" +
   "Three things are yours to do. When the user wants something that outlives this\n" +
   "session, offer `horizon add \"<one line>\"`. When something here looks done, offer\n" +
   "`horizon close <id>`. If no about line heads this block and the work tells you\n" +

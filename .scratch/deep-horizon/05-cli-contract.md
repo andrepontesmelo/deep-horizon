@@ -10,8 +10,7 @@ asking a question, and a TDD implementation should be able to turn every
 acceptance test in §9 red before writing code.
 
 **The CLI contains no LLM calls, no network access, and no nondeterminism
-beyond the clock and the id generator.** Same inputs, same store state, same
-output — always.
+beyond the clock.** Same inputs, same store state, same output — always.
 
 ---
 
@@ -39,8 +38,9 @@ repo-root store unless they carry their own `.horizon/`.
   "revision": 7,
   "gaps": [
     {
-      "id": "g_3f9a2c1b",
+      "id": "plant-photo-lookup",
       "text": "A person can hand a photo to the app and get the plant named.",
+      "details": "The user misidentifies the same three houseplants every week;\nthe lookup table already exists, only the handoff is missing.",
       "added_at": "2026-09-08T15:04:11Z",
       "provenance": {
         "harness": "claude-code",
@@ -49,7 +49,8 @@ repo-root store unless they carry their own `.horizon/`.
         "origin": "agent-proposed"
       }
     }
-  ]
+  ],
+  "closed_ids": ["rental-compare"]
 }
 ```
 
@@ -58,13 +59,25 @@ repo-root store unless they carry their own `.horizon/`.
 - `revision` — monotonic integer, incremented on **every** successful write.
   A counter, not a compare-and-swap token (§4).
 - `gaps` — **open gaps only**, ordered by `added_at` ascending (insertion
-  order). Never more than 5. A closed gap is *removed* from this array.
+  order). Never more than 5. A closed gap is *removed* from this array. Every
+  `id` must match the slug grammar (§3.2); a store carrying an id that does
+  not — including the abandoned `g_<8 hex>` shape — is malformed (exit 7).
+- `closed_ids` — every id ever closed, in close order; `add` rejects a reuse
+  (§3.2). **Missing reads as empty** (stores written before the field existed
+  stay valid) and is **written on the next save**. Present but not an array of
+  valid ids is malformed (exit 7).
 - `about` — **optional** top-level string: the one human-authored line saying
   what this project *is*, distinct from the gaps, which say where the work is
   heading (§10.4). Absent = unset; present but not a string is malformed
   (exit 7). Version stays 1 — old stores remain valid.
 - `provenance.origin` — one of `human`, `agent-proposed`. Advisory only; the
   CLI cannot actually tell (§6).
+- `details` — **optional** per-gap string: the extended context (what/why/
+  origin) that does not fit the one line. Absent = unset (the field is never
+  written as `null`); present but not a string is malformed (exit 7). Unlike
+  `text` it may contain `\n` — the only shape rule is the cap (§5). Details
+  are never injected (§10); they are retrieved on demand with `horizon
+  detail <id>` (§3.5).
 
 `text` is one line: no `\n`, no `\r`, at most **512 Unicode code points**.
 
@@ -73,14 +86,14 @@ repo-root store unless they carry their own `.horizon/`.
 One object per line, appended, never rewritten:
 
 ```json
-{"ts":"2026-09-08T16:20:03Z","harness":"hermes","session_id":"20260908_152139_780660","summary":"Settled the store format and wrote the CLI contract.","gaps_added":["g_3f9a2c1b"],"gaps_closed":["g_77c1e004"]}
+{"ts":"2026-09-08T16:20:03Z","harness":"hermes","session_id":"20260908_152139_780660","summary":"Settled the store format and wrote the CLI contract.","gaps_added":["plant-photo-lookup"],"gaps_closed":["rental-compare"]}
 ```
 
 - `summary` — **nullable**. `null` is valid and normal: at least one harness
   (DSH) structurally cannot elicit model text at close (HL-10). A summary is
   never fabricated to fill the field.
 - `gaps_added` / `gaps_closed` — arrays of gap ids, filled **by the CLI** from
-  what it recorded during the session (§3.6). Never supplied by the agent.
+  what it recorded during the session (§3.7). Never supplied by the agent.
 - `harness` + `session_id` — the harness's own id, recorded verbatim. It is the
   join key back into that harness's transcripts; deep-horizon never invents an
   id of its own.
@@ -111,8 +124,8 @@ need zero parsing.
 Human form (no `--json`), gaps in insertion order:
 
 ```
-g_3f9a2c1b  A person can hand a photo to the app and get the plant named.
-g_77c1e004  Rentals can be compared across sites without re-entering filters.
+plant-photo-lookup  A person can hand a photo to the app and get the plant named.
+rental-compare  Rentals can be compared across sites without re-entering filters.
 ```
 
 - Exactly one line per gap: id, two spaces, text.
@@ -135,37 +148,89 @@ g_77c1e004  Rentals can be compared across sites without re-entering filters.
 - No store at all → prints nothing, exit **0**. A project without a horizon is
   the normal case and must stay silent and cheap (HL-03 r1/r2).
 
-### 3.2 `horizon add "<text>"`
+### 3.2 `horizon add <id> "<text>" [--detail "<text>"]`
 
-Appends a gap. Mints an id, increments `revision`, writes atomically.
+Appends a gap under the caller-supplied id, increments `revision`, writes
+atomically. **The id is not minted**: the caller names the gap, positionally
+first, so a text starting with dashes is still text.
 
+The id is a slug: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, 3–40 chars — lowercase
+letters and digits, hyphen-separated, starting with a letter. Example:
+`plant-photo-lookup`. There is **no compatibility** with the abandoned
+`g_<8 hex>` shape: it fails the grammar everywhere.
+
+- Missing id or missing text → exit 2.
+- Id off the grammar (uppercase, leading/trailing hyphen, too short, too long,
+  or the old `g_<hex>` shape) → exit 2, stating the id.
 - Rejects text over 512 code points (§5, exit 3).
 - Rejects text containing `\n` or `\r` (exit 3).
 - Rejects empty or whitespace-only text (exit 3).
+- `--detail "<text>"` optionally sets the gap's details in the same command
+  (§3.5): same validation and cap as `horizon detail <id> "<text>"`. A bad
+  detail rejects the whole add (exit 3) — no gap lands without its title.
 - Rejects when 5 gaps are already open (exit 4) — a **hard reject**, naming the
   open gaps so the caller can choose one to close.
+- Rejects a duplicate id (exit 8): an id that is already an open gap, or one
+  that appears in `closed_ids`. Ids are **never reused** for the life of the
+  project — a name always means the same gap.
 - Creates `.horizon/` in `--cwd` if no store exists anywhere up the tree, and
   says so on stderr.
 
-Prints the new id on stdout: `g_3f9a2c1b`.
+Prints the id on stdout: `plant-photo-lookup`.
 
 ### 3.3 `horizon close <id>`
 
-Removes the gap from `gaps.json`, increments `revision`, records the close for
-the session record (§3.6).
+Removes the gap from `gaps.json`, appends the id to `closed_ids` in the same
+write — retiring it from any future `add` — increments `revision`, records the
+close for the session record (§3.7).
 
+- Id off the grammar → exit 5, named as invalid.
 - Unknown or already-closed id → exit 5.
 - Prints nothing on success (exit 0).
 
 ### 3.4 `horizon amend <id> "<text>"`
 
-Rewrites a gap's text in place. Same validation as `add`. The id is unchanged,
-so history stays valid (HL-04). Any *open* gap may be amended.
+Rewrites a gap's text in place. Same text validation as `add`. The id is
+unchanged, so history stays valid (HL-04). Any *open* gap may be amended.
 
+- Id off the grammar → exit 5, named as invalid.
 - Unknown id → exit 5.
 - Text failures → exit 3.
 
-### 3.5 `horizon log [--limit N]`
+### 3.5 `horizon detail <id> ["<text>" | --clear]`
+
+The extended context behind a gap's one line (§1.1 `details`). Three forms:
+
+- `horizon detail <id>` — **prints** the stored details verbatim (multi-line
+  stays multi-line), exit 0. A gap with no details prints the explicit line
+  `no details for <id>` and exits 0 — never silence; the wording is part of
+  this contract.
+- `horizon detail <id> "<text>"` — sets or **rewrites** the details. The write
+  is the amend protocol: whole-file rewrite, `revision` + 1, id / title /
+  `added_at` / provenance unchanged, atomic tmp+rename (§4). `amend` stays
+  title-only; details and title are edited by their own verbs.
+- `horizon detail <id> --clear` — removes the field entirely (absent, never
+  `null`), `revision` + 1, title preserved. `--clear` together with text is a
+  usage error (exit 2).
+
+Validation (both write paths, `add --detail` included):
+
+- Multi-line **allowed** — `\n` and `\r` are ordinary characters here.
+- Rejects empty or whitespace-only text (exit 3).
+- Rejects text over **2048 Unicode code points** (§5, exit 3), counted the
+  same way as the title cap.
+
+- Id off the grammar → exit 5, named as invalid (print, set, and clear forms
+  alike — the same split `close` and `amend` apply).
+- Unknown id → exit 5 (print, set, and clear forms alike; also when no store
+  exists at all — an id cannot be known without a store).
+- Missing `<id>` or extra positionals → exit 2.
+- Like `amend`, detail changes append **nothing** to `sessions.jsonl` or
+  `closes.jsonl`: a wording/context rewrite of an open gap leaves no log
+  entry and is visible only through the revision counter. The session log
+  records adds and closes (what entered and left the horizon), not rewrites.
+
+### 3.6 `horizon log [--limit N]`
 
 Prints session records, newest first, default limit 20. Human form:
 
@@ -176,7 +241,7 @@ Prints session records, newest first, default limit 20. Human form:
 
 `--json` emits the raw JSONL objects, newest first.
 
-### 3.6 `horizon session-end`
+### 3.7 `horizon session-end`
 
 Appends a session record. Called by a close hook, or mid-session as the
 fallback where no usable close hook exists (HL-10).
@@ -194,7 +259,7 @@ horizon session-end --harness hermes --session <id> [--summary "<text>"]
   temp file, no lock** — concurrent appends from two harnesses are safe by
   construction (§4).
 
-### 3.7 `horizon init`
+### 3.8 `horizon init`
 
 Creates `.horizon/` in `--cwd` with an empty store. Idempotent: an existing
 store is left untouched, exit 0.
@@ -269,6 +334,16 @@ horizon: gap text is 547 code points; the limit is 512. Not saved.
 
 The actual count is always stated, so the failure is never mysterious.
 
+The `details` cap works identically at **2048 code points** (§3.5), counted
+by the same rule. stderr, verbatim shape:
+
+```
+horizon: gap details are 2049 code points; the limit is 2048. Not saved.
+```
+
+Multi-line details are valid input, so the newline rejection does not apply
+to them — only the empty/blank and cap checks do.
+
 ---
 
 ## 6. Provenance is evidence, not enforcement
@@ -286,12 +361,13 @@ read honestly afterward.
 | Code | Meaning | stderr |
 |---|---|---|
 | 0 | Success (including "no gaps" and "no store") | — |
-| 2 | Usage error — unknown command, missing required flag | usage line |
-| 3 | Text rejected — over cap, contains a newline, or empty | states the actual count or the offending character |
+| 2 | Usage error — unknown command, missing required flag or argument, id off the slug grammar on `add` | usage line |
+| 3 | Text rejected — over cap (title 512, details 2048), a newline in a title, or empty | states the actual count or the offending character |
 | 4 | Cap reached — 5 gaps already open | lists the open gaps with ids |
-| 5 | Unknown gap id | states the id |
+| 5 | Unknown or invalid gap id (`close`/`amend`/`detail`) | states the id |
 | 6 | Write failed after retries — the OS held the store file open | names the file and the errno |
-| 7 | Store unreadable or malformed JSON | names the file and the parse error |
+| 7 | Store unreadable or malformed JSON — including gap ids or `closed_ids` entries off the slug grammar, or a non-string `details` | names the file and the parse error |
+| 8 | Duplicate id on `add` — already an open gap, or closed before (ids are never reused) | states the id |
 
 **0 for an absent store is deliberate.** `horizon show` runs at the start of
 every session on every project, and most projects have no horizon. A non-zero
@@ -336,13 +412,26 @@ The list a TDD implementation turns red first.
 11. Empty and whitespace-only text are rejected, exit 3.
 12. The 6th add is rejected with exit 4, and the store still has exactly 5.
 13. A rejected add does not increment `revision`.
-14. Two adds mint different ids; ids match `^g_[0-9a-f]{8}$`.
+14. `add` prints the caller-supplied id; ids match
+    `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, 3–40 chars.
+14a. Missing id or missing text → exit 2.
+14b. An id off the grammar (uppercase, leading/trailing hyphen, too short, too
+     long, or the old `g_<hex>` shape) is rejected, exit 2, stating the id;
+     the shortest (3 chars), longest (40 chars), and digit-bearing ids pass.
+14c. Adding an id that is already an open gap: exit 8, store and revision
+     unchanged.
+14d. Adding an id that appears in `closed_ids`: exit 8 — ids are never reused.
+14e. `close` appends the id to `closed_ids`; a store without the field reads
+     as empty and gains it on the next whole-file save.
+14f. A store whose gap ids (or `closed_ids` entries) do not match the grammar
+     is malformed: exit 7, same family as other malformed stores.
 15. `add` in a directory with no store creates one and says so.
 
 **close / amend**
 16. `close` removes the gap from `gaps.json` and frees a slot: after closing
     one of 5, an add succeeds.
 17. `close` on an unknown id: exit 5, store unchanged.
+17b. `close` or `amend` with an id off the grammar: exit 5, named as invalid.
 18. `close` twice on the same id: the second is exit 5.
 19. `amend` changes text but not the id or `added_at`.
 20. `amend` past the cap is rejected, exit 3, text unchanged on disk.
@@ -386,6 +475,34 @@ X5. A store directory named `.Horizon` is found on a case-insensitive
 32. Malformed `gaps.json`: exit 7, naming the file; the file is not
     overwritten.
 33. An unknown future `version` is refused rather than migrated silently.
+
+**details**
+D1. `add <id> "T" --detail "C"` stores the details; human `show` output is
+    unchanged (`id␣␣text`, one line per gap); `show --json` carries the
+    `details` field. A plain `add` leaves the field absent, never `null`.
+D2. `detail <id>` prints the stored details verbatim, newlines included.
+D3. `detail <id>` on a gap without details prints `no details for <id>`,
+    exit 0 — never silence.
+D4. `detail <id> "C"` sets and re-sets; each write bumps `revision` and
+    leaves id, title, `added_at`, and provenance untouched.
+D5. `detail <id> --clear` removes the field entirely (absent from the JSON),
+    bumps `revision`, preserves the title; `--clear` with text is exit 2.
+D6. 2048 code points accepted — astral-plane emoji counted as code points;
+    2049 rejected with exit 3 and the count in stderr, in the §5 shape;
+    empty and blank rejected, exit 3; embedded `\n` accepted.
+D7. Unknown id: exit 5 in all three forms, and when no store exists.
+    An id off the grammar: exit 5, named as invalid — the same split
+    `close`/`amend` apply. Missing `<id>`: exit 2.
+D8. `add` with over-cap or empty `--detail` rejects the whole add (exit 3),
+    creating no gap and incrementing no revision.
+D9. `amend` stays title-only: it never touches `details`, and details
+    survive it.
+D10. Details survive every whole-file rewrite (`add`, `close`, `amend`,
+     `about`), like the about line.
+D11. A non-string `details` in `gaps.json` is malformed (exit 7), naming the
+     file; the file is not overwritten.
+D12. `detail` set/clear append nothing to `sessions.jsonl` or `closes.jsonl`
+     (amend's treatment: rewrites ride on the revision counter alone).
 
 ---
 
@@ -435,6 +552,9 @@ What it is not: a backlog, a task list, or work assigned to this session. A gap
 may sit open for weeks across many sessions and that is the normal case. Do not
 plan around closing them, and do not report progress against them.
 
+Some gaps carry extended context beyond their one line —
+`horizon detail <id>` prints it.
+
 Three things are yours to do. When the user wants something that outlives this
 session, offer `horizon add "<one line>"`. When something here looks done, offer
 `horizon close <id>`. If no about line heads this block and the work tells you
@@ -458,6 +578,12 @@ outcome, and suppressing it would defeat the injection.
 The third duty was added when selection became state-sensitive: with no about
 line heading the block, the agent may offer to draft one (the §10.2 bootstrap
 nudge does the same work before any store exists).
+
+The detail pointer was added with the per-gap `details` field (§1.1, §3.5):
+one line, so a session knows extended context may exist and how to retrieve
+it without that content ever being injected (injection minimalism — the
+`{{GAPS}}` slot stays `show` stdout alone). The nudges carry no pointer: they
+cover the no-gaps states, where no details exist.
 
 ### 10.2 The bootstrap nudge
 
@@ -551,6 +677,11 @@ composition stays single-sourced there, never per-adapter).
     `amend`, `about` itself) and is removed only by `about --clear`, which
     preserves the gaps. A non-string `about` in `gaps.json` is malformed
     (exit 7), and an unset store never gains the field from a rewrite.
+39. The horizon block carries the detail pointer — the one line naming
+    `horizon detail <id>` as the retrieval path — and neither nudge does:
+    no gaps exist in the nudge states, so no details can either. Details
+    content itself never appears in any injected text. (Pinned in code by
+    the `pointer-1`/`pointer-2` tests in test/inject.test.js.)
 
 ---
 

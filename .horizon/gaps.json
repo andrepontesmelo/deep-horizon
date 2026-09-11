@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "revision": 6,
+  "gaps": [
+    {
+      "id": "friendly-gap-ids",
+      "text": "gap id should be human friendly, like: \"frindly-gap-id\", and not \"g_aa390f84\"",
+      "added_at": "2026-09-11T04:18:01Z",
+      "provenance": {
+        "harness": "unknown",
+        "session_id": "unknown",
+        "tty": false,
+        "origin": "human"
+      }
+    },
+    {
+      "id": "gap-details-field",
+      "text": "gap details field: keep short injectable title plus optional extended context (what/why/origin), retrievable on demand, never auto-injected",
+      "added_at": "2026-09-11T04:26:43Z",
+      "provenance": {
+        "harness": "unknown",
+        "session_id": "unknown",
+        "tty": false,
+        "origin": "human"
+      }
+    }
+  ],
+  "closed_ids": [],
+  "about": "AI plugin to help agents with long term goals"
+}

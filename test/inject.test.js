@@ -29,7 +29,7 @@ function seed(dir, texts) {
   const store = join(dir, ".horizon");
   mkdirSync(store, { recursive: true });
   const gaps = texts.map((text, i) => ({
-    id: `g_${(i + 1).toString(16).padStart(8, "0")}`,
+    id: `gap-${i + 1}`,
     text,
     added_at: `2026-09-08T15:0${i}:11Z`,
     provenance: { harness: "test", session_id: "seed", tty: false, origin: "human" },
@@ -57,7 +57,7 @@ test("35. inject prints the horizon block, gaps substituted verbatim, byte-for-b
     const r = await run(["--cwd", dir]);
     assert.equal(r.code, 0);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
-    const show = "g_00000001  A person can hand a photo to the app and get the plant named.\ng_00000002  Rentals can be compared across sites without re-entering filters.\n";
+    const show = "gap-1  A person can hand a photo to the app and get the plant named.\ngap-2  Rentals can be compared across sites without re-entering filters.\n";
     const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", show);
     assert.equal(r.stdout, expected);
   } finally {
@@ -131,7 +131,7 @@ test("37. inject has a --json mode: {\"text\":<string>} on stdout, nothing else"
     const parsed = JSON.parse(r.stdout);
     assert.equal(typeof parsed.text, "string");
     assert.ok(parsed.text.startsWith("This project has a horizon"));
-    assert.ok(parsed.text.includes("g_00000001  Only one gap"));
+    assert.ok(parsed.text.includes("gap-1  Only one gap"));
     assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text }));
     assert.ok(!r.stderr, "stderr must stay empty on success");
   } finally {
@@ -561,7 +561,7 @@ test("dsh-param-7. end-to-end: the param trigger composes through the real bins"
     assert.equal(injected.length, 1);
     const text = injected[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
-    assert.ok(text.includes("g_00000001  Param e2e gap"));
+    assert.ok(text.includes("gap-1  Param e2e gap"));
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -727,7 +727,10 @@ test("48. end-to-end: apply() with no overrides injects the composed block throu
     assert.equal(injected.length, 1);
     const text = injected[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
-    assert.ok(text.includes("g_00000001  End-to-end gap"));
+    assert.ok(text.includes("gap-1  End-to-end gap"));
+    // The details pointer reaches the harness through the same bin stdout:
+    // adapters are glue, so the core's pointer line needs no per-adapter work.
+    assert.ok(text.includes("`horizon detail <id>` prints it"), "the dsh path must carry the core's detail pointer");
     // The empty-store twin: the real bootstrap nudge comes back through the
     // same chain.
     const empty = freshDir();
@@ -795,7 +798,7 @@ test("about-inject-1. about + gaps: the about line, a blank line, then the byte-
     const r = await run(["--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
-    const show = "g_00000001  A person can hand a photo to the app and get the plant named.\n";
+    const show = "gap-1  A person can hand a photo to the app and get the plant named.\n";
     const expected =
       "This project is about: AI plugin to help agents with long term goals\n\n" +
       specFence(spec, "### 10.1").replace("{{GAPS}}", show);
@@ -832,7 +835,7 @@ test("about-inject-3. without an about line: output is byte-identical to the pre
     const r = await run(["--cwd", dir]);
     assert.equal(r.code, 0);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
-    const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "g_00000001  Only one gap\n");
+    const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "gap-1  Only one gap\n");
     assert.equal(r.stdout, expected); // no prefix, no extra blank line
     assert.ok(!r.stdout.startsWith("This project is about"), "about prefix leaked into an unset store");
   } finally {
@@ -848,7 +851,7 @@ test("inject-matrix. the five store states each produce exactly one variant — 
   const ABOUT = "AI plugin to help agents with long term goals";
   const prefix = `This project is about: ${ABOUT}\n\n`;
   const GAP = "A person can hand a photo to the app and get the plant named.";
-  const show = `g_00000001  ${GAP}\n`;
+  const show = `gap-1  ${GAP}\n`;
   // Openings chosen so no one is a substring of another variant's text.
   const openings = {
     block: "This project has a horizon — a short list",
@@ -878,5 +881,58 @@ test("inject-matrix. the five store states each produce exactly one variant — 
     }
   } finally {
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// --- details pointer (per-gap extended context, retrieved on demand) ---
+
+// The injected block carries ONE pointer line so a session knows a gap may
+// hold extended context and how to retrieve it (`horizon detail <id>`). The
+// nudges cover the no-gaps states, where no details exist, so they carry no
+// pointer. Byte-exactness against the spec fence is already pinned by test 35
+// and the matrix above; this pins the pointer's presence and its absence in
+// the nudges.
+test("pointer-1. the horizon block carries the detail pointer; neither nudge does", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Pointer gap"]);
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.ok(r.stdout.includes("`horizon detail <id>` prints it"), "the block must tell the session how to retrieve extended context");
+    assert.ok(r.stdout.includes("extended context"), "the pointer must name the thing, not just the command");
+    const empty = freshDir();
+    try {
+      seed(empty, []);
+      const r2 = await run(["--cwd", empty]);
+      assert.equal(r2.code, 0);
+      assert.ok(!r2.stdout.includes("horizon detail"), "the bootstrap nudge must not carry the pointer");
+      setAbout(empty, "About line");
+      const r3 = await run(["--cwd", empty]);
+      assert.equal(r3.code, 0);
+      assert.ok(!r3.stdout.includes("horizon detail"), "the warm nudge must not carry the pointer");
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Injection minimalism (CONTEXT.md): details content NEVER appears in any
+// injected text — the one line plus the pointer is everything a session gets.
+test("pointer-2. details content never reaches injected text", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Watchful gap"]);
+    const store = join(dir, ".horizon");
+    const state = JSON.parse(readFileSync(join(store, "gaps.json"), "utf8"));
+    state.gaps[0].details = "SECRET-DETAIL-CONTEXT\nmore secret context";
+    writeFileSync(join(store, "gaps.json"), JSON.stringify(state, null, 2) + "\n");
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.ok(r.stdout.includes("gap-1  Watchful gap"), "the title line must survive");
+    assert.ok(!r.stdout.includes("SECRET-DETAIL-CONTEXT"), "details content must never be injected");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
