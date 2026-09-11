@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { freshDir, runCli, runInject, seed, specFence, withDir } from "./harness.js";
+import { runCli, runInject, seed, specFence, withDir } from "./harness.js";
 import { setAbout as storeSetAbout, setDetail } from "../src/store.ts";
 import { compose, resolveInjection } from "../src/inject.ts";
 
@@ -11,8 +11,7 @@ const ADAPTER = new URL("../src/adapters/dsh.ts", import.meta.url).pathname;
 // --- horizon-inject: composition (spec 10, D6) ---
 
 test("35. inject prints the horizon block, gaps substituted verbatim, byte-for-byte against the spec", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["A person can hand a photo to the app and get the plant named.", "Rentals can be compared across sites without re-entering filters."]);
     const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
@@ -20,31 +19,23 @@ test("35. inject prints the horizon block, gaps substituted verbatim, byte-for-b
     const show = "gap-1  A person can hand a photo to the app and get the plant named.\ngap-2  Rentals can be compared across sites without re-entering filters.\n";
     const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", show);
     assert.equal(r.stdout, expected);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("36. inject prints the bootstrap nudge, exactly, on an absent store; on an empty store; never two variants, never none", async () => {
   const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
   const bootstrap = specFence(spec, "### 10.2");
-  const absent = freshDir();
-  try {
+  await withDir(async (absent) => {
     const r1 = await runInject(["--cwd", absent]);
     assert.equal(r1.code, 0);
     assert.equal(r1.stdout, bootstrap);
-    const empty = freshDir();
-    try {
+    await withDir(async (empty) => {
       seed(empty, []);
       const r2 = await runInject(["--cwd", empty]);
       assert.equal(r2.code, 0);
       assert.equal(r2.stdout, bootstrap);
-    } finally {
-      rmSync(empty, { recursive: true, force: true });
-    }
-  } finally {
-    rmSync(absent, { recursive: true, force: true });
-  }
+    });
+  });
 });
 
 // A storeless $HOME must not be offered horizon-ization; the decision is a
@@ -81,8 +72,7 @@ test("home-suppress-2. end-to-end: main silences a storeless $HOME (exit 0, empt
 });
 
 test("37. inject has a --json mode: {\"text\",\"store\"} on stdout, nothing else", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["Only one gap"]);
     const r = await runInject(["--cwd", dir, "--json"]);
     assert.equal(r.code, 0);
@@ -94,17 +84,14 @@ test("37. inject has a --json mode: {\"text\",\"store\"} on stdout, nothing else
     assert.equal(parsed.store, join(dir, ".horizon"));
     assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text, store: join(dir, ".horizon") }));
     assert.ok(!r.stderr, "stderr must stay empty on success");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 // The storeless twin of 37: no store anywhere above the cwd, so store is
 // null — the nudge text still composes (the storeless-nudge case), and the
 // home-silence case is the total answer {"",""} twin: empty text, null store.
 test("inject-json-storeless. --json answers store:null when no store resolves; plain stdout stays byte-identical", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     const j = await runInject(["--cwd", dir, "--json"]);
     assert.equal(j.code, 0);
     const parsed = JSON.parse(j.stdout);
@@ -121,14 +108,11 @@ test("inject-json-storeless. --json answers store:null when no store resolves; p
     const silent = await runInject(["--cwd", dir, "--json"], { env });
     assert.equal(silent.code, 0);
     assert.deepEqual(JSON.parse(silent.stdout), { text: "", store: null });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("38. inject makes no store writes: read-only dirs and read-only files still inject", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["Read-only world"]);
     const store = join(dir, ".horizon");
     for (const name of readdirSync(store)) {
@@ -139,8 +123,7 @@ test("38. inject makes no store writes: read-only dirs and read-only files still
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("Read-only world"));
     assert.equal(readdirSync(store).sort().join(","), before, "store directory listing changed");
-    const empty = freshDir();
-    try {
+    await withDir(async (empty) => {
       const emptyStore = join(empty, ".horizon");
       mkdirSync(emptyStore, { recursive: true });
       writeFileSync(join(emptyStore, "gaps.json"), JSON.stringify({ version: 1, revision: 0, gaps: [] }, null, 2) + "\n");
@@ -152,19 +135,14 @@ test("38. inject makes no store writes: read-only dirs and read-only files still
       assert.equal(r2.code, 0);
       assert.ok(r2.stdout.startsWith("This project has no horizon yet"));
       assert.equal(readdirSync(emptyStore).sort().join(","), beforeEmpty, "store directory listing changed");
-    } finally {
-      rmSync(empty, { recursive: true, force: true });
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    });
+  });
 });
 
 // --- horizon-inject: edge behaviour ---
 
 test("39. malformed gaps.json: inject exits 7 naming the file and prints no text", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     mkdirSync(join(dir, ".horizon"), { recursive: true });
     writeFileSync(join(dir, ".horizon", "gaps.json"), '{"version":1,"revision":1,"gaps":[null]}');
     const r = await runInject(["--cwd", dir]);
@@ -172,14 +150,11 @@ test("39. malformed gaps.json: inject exits 7 naming the file and prints no text
     assert.match(r.stderr, /gaps\.json/);
     assert.ok(!/TypeError|at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
     assert.equal(r.stdout, "");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("40. inject supports the CLI's global options (help/version, --harness/--session/--origin accepted and ignored)", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["Global options gap"]);
     const help = await runInject(["--help"]);
     assert.equal(help.code, 0);
@@ -190,9 +165,7 @@ test("40. inject supports the CLI's global options (help/version, --harness/--se
     const r = await runInject(["--cwd", dir, "--harness", "dsh", "--session", "abc", "--origin", "human"]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("Global options gap"));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 // --- The DSH adapter (glue only) ---
@@ -375,8 +348,7 @@ function frozen(x) {
 }
 
 test("dsh-param-1. a bash touch of a stored repo queues its horizon once, and the gate is never vetoed", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Param trigger gap"]);
     const mod = await import(ADAPTER);
     const fx = paramFixture({ text: "MOCK-PARAM-HORIZON", store: repo });
@@ -403,46 +375,40 @@ test("dsh-param-1. a bash touch of a stored repo queues its horizon once, and th
     );
     assert.equal(fx.spawned.length, 2, "answered dirs must not spawn again");
     assert.equal(fx.calls.length, 1, "the same store must not inject twice");
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("dsh-param-2. a different stored repo touched mid-session gets its own horizon (file_path walks up)", async () => {
-  const repoA = freshDir();
-  const repoB = freshDir();
-  try {
-    seed(repoA, ["Repo A gap"]);
-    seed(repoB, ["Repo B gap"]);
-    mkdirSync(join(repoB, "sub"), { recursive: true });
-    const mod = await import(ADAPTER);
-    const fx = paramFixture((args) => {
-      const dir = args[args.indexOf("--cwd") + 1];
-      return { text: `MOCK:${dir}`, store: dir };
+  await withDir(async (repoA) => {
+    await withDir(async (repoB) => {
+      seed(repoA, ["Repo A gap"]);
+      seed(repoB, ["Repo B gap"]);
+      mkdirSync(join(repoB, "sub"), { recursive: true });
+      const mod = await import(ADAPTER);
+      const fx = paramFixture((args) => {
+        const dir = args[args.indexOf("--cwd") + 1];
+        return { text: `MOCK:${dir}`, store: dir };
+      });
+      const registered = mod.apply({}, fx);
+      await registered["tools/pre-execute"](
+        { name: "bash", arguments: frozen({ command: `git -C ${repoA} status` }), agent: fx.agent },
+        () => ({ kind: "allow" }),
+      );
+      // A file_path whose directory has no store still resolves the nearest
+      // ancestor store — the bin resolves --cwd, and its answer's store key
+      // keeps the two repos apart.
+      await registered["tools/pre-execute"](
+        { name: "str_replace_editor", arguments: frozen({ file_path: join(repoB, "sub", "file.txt") }), agent: fx.agent },
+        () => ({ kind: "allow" }),
+      );
+      assert.deepEqual(fx.spawned.map(cwdOf), [repoA, join(repoB, "sub")], "each touch probes once; --cwd is the touched dir and the bin resolves the store itself");
+      assert.deepEqual(fx.calls.map((c) => c.message.content[0].text), [`MOCK:${repoA}`, `MOCK:${join(repoB, "sub")}`]);
     });
-    const registered = mod.apply({}, fx);
-    await registered["tools/pre-execute"](
-      { name: "bash", arguments: frozen({ command: `git -C ${repoA} status` }), agent: fx.agent },
-      () => ({ kind: "allow" }),
-    );
-    // A file_path whose directory has no store still resolves the nearest
-    // ancestor store — the bin resolves --cwd, and its answer's store key
-    // keeps the two repos apart.
-    await registered["tools/pre-execute"](
-      { name: "str_replace_editor", arguments: frozen({ file_path: join(repoB, "sub", "file.txt") }), agent: fx.agent },
-      () => ({ kind: "allow" }),
-    );
-    assert.deepEqual(fx.spawned.map(cwdOf), [repoA, join(repoB, "sub")], "each touch probes once; --cwd is the touched dir and the bin resolves the store itself");
-    assert.deepEqual(fx.calls.map((c) => c.message.content[0].text), [`MOCK:${repoA}`, `MOCK:${join(repoB, "sub")}`]);
-  } finally {
-    rmSync(repoA, { recursive: true, force: true });
-    rmSync(repoB, { recursive: true, force: true });
-  }
+  });
 });
 
 test("dsh-param-3. a storeless target never fires — one probe per dir, no inject, no bootstrap, and the storeless answer is remembered", async () => {
-  const bare = freshDir();
-  try {
+  await withDir(async (bare) => {
     const mod = await import(ADAPTER);
     const fx = paramFixture({ text: "MOCK-SHOULD-NOT-APPEAR", store: null });
     const registered = mod.apply({}, fx);
@@ -463,14 +429,11 @@ test("dsh-param-3. a storeless target never fires — one probe per dir, no inje
     );
     assert.equal(fx.spawned.length, 2, "a storeless dir must not re-spawn");
     assert.deepEqual(fx.calls, []);
-  } finally {
-    rmSync(bare, { recursive: true, force: true });
-  }
+  });
 });
 
 test("dsh-param-4. subagent sessions never fire the param trigger", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Subagent gap"]);
     const mod = await import(ADAPTER);
     for (const header of [
@@ -489,14 +452,11 @@ test("dsh-param-4. subagent sessions never fire the param trigger", async () => 
       assert.equal(nextCalls, 1, `next() must run exactly once on the subagent path for ${JSON.stringify(header)}`);
       assert.deepEqual(fx.spawned, [], `subagent must not spawn for ${JSON.stringify(header)}`);
     }
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("dsh-param-5. malformed or empty arguments: no throw, no inject, gate still passes", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Malformed gap"]);
     const mod = await import(ADAPTER);
     for (const args of [undefined, "not json at all", {}, [], frozen({ command: 42 }), frozen({ path: null })]) {
@@ -519,14 +479,11 @@ test("dsh-param-5. malformed or empty arguments: no throw, no inject, gate still
     );
     assert.deepEqual(gate, { kind: "allow" }, "a raw-string arguments payload must not block the call");
     assert.deepEqual(fx.calls, []);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("dsh-param-6. the store the startup injection served is not re-injected by the param path", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Startup gap"]);
     const mod = await import(ADAPTER);
     const fx = paramFixture((args) => ({ text: "MOCK-STARTUP", store: args[args.indexOf("--cwd") + 1] }), { cwd: repo, delegationDepth: 0, origin: "user" });
@@ -540,8 +497,7 @@ test("dsh-param-6. the store the startup injection served is not re-injected by 
     assert.equal(fx.spawned.length, 1, "the param path must not re-spawn for the launch repo");
     assert.equal(fx.calls.length, 1, "the param path must not re-inject the launch repo");
     // A different repo still fires after the startup one was served.
-    const other = freshDir();
-    try {
+    await withDir(async (other) => {
       seed(other, ["Other gap"]);
       await registered["tools/pre-execute"](
         { name: "bash", arguments: frozen({ command: `git -C ${other} status` }), agent: fx.agent },
@@ -549,17 +505,12 @@ test("dsh-param-6. the store the startup injection served is not re-injected by 
       );
       assert.equal(fx.spawned.length, 2);
       assert.equal(fx.calls.length, 2);
-    } finally {
-      rmSync(other, { recursive: true, force: true });
-    }
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+    });
+  });
 });
 
 test("dsh-param-7. end-to-end: the param trigger composes through the real bins", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Param e2e gap"]);
     const mod = await import(ADAPTER);
     const registered = mod.apply({ on() {} });
@@ -573,17 +524,14 @@ test("dsh-param-7. end-to-end: the param trigger composes through the real bins"
     const text = injected[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
     assert.ok(text.includes("gap-1  Param e2e gap"));
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 // Degenerate exec shapes sit on the same veto trap as subagents: a listener
 // that returns without next() denies the tool call outright, so the missing
 // and non-injectable agent cases must pass the gate through too.
 test("dsh-param-8. no agent, or inject not a function: the gate still allows, nothing spawns", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Degenerate agent gap"]);
     const mod = await import(ADAPTER);
     const header = { cwd: "/x", delegationDepth: 0, origin: "user" };
@@ -601,9 +549,7 @@ test("dsh-param-8. no agent, or inject not a function: the gate still allows, no
       assert.deepEqual(fx.spawned, [], `${label}: nothing spawns`);
       assert.deepEqual(fx.calls, [], `${label}: nothing injects`);
     }
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 // A rejecting inject must release the store's once-per-session claim so a
@@ -612,8 +558,7 @@ test("dsh-param-8. no agent, or inject not a function: the gate still allows, no
 // await it), so a synchronous throw is the failure mode it treats as failed
 // delivery, and the one pinned here.
 test("dsh-param-9. a throwing inject releases the store's claim; the next call delivers", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Retry gap"]);
     const mod = await import(ADAPTER);
     const fx = paramFixture({ text: "MOCK-RETRY", store: repo });
@@ -643,17 +588,14 @@ test("dsh-param-9. a throwing inject releases the store's claim; the next call d
     await call();
     assert.equal(fx.spawned.length, 2, "after a delivered inject the once-per-session claim holds");
     assert.equal(fx.calls.length, 1);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 // A call naming several unseen dirs must not pay serial node startups inside
 // the awaited waterfall: the fresh probes issue together, and the
 // once-per-store claim still collapses N dirs on one store to one inject.
 test("dsh-param-10. fresh dirs in one call probe concurrently — every probe issues before the first delivery, and two dirs on one store inject once", async () => {
-  const repo = freshDir();
-  try {
+  await withDir(async (repo) => {
     seed(repo, ["Concurrency gap"]);
     const mod = await import(ADAPTER);
     const events = [];
@@ -692,9 +634,7 @@ test("dsh-param-10. fresh dirs in one call probe concurrently — every probe is
       () => ({ kind: "allow" }),
     );
     assert.equal(events.length, 0, `a normalized duplicate must not re-probe: ${events}`);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("45. no adapter contains a literal of any section-10 text (spec acceptance 36, made real)", async () => {
@@ -769,8 +709,7 @@ test("47. package.json shape per D1: two bins, three adapter exports, no native 
 });
 
 test("48. end-to-end: apply() with no overrides injects the composed block through the real bins", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["End-to-end gap"]);
     const mod = await import(ADAPTER);
     const injected = [];
@@ -793,8 +732,7 @@ test("48. end-to-end: apply() with no overrides injects the composed block throu
     assert.ok(text.includes("`horizon detail <id>` prints it"), "the dsh path must carry the core's detail pointer");
     // The empty-store twin: the real bootstrap nudge comes back through the
     // same chain.
-    const empty = freshDir();
-    try {
+    await withDir(async (empty) => {
       seed(empty, []);
       const injected2 = [];
       await registered["agent/session-start"]({
@@ -806,17 +744,12 @@ test("48. end-to-end: apply() with no overrides injects the composed block throu
       });
       assert.equal(injected2.length, 1);
       assert.ok(injected2[0].content[0].text.startsWith("This project has no horizon yet"));
-    } finally {
-      rmSync(empty, { recursive: true, force: true });
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    });
+  });
 });
 
 test("49. inject embeds show stdout byte-for-byte even when gap texts carry $-replacement patterns (DEF-1)", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     const texts = ["pay $& now", "cost $$5", "use $`tick", "tail $'mark", "plain $1 end"];
     const gaps = seed(dir, texts);
     const show = await runCli(["show", "--cwd", dir]);
@@ -830,9 +763,7 @@ test("49. inject embeds show stdout byte-for-byte even when gap texts carry $-re
       assert.ok(r.stdout.includes(`${g.id}  ${g.text}`), `gap line must survive verbatim: ${g.text}`);
     }
     assert.ok(!r.stdout.includes("{{GAPS}}"), "the {{GAPS}} placeholder must never leak into the output");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 // --- about-line composition (spec 10.3) ---
@@ -845,8 +776,7 @@ function setAbout(dir, about) {
 }
 
 test("about-inject-1. about + gaps: the about line, a blank line, then the byte-identical horizon block", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["A person can hand a photo to the app and get the plant named."]);
     setAbout(dir, "AI plugin to help agents with long term goals");
     const r = await runInject(["--cwd", dir]);
@@ -861,14 +791,11 @@ test("about-inject-1. about + gaps: the about line, a blank line, then the byte-
     const j = await runInject(["--cwd", dir, "--json"]);
     assert.equal(j.code, 0);
     assert.equal(JSON.parse(j.stdout).text, expected);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("about-inject-2. about + no gaps: the about line, a blank line, then the warm nudge", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, []);
     setAbout(dir, "AI plugin to help agents with long term goals");
     const r = await runInject(["--cwd", dir]);
@@ -877,14 +804,11 @@ test("about-inject-2. about + no gaps: the about line, a blank line, then the wa
     const expected =
       "This project is about: AI plugin to help agents with long term goals\n\n" + specFence(spec, "### 10.3");
     assert.equal(r.stdout, expected);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("about-inject-3. without an about line: output is byte-identical to the pre-about composition", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["Only one gap"]);
     const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
@@ -892,9 +816,7 @@ test("about-inject-3. without an about line: output is byte-identical to the pre
     const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "gap-1  Only one gap\n");
     assert.equal(r.stdout, expected); // no prefix, no extra blank line
     assert.ok(!r.stdout.startsWith("This project is about"), "about prefix leaked into an unset store");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("inject-matrix. the five store states each produce exactly one variant — never two, never none (spec 10, acceptance 35)", async () => {
@@ -912,29 +834,26 @@ test("inject-matrix. the five store states each produce exactly one variant — 
     bootstrap: "This project has no horizon yet — no about line",
     warm: "No gaps yet. `horizon add",
   };
-  const dirs = [];
-  const cases = [];
-  const noStore = freshDir(); dirs.push(noStore);
-  cases.push(["no store", noStore, bootstrap, "bootstrap"]);
-  const emptyStore = freshDir(); dirs.push(emptyStore); seed(emptyStore, []);
-  cases.push(["store, nothing set", emptyStore, bootstrap, "bootstrap"]);
-  const aboutOnly = freshDir(); dirs.push(aboutOnly); seed(aboutOnly, []); setAbout(aboutOnly, ABOUT);
-  cases.push(["about only", aboutOnly, prefix + warm, "warm"]);
-  const gapsOnly = freshDir(); dirs.push(gapsOnly); seed(gapsOnly, [GAP]);
-  cases.push(["gaps only", gapsOnly, block.replace("{{GAPS}}", show), "block"]);
-  const aboutGaps = freshDir(); dirs.push(aboutGaps); seed(aboutGaps, [GAP]); setAbout(aboutGaps, ABOUT);
-  cases.push(["about+gaps", aboutGaps, prefix + block.replace("{{GAPS}}", show), "block"]);
-  try {
-    for (const [label, dir, expected, variant] of cases) {
+  // Each store state builds inside its own protected body: a throwing seed
+  // or setAbout must never leak a dir (the five fixtures used to be built
+  // before the try, so up to four could outlive a failure).
+  const cases = [
+    ["no store", () => {}, bootstrap, "bootstrap"],
+    ["store, nothing set", (dir) => seed(dir, []), bootstrap, "bootstrap"],
+    ["about only", (dir) => { seed(dir, []); setAbout(dir, ABOUT); }, prefix + warm, "warm"],
+    ["gaps only", (dir) => seed(dir, [GAP]), block.replace("{{GAPS}}", show), "block"],
+    ["about+gaps", (dir) => { seed(dir, [GAP]); setAbout(dir, ABOUT); }, prefix + block.replace("{{GAPS}}", show), "block"],
+  ];
+  for (const [label, build, expected, variant] of cases) {
+    await withDir(async (dir) => {
+      build(dir);
       const r = await runInject(["--cwd", dir]);
       assert.equal(r.code, 0, `${label}: ${r.stderr}`);
       assert.equal(r.stdout, expected, `${label}: wrong variant composed`);
       const present = Object.entries(openings).filter(([, opening]) => r.stdout.includes(opening));
       assert.equal(present.length, 1, `${label}: expected exactly one variant, saw ${present.map(([k]) => k).join("+") || "none"}`);
       assert.equal(present[0][0], variant, `${label}: wrong variant present`);
-    }
-  } finally {
-    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    });
   }
 });
 
@@ -947,15 +866,13 @@ test("inject-matrix. the five store states each produce exactly one variant — 
 // and the matrix above; this pins the pointer's presence and its absence in
 // the nudges.
 test("pointer-1. the horizon block carries the detail pointer; neither nudge does", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["Pointer gap"]);
     const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("`horizon detail <id>` prints it"), "the block must tell the session how to retrieve extended context");
     assert.ok(r.stdout.includes("extended context"), "the pointer must name the thing, not just the command");
-    const empty = freshDir();
-    try {
+    await withDir(async (empty) => {
       seed(empty, []);
       const r2 = await runInject(["--cwd", empty]);
       assert.equal(r2.code, 0);
@@ -964,19 +881,14 @@ test("pointer-1. the horizon block carries the detail pointer; neither nudge doe
       const r3 = await runInject(["--cwd", empty]);
       assert.equal(r3.code, 0);
       assert.ok(!r3.stdout.includes("horizon detail"), "the warm nudge must not carry the pointer");
-    } finally {
-      rmSync(empty, { recursive: true, force: true });
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    });
+  });
 });
 
 // Injection minimalism (CONTEXT.md): details content NEVER appears in any
 // injected text — the one line plus the pointer is everything a session gets.
 test("pointer-2. details content never reaches injected text", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["Watchful gap"]);
     // Details go in through the store's own writer, never a hand-written file.
     const r0 = setDetail(dir, "gap-1", { text: "SECRET-DETAIL-CONTEXT\nmore secret context" });
@@ -985,9 +897,7 @@ test("pointer-2. details content never reaches injected text", async () => {
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("gap-1  Watchful gap"), "the title line must survive");
     assert.ok(!r.stdout.includes("SECRET-DETAIL-CONTEXT"), "details content must never be injected");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 // --- the composer, in-process (src/inject.ts) ---
@@ -1055,38 +965,29 @@ test("inject-unit-2. the $-pattern guard: $&, $`, $', $$, $1 substitute byte-for
 // case never touches the real $HOME. A malformed store stays an unwrapped
 // error: { code, message }, stdout untouched (main() prints nothing under
 // --json on the error path).
-test("inject-unit-3. resolveInjection: the {text, store} answer — store rides along, storeless is null, home silence is empty", () => {
-  const dir = freshDir();
-  try {
+test("inject-unit-3. resolveInjection: the {text, store} answer — store rides along, storeless is null, home silence is empty", async () => {
+  await withDir(async (dir) => {
     seed(dir, ["Envelope gap"]);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "gap-1  Envelope gap\n");
     assert.deepEqual(resolveInjection(dir, { home: "/home/fake-user" }), { text: expected, store: join(dir, ".horizon") });
-    const storeless = freshDir();
-    try {
+    await withDir(async (storeless) => {
       const s = resolveInjection(storeless, { home: "/home/fake-user" });
       assert.equal(s.store, null, "a storeless cwd must answer store:null");
       assert.ok(s.text.startsWith("This project has no horizon yet"), "the storeless nudge still composes");
       // The silence twin: a storeless cwd that IS the (fake) home — empty
       // text, null store, nothing to hand back.
       assert.deepEqual(resolveInjection(storeless, { home: storeless }), { text: "", store: null });
-    } finally {
-      rmSync(storeless, { recursive: true, force: true });
-    }
-    const bad = freshDir();
-    try {
+    });
+    await withDir(async (bad) => {
       mkdirSync(join(bad, ".horizon"), { recursive: true });
       writeFileSync(join(bad, ".horizon", "gaps.json"), '{"version":1,"revision":1,"gaps":[null]}');
       const e = resolveInjection(bad, { home: "/home/fake-user" });
       assert.equal(e.error.code, 7);
       assert.match(e.error.message, /gaps\.json/);
       assert.equal(e.text, undefined);
-    } finally {
-      rmSync(bad, { recursive: true, force: true });
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    });
+  });
 });
 
 // The deliberate wire change the extraction carried: --flag=value. The CLI's
@@ -1095,8 +996,7 @@ test("inject-unit-3. resolveInjection: the {text, store} answer — store rides 
 // mirrors the CLI's = handling; this test drives it through main() itself,
 // and the shim seam it used to need a subprocess for is the bin smoke's.
 test("inject-eq-flag. --cwd=<path> composes like the separate-arg form, plain and --json; unknown flags still exit 2", async () => {
-  const dir = freshDir();
-  try {
+  await withDir(async (dir) => {
     seed(dir, ["Equals form gap"]);
     const r = await runInject([`--cwd=${dir}`]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
@@ -1125,7 +1025,5 @@ test("inject-eq-flag. --cwd=<path> composes like the separate-arg form, plain an
     assert.equal(bad.code, 2);
     assert.equal(bad.stdout, "");
     assert.ok(bad.stderr.startsWith(`horizon-inject: unknown option: --bogus=${dir}`));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
