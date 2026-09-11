@@ -136,7 +136,11 @@ npm install -g deep-horizon
 ```
 
 `startup` only: resumed/compacted/forked sessions replay the original
-injection from their transcript, so re-injecting would duplicate it.
+injection from their transcript, so re-injecting would duplicate it. Known
+deliberate gap: `/clear` wipes the context but does not re-inject (its source
+is not matched by the startup-only hook) — the horizon returns next startup.
+Subagents are excluded structurally: the `SessionStart` hook does not fire
+for them (they get `SubagentStart`).
 `SessionEnd` is the only close hook proven to fire on SIGINT/SIGTERM; its
 stdin JSON carries the session id (`jq -r .session_id` reads it), and the
 record carries `summary: null` — the close hook cannot elicit model text.
@@ -152,6 +156,14 @@ npm install -g deep-horizon
 ```json
 { "packages": ["npm:deep-horizon"] }
 ```
+
+The extension entry point is the package's `exports["./pi"]` module:
+`session_start` shells out to `horizon-inject` and stashes the output; the
+first `before_agent_start` prompt returns it as a persistent message. Only
+the `startup` reason stashes — `new`, `resume`, `fork`, and `reload` arrive
+inside a running process or replay an existing horizon. The `git:` package
+specifier is proven live; the `npm:deep-horizon` variant is documented but
+unprobed.
 
 **Subagent opt-out:** pi has no discriminator for subagent sessions, so the
 adapter skips injection when `HORIZON_SUBAGENT` is set to a truthy value
@@ -174,11 +186,24 @@ npm install -g deep-horizon
 { "plugin": ["deep-horizon"] }
 ```
 
-opencode ships degraded, and the README says so plainly: injection is
-best-effort (new-vs-resumed is inferred heuristically), and **opencode
-sessions write no session records** — no close hook exists, so opencode
-sessions are invisible to the log. Its gaps still read and write like every
-other harness's.
+opencode ships degraded, and the README says so plainly: the horizon block is
+added as an extra text part of the first user message, once per session, on a
+freshness heuristic (recent `session.time.created` plus empty persisted
+history — new-vs-resumed is inferred, not known); subagent sessions are
+excluded via `session.parentID`; and **opencode sessions write no session
+records** — no close hook exists, so opencode sessions are invisible to the
+log. Its gaps still read and write like every other harness's.
+
+If Bun does not resolve the npm package from the global install, the fallback
+is a local plugin at `.opencode/plugin/deep-horizon.ts` (live-verified
+shape):
+
+```ts
+import { apply } from "deep-horizon/opencode";
+export default async function deepHorizon(ctx) {
+  return await apply(ctx);
+}
+```
 
 ### 5. Hermes
 
