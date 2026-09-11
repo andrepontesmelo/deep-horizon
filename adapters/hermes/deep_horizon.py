@@ -82,23 +82,6 @@ _TRUTHY = ("1", "true", "yes", "on")
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_BIN_DIR = os.path.normpath(os.path.join(_PLUGIN_DIR, "..", "..", "bin"))
 
-# Tools worth scanning for /home/andre/git/<repo> references. Unknown tools
-# (mcp_*, skill names, future additions) are ignored so a new tool's params
-# can never smuggle a repo path into the injection stream.
-_PARAM_TOOLS = frozenset({"terminal", "read_file", "write_file", "patch", "search_files", "execute_code"})
-
-# Which string params count as path-bearing per tool. terminal's command is
-# included (a command string is where ``git -C`` / ``cd`` sightings live):
-# both its keys are scanned, nothing else is.
-_PARAM_KEYS = {
-    "terminal": ("command", "workdir"),
-    "read_file": ("path",),
-    "write_file": ("path", "content"),
-    "patch": ("path", "old_string", "new_string"),
-    "search_files": ("path", "pattern"),
-    "execute_code": ("code",),
-}
-
 # The only repo roots matched, per the design: absolute ``/home/andre/git/``
 # or its ``~/git/`` form. ``HORIZON_GIT_ROOT`` overrides the root for tests
 # only (default is the fixed corpus; no production override exists by design).
@@ -110,12 +93,6 @@ def _git_root() -> str:
 # Path-like tokens inside a param string; _repo_root_of validates the prefix,
 # so the tokenizer itself stays dumb (a token alone never triggers anything).
 _CANDIDATE_RE = re.compile(r"~/[^\s\"'`]*|/[^\s\"'`]*")
-
-# Per (session_id, repo) injection memory: a repo's block is injected once per
-# session, on the first LLM call after its first tool-touch. The frozen section
-# already covers launch-cwd repos on turn one, so first-turn touch of that same
-# repo is excluded by the caller (see _pre_llm_call) rather than here.
-_seen: dict[tuple[str, str], bool] = {}
 
 
 def _spawn_bin(bin_name: str, args: list[str]) -> tuple[int, str, str]:
@@ -347,8 +324,6 @@ _PARAM_KEYS: dict[str, tuple[str, ...]] = {
     "search_files": ("path",),
     "execute_code": ("code",),
 }
-
-_TILDE_NOTE = "the ~/git/ form expands via os.path.expanduser (developer shells agree)"
 
 # A repo touch is <root><name>[/...]: the name segment must be non-empty so a
 # bare root prefix alone never matches (it is a root, not a repo, and has no
