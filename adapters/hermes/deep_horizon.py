@@ -239,11 +239,10 @@ def _section_text(session_info) -> str:
         #
         # Documented hazard (kept visible): in the gateway the process cwd is
         # the gateway's WorkingDirectory (/home/andre/.hermes), and
-        # horizon-inject's resolveStore climbs ANCESTORS — so a store
-        # appearing at /home/andre/.horizon would now also win the defer for
-        # storeless sessions and freeze into EVERY such session's system
-        # prompt. The recorded mitigation choice is an exact-check in
-        # resolveStore (only the given cwd's own store counts).
+        # horizon-inject's resolveStore climbs ANCESTORS from every candidate
+        # — so a store appearing at /home/andre/.horizon would also win the
+        # defer for storeless sessions and freeze into EVERY such session's
+        # system prompt.
         answer = None
         store_answer = None
         for candidate in _cwd_candidates(session_info.get("cwd")):

@@ -681,6 +681,55 @@ test("dsh-param-9. a throwing inject releases the store's claim; the next call d
   }
 });
 
+// A call naming several unseen dirs must not pay serial node startups inside
+// the awaited waterfall: the fresh probes issue together, and the
+// once-per-store claim still collapses N dirs on one store to one inject.
+test("dsh-param-10. fresh dirs in one call probe concurrently — every probe issues before the first delivery, and two dirs on one store inject once", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Concurrency gap"]);
+    const mod = await import(ADAPTER);
+    const events = [];
+    const agent = {
+      session: { header: { cwd: "/launched-elsewhere", delegationDepth: 0, origin: "user" } },
+      inject() { events.push("inject"); },
+      steer() {},
+    };
+    const registered = mod.apply({}, {
+      spawnBin: (bin, args) => {
+        events.push(`spawn:${args[args.indexOf("--cwd") + 1]}`);
+        return { status: 0, stdout: JSON.stringify({ text: "MOCK-CONCURRENT", store: repo }), stderr: "" };
+      },
+    });
+    // Two fresh dirs on ONE store, named in one call: both probed, one
+    // inject. Normalized keys, so the token spellings dedupe first.
+    const gate = await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `cp ${repo}/a.txt ${repo}/b.txt` }), agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.deepEqual(gate, { kind: "allow" });
+    assert.equal(events.filter((e) => e.startsWith("spawn")).length, 2, "both fresh dirs probe");
+    assert.equal(events.filter((e) => e === "inject").length, 1, "N dirs on one store inject once");
+    // Concurrency shape: every probe issues before any delivery. A
+    // sequential await-loop would deliver the first store's inject before
+    // the second dir's spawn was even issued.
+    const spawnsAt = events.map((e) => e.startsWith("spawn"));
+    const lastSpawn = spawnsAt.lastIndexOf(true);
+    const firstInject = events.indexOf("inject");
+    assert.ok(firstInject === -1 || firstInject > lastSpawn, `all probes must issue before the first delivery: ${events}`);
+    // Normalization: token variants of one path are one probe key — the
+    // double-slash spelling of the same dir must not re-probe.
+    events.length = 0;
+    await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `cat ${repo}//a.txt` }), agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.equal(events.length, 0, `a normalized duplicate must not re-probe: ${events}`);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("45. no adapter contains a literal of any section-10 text (spec acceptance 36, made real)", async () => {
   const { readdirSync, statSync } = await import("node:fs");
   const { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT } = await import(new URL("../src/index.ts", import.meta.url).pathname);
