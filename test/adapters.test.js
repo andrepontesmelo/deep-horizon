@@ -89,6 +89,9 @@ test("52. the Hermes section callable spawns horizon-inject --harness hermes and
     assert.equal(r.code, 0, `python failed: ${r.stderr}`);
     assert.ok(r.stdout.startsWith("This project has a horizon"), `got: ${r.stdout.slice(0, 80)}`);
     assert.ok(r.stdout.includes("gap-1  Hermes section gap"));
+    // The detail pointer rides the same composed block: the hermes path never
+    // composes texts itself, so it inherits the core's pointer line verbatim.
+    assert.ok(r.stdout.includes("`horizon detail <id>` prints it"), "the hermes section must carry the core's detail pointer");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -271,6 +274,7 @@ test("58. the pi adapter end-to-end: startup stash flows the real horizon-inject
     const first = await registered["before_agent_start"]({ prompt: "go" }, {});
     assert.ok(first.message.content.startsWith("This project has a horizon"));
     assert.ok(first.message.content.includes("gap-1  End-to-end pi gap"));
+    assert.ok(first.message.content.includes("`horizon detail <id>` prints it"), "the pi path must carry the core's detail pointer");
     assert.equal(first.message.customType, "deep-horizon");
     // The bootstrap-nudge twin: empty store still injects the nudge (composition, not gap-detection).
     const empty = freshDir();

@@ -728,6 +728,9 @@ test("48. end-to-end: apply() with no overrides injects the composed block throu
     const text = injected[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
     assert.ok(text.includes("gap-1  End-to-end gap"));
+    // The details pointer reaches the harness through the same bin stdout:
+    // adapters are glue, so the core's pointer line needs no per-adapter work.
+    assert.ok(text.includes("`horizon detail <id>` prints it"), "the dsh path must carry the core's detail pointer");
     // The empty-store twin: the real bootstrap nudge comes back through the
     // same chain.
     const empty = freshDir();
@@ -878,5 +881,58 @@ test("inject-matrix. the five store states each produce exactly one variant — 
     }
   } finally {
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// --- details pointer (per-gap extended context, retrieved on demand) ---
+
+// The injected block carries ONE pointer line so a session knows a gap may
+// hold extended context and how to retrieve it (`horizon detail <id>`). The
+// nudges cover the no-gaps states, where no details exist, so they carry no
+// pointer. Byte-exactness against the spec fence is already pinned by test 35
+// and the matrix above; this pins the pointer's presence and its absence in
+// the nudges.
+test("pointer-1. the horizon block carries the detail pointer; neither nudge does", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Pointer gap"]);
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.ok(r.stdout.includes("`horizon detail <id>` prints it"), "the block must tell the session how to retrieve extended context");
+    assert.ok(r.stdout.includes("extended context"), "the pointer must name the thing, not just the command");
+    const empty = freshDir();
+    try {
+      seed(empty, []);
+      const r2 = await run(["--cwd", empty]);
+      assert.equal(r2.code, 0);
+      assert.ok(!r2.stdout.includes("horizon detail"), "the bootstrap nudge must not carry the pointer");
+      setAbout(empty, "About line");
+      const r3 = await run(["--cwd", empty]);
+      assert.equal(r3.code, 0);
+      assert.ok(!r3.stdout.includes("horizon detail"), "the warm nudge must not carry the pointer");
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Injection minimalism (CONTEXT.md): details content NEVER appears in any
+// injected text — the one line plus the pointer is everything a session gets.
+test("pointer-2. details content never reaches injected text", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Watchful gap"]);
+    const store = join(dir, ".horizon");
+    const state = JSON.parse(readFileSync(join(store, "gaps.json"), "utf8"));
+    state.gaps[0].details = "SECRET-DETAIL-CONTEXT\nmore secret context";
+    writeFileSync(join(store, "gaps.json"), JSON.stringify(state, null, 2) + "\n");
+    const r = await run(["--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.ok(r.stdout.includes("g_00000001  Watchful gap"), "the title line must survive");
+    assert.ok(!r.stdout.includes("SECRET-DETAIL-CONTEXT"), "details content must never be injected");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

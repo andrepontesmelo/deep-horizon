@@ -552,6 +552,9 @@ What it is not: a backlog, a task list, or work assigned to this session. A gap
 may sit open for weeks across many sessions and that is the normal case. Do not
 plan around closing them, and do not report progress against them.
 
+Some gaps carry extended context beyond their one line —
+`horizon detail <id>` prints it.
+
 Three things are yours to do. When the user wants something that outlives this
 session, offer `horizon add "<one line>"`. When something here looks done, offer
 `horizon close <id>`. If no about line heads this block and the work tells you
@@ -575,6 +578,12 @@ outcome, and suppressing it would defeat the injection.
 The third duty was added when selection became state-sensitive: with no about
 line heading the block, the agent may offer to draft one (the §10.2 bootstrap
 nudge does the same work before any store exists).
+
+The detail pointer was added with the per-gap `details` field (§1.1, §3.5):
+one line, so a session knows extended context may exist and how to retrieve
+it without that content ever being injected (injection minimalism — the
+`{{GAPS}}` slot stays `show` stdout alone). The nudges carry no pointer: they
+cover the no-gaps states, where no details exist.
 
 ### 10.2 The bootstrap nudge
 
