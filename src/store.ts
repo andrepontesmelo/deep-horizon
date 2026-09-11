@@ -129,6 +129,16 @@ export function resolveStore(startDir, { readonly = false } = {}) {
   }
 }
 
+// True when the bootstrap nudge must be silenced: a session whose cwd IS the
+// user's home with no store found anywhere above it is not a project, and
+// offering to horizon-ize $HOME is a misfire. A store found at all — even at
+// $HOME itself, a deliberate user choice — never suppresses. Lexical resolve,
+// not realpath, so the comparison holds for paths that do not exist yet.
+export function suppressBootstrap({ cwd, storeFound, home }) {
+  if (storeFound) return false;
+  return resolve(cwd) === resolve(home);
+}
+
 // An absent gaps.json is an empty store, not an error (spec 4 step 1, 7):
 // every store starts empty before its first write. Malformed JSON, a wrong
 // version, or a bad shape is still exit 7.

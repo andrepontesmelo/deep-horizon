@@ -10,7 +10,8 @@
 // --json swaps the composed text for {"text": <string>} for programmatic
 // callers. Unknown flags are a usage error (exit 2).
 import { existsSync, readFileSync } from "node:fs";
-import { resolveStore, readGapsFile } from "../dist/store.js";
+import { homedir } from "node:os";
+import { resolveStore, readGapsFile, suppressBootstrap } from "../dist/store.js";
 import { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT, aboutPrefix } from "../dist/texts.js";
 
 const GLOBAL_FLAGS = new Set(["--cwd", "--json", "--help", "--version", "--harness", "--session", "--origin"]);
@@ -75,7 +76,11 @@ function main() {
   try {
     // readonly (D6): pure composition — resolve+read, never write. The tmp
     // sweep and store materialization stay CLI-only side effects.
-    const found = resolveStore(cwd ?? process.cwd(), { readonly: true });
+    const dir = cwd ?? process.cwd();
+    const found = resolveStore(dir, { readonly: true });
+    // A storeless $HOME is not a project: emit nothing (exit 0, empty stdout —
+    // the adapters treat empty stdout as a silent no-op).
+    const homeSilence = suppressBootstrap({ cwd: dir, storeFound: !!found, home: homedir() });
     let stdoutText = "";
     let about;
     if (found) {
@@ -108,6 +113,8 @@ function main() {
         core = HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => stdoutText);
       } else if (hasAbout) {
         core = NUDGE_TEXT;
+      } else if (homeSilence) {
+        core = "";
       } else {
         core = BOOTSTRAP_NUDGE_TEXT;
       }

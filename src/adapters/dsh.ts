@@ -56,6 +56,12 @@ function injectable(header, source) {
 // session, not one per turn). Weak so disposal can collect them.
 const prompted = new WeakSet();
 
+// Session starts seed once per agent object: some harnesses re-fire
+// agent/session-start with source "startup", and the block must not land
+// twice. Seeded only after a delivered inject, so a fail-open miss stays
+// retryable. Weak so disposal can collect them.
+const seeded = new WeakSet();
+
 function turnStoppingAddendum(agent) {
   const header = agent?.session?.header;
   if (!header || (header.delegationDepth ?? 0) > 0 || header.origin === "subagent") return;
@@ -79,6 +85,7 @@ export function apply(ctx, overrides = {}) {
   async function onSessionStart({ agent, source }) {
     const header = agent?.session?.header;
     if (!injectable(header, source)) return;
+    if (seeded.has(agent)) return;
     let result;
     try {
       result = spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", header.cwd]);
@@ -90,6 +97,7 @@ export function apply(ctx, overrides = {}) {
     if (text.length === 0) return;
     try {
       agent.inject(message(text));
+      seeded.add(agent);
     } catch {
       // A rejecting inject must never take the session down; the horizon
       // returns next startup.

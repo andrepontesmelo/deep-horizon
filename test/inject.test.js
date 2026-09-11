@@ -87,6 +87,41 @@ test("36. inject prints the bootstrap nudge, exactly, on an absent store; on an 
   }
 });
 
+// A storeless $HOME must not be offered horizon-ization; the decision is a
+// pure export so tests can pass a fake home and never touch the real one.
+test("home-suppress-1. the bootstrap-silence decision: storeless $HOME silences, storeless elsewhere nudges, a found store never suppresses", async () => {
+  const { suppressBootstrap } = await import(new URL("../src/store.ts", import.meta.url).pathname);
+  const home = "/home/fake-user";
+  assert.equal(suppressBootstrap({ cwd: home, storeFound: false, home }), true, "storeless home must be suppressed");
+  assert.equal(suppressBootstrap({ cwd: `${home}/.`, storeFound: false, home }), true, "a non-canonical spelling of home must be suppressed");
+  assert.equal(suppressBootstrap({ cwd: "/tmp/some-project", storeFound: false, home }), false, "storeless non-home must still nudge");
+  assert.equal(suppressBootstrap({ cwd: `${home}/git/repo`, storeFound: false, home }), false, "a storeless subdir of home must still nudge");
+  assert.equal(suppressBootstrap({ cwd: home, storeFound: true, home }), false, "a visible store — even at home — must never be suppressed");
+});
+
+test("home-suppress-2. end-to-end: the bin silences a storeless $HOME (exit 0, empty stdout) and keeps a deliberate home store", async () => {
+  // os.homedir() honours $HOME on POSIX, so a fake home keeps this
+  // deterministic regardless of the real ~/.horizon.
+  const fakeHome = mkdtempSync(join(tmpdir(), "horizon-fake-home-"));
+  try {
+    const env = { ...process.env, HOME: fakeHome };
+    const r1 = await run(["--cwd", fakeHome], { env });
+    assert.equal(r1.code, 0);
+    assert.equal(r1.stdout, "", "the storeless-home bootstrap misfire must be silent");
+    const proj = join(fakeHome, "git", "proj");
+    mkdirSync(proj, { recursive: true });
+    const r2 = await run(["--cwd", proj], { env });
+    assert.equal(r2.code, 0);
+    assert.ok(r2.stdout.startsWith("This project has no horizon yet"), "a storeless project still gets its nudge");
+    seed(fakeHome, ["Deliberate home store gap"]);
+    const r3 = await run(["--cwd", fakeHome], { env });
+    assert.equal(r3.code, 0);
+    assert.ok(r3.stdout.includes("Deliberate home store gap"), "a deliberate home-level store keeps injecting");
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
 test("37. inject has a --json mode: {\"text\":<string>} on stdout, nothing else", async () => {
   const dir = freshDir();
   try {
@@ -269,6 +304,46 @@ test("44. horizon-inject nonzero exit: nothing injected", async () => {
     source: "startup",
   }));
   assert.deepEqual(calls, []);
+});
+
+// A harness may re-fire agent/session-start with source "startup" for the
+// same agent; the block must land once. A fail-open miss (nonzero exit,
+// spawn throw, empty stdout) seeds nothing, so the re-fire can still deliver.
+test("dsh-seed-once. a re-fired agent/session-start for the same agent injects once; a fail-open miss stays retryable", async () => {
+  const mod = await import(ADAPTER);
+  const calls = [];
+  const header = { cwd: "/somewhere", delegationDepth: 0, origin: "user" };
+  const agent = {
+    session: { header },
+    inject() { calls.push("inject"); },
+    steer() {},
+  };
+  let spawns = 0;
+  const registered = mod.apply({}, {
+    spawnBin: () => { spawns += 1; return { status: 0, stdout: "MOCK-SEED", stderr: "" }; },
+  });
+  await registered["agent/session-start"]({ agent, source: "startup" });
+  await registered["agent/session-start"]({ agent, source: "startup" });
+  assert.equal(spawns, 1, "the re-fired startup must not spawn again");
+  assert.deepEqual(calls, ["inject"], "the re-fired startup must not inject again");
+  // A distinct agent object seeds independently.
+  await registered["agent/session-start"]({
+    agent: { session: { header }, inject() { calls.push("inject-2"); }, steer() {} },
+    source: "startup",
+  });
+  assert.deepEqual(calls, ["inject", "inject-2"]);
+  let fail = true;
+  const retry = { session: { header }, inject() { calls.push("inject-3"); }, steer() {} };
+  const registered2 = mod.apply({}, {
+    spawnBin: () => {
+      const r = fail ? { status: 7, stdout: "", stderr: "boom" } : { status: 0, stdout: "Y", stderr: "" };
+      fail = false;
+      return r;
+    },
+  });
+  await registered2["agent/session-start"]({ agent: retry, source: "startup" });
+  await registered2["agent/session-start"]({ agent: retry, source: "startup" });
+  assert.deepEqual(calls, ["inject", "inject-2", "inject-3"], "the re-fire after a failed delivery must deliver");
 });
 
 test("45. no adapter contains a literal of any section-10 text (spec acceptance 36, made real)", async () => {
