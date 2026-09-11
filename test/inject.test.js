@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seed } from "./seed.js";
 import { setAbout as storeSetAbout, setDetail } from "../src/store.ts";
+import { compose, resolveInjection } from "../src/inject.ts";
 
 const INJECT_BIN = new URL("../bin/horizon-inject.js", import.meta.url).pathname;
 const ADAPTER = new URL("../src/adapters/dsh.ts", import.meta.url).pathname;
@@ -1023,6 +1024,146 @@ test("pointer-2. details content never reaches injected text", async () => {
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("gap-1  Watchful gap"), "the title line must survive");
     assert.ok(!r.stdout.includes("SECRET-DETAIL-CONTEXT"), "details content must never be injected");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- the composer, in-process (src/inject.ts) ---
+
+// The variant state machine used to live inline in the bin's main(), reachable
+// only through a subprocess spawn. The composer's src home makes it importable:
+// compose() is the pure selection, resolveInjection() the read-only cwd round.
+
+test("inject-unit-1. selection in-process: exactly one variant per state, byte-equal to the spec fences", () => {
+  const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+  const block = specFence(spec, "### 10.1");
+  const bootstrap = specFence(spec, "### 10.2");
+  const warm = specFence(spec, "### 10.3");
+  const ABOUT = "AI plugin to help agents with long term goals";
+  const prefix = `This project is about: ${ABOUT}\n\n`;
+  const GAP = { id: "gap-1", text: "A person can hand a photo to the app and get the plant named." };
+  const show = "gap-1  A person can hand a photo to the app and get the plant named.\n";
+  const cases = [
+    ["gaps, no about", compose({ gaps: [GAP], about: undefined, silence: false }), block.replace("{{GAPS}}", show)],
+    ["gaps + about", compose({ gaps: [GAP], about: ABOUT, silence: false }), prefix + block.replace("{{GAPS}}", show)],
+    ["about only", compose({ gaps: [], about: ABOUT, silence: false }), prefix + warm],
+    ["neither", compose({ gaps: [], about: undefined, silence: false }), bootstrap],
+    ["neither, home silence", compose({ gaps: [], about: undefined, silence: true }), ""],
+  ];
+  // Openings chosen so no one is a substring of another variant's text.
+  const openings = {
+    block: "This project has a horizon — a short list",
+    bootstrap: "This project has no horizon yet — no about line",
+    warm: "No gaps yet. `horizon add",
+  };
+  for (const [label, text, expected] of cases) {
+    assert.equal(text, expected, `${label}: wrong variant composed`);
+    // The silence case composes empty — no variant present is its point.
+    if (text === "") continue;
+    const present = Object.entries(openings).filter(([, opening]) => text.includes(opening));
+    assert.equal(present.length, 1, `${label}: expected exactly one variant, saw ${present.map(([k]) => k).join("+") || "none"}`);
+  }
+});
+
+// DEF-1's guard has its caller at last: the substitution goes through
+// texts.ts's horizonBlock() (a function replacement), so $-patterns in
+// user-authored gap text ride into the block verbatim — pinned here without
+// a subprocess, next to the selection it guards.
+test("inject-unit-2. the $-pattern guard: $&, $`, $', $$, $1 substitute byte-for-byte, no expansion, no placeholder leak", () => {
+  const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+  const gaps = [
+    { id: "pay", text: "pay $& now" },
+    { id: "cost", text: "cost $$5" },
+    { id: "tick", text: "use $`tick" },
+    { id: "tail", text: "tail $'mark" },
+    { id: "plain", text: "plain $1 end" },
+  ];
+  const show = gaps.map((g) => `${g.id}  ${g.text}`).join("\n") + "\n";
+  // Function replacement in the fixture too: a string replacement would
+  // expand the $-patterns in `show` while building the expectation — the
+  // very DEF-1 bug this test exists to pin.
+  const text = compose({ gaps, about: undefined, silence: false });
+  assert.equal(text, specFence(spec, "### 10.1").replace("{{GAPS}}", () => show));
+  assert.ok(!text.includes("{{GAPS}}"), "the {{GAPS}} placeholder must never leak into the output");
+});
+
+// The --json envelope's content, in-process: resolveInjection is the total
+// answer for a cwd — the composed text plus the store the resolution already
+// paid for, null when none was found. `home` is injectable, so the silence
+// case never touches the real $HOME. A malformed store stays an unwrapped
+// error: { code, message }, stdout untouched (main() prints nothing under
+// --json on the error path).
+test("inject-unit-3. resolveInjection: the {text, store} answer — store rides along, storeless is null, home silence is empty", () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Envelope gap"]);
+    const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+    const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "gap-1  Envelope gap\n");
+    assert.deepEqual(resolveInjection(dir, { home: "/home/fake-user" }), { text: expected, store: join(dir, ".horizon") });
+    const storeless = freshDir();
+    try {
+      const s = resolveInjection(storeless, { home: "/home/fake-user" });
+      assert.equal(s.store, null, "a storeless cwd must answer store:null");
+      assert.ok(s.text.startsWith("This project has no horizon yet"), "the storeless nudge still composes");
+      // The silence twin: a storeless cwd that IS the (fake) home — empty
+      // text, null store, nothing to hand back.
+      assert.deepEqual(resolveInjection(storeless, { home: storeless }), { text: "", store: null });
+    } finally {
+      rmSync(storeless, { recursive: true, force: true });
+    }
+    const bad = freshDir();
+    try {
+      mkdirSync(join(bad, ".horizon"), { recursive: true });
+      writeFileSync(join(bad, ".horizon", "gaps.json"), '{"version":1,"revision":1,"gaps":[null]}');
+      const e = resolveInjection(bad, { home: "/home/fake-user" });
+      assert.equal(e.error.code, 7);
+      assert.match(e.error.message, /gaps\.json/);
+      assert.equal(e.text, undefined);
+    } finally {
+      rmSync(bad, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The deliberate wire change the extraction carried: --flag=value. The CLI's
+// parser always took --cwd=<path>; the bin's own loop answered "unknown
+// option" (exit 2) — a divergence nothing pinned. The extracted parser
+// mirrors the CLI's = handling; the seam (the shim's argv handoff) stays a
+// subprocess test, the unit tests above cannot see it.
+test("inject-eq-flag. --cwd=<path> composes like the separate-arg form, plain and --json; unknown flags still exit 2", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Equals form gap"]);
+    const r = await run([`--cwd=${dir}`]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes("gap-1  Equals form gap"));
+    const j = await run([`--cwd=${dir}`, "--json"]);
+    assert.equal(j.code, 0);
+    const parsed = JSON.parse(j.stdout);
+    assert.equal(parsed.store, join(dir, ".horizon"));
+    assert.ok(parsed.text.includes("gap-1  Equals form gap"));
+    // Bool flags reject the = form the way the CLI's parser does — all three
+    // of them, short-circuits included: --help=x is a usage error, never a
+    // help answer — while the bare forms still answer (and test 40 pins the
+    // bare forms' exit 0 through the same bin).
+    for (const flag of ["--json", "--help", "--version"]) {
+      const boolEq = await run([`--cwd=${dir}`, `${flag}=x`]);
+      assert.equal(boolEq.code, 2, `${flag}=x must be a usage error`);
+      assert.ok(boolEq.stderr.startsWith(`horizon-inject: ${flag} takes no value`), `${flag}=x: ${boolEq.stderr}`);
+      assert.equal(boolEq.stdout, "", `${flag}=x must print nothing on stdout`);
+      const bare = await run([flag]);
+      assert.equal(bare.code, 0, `bare ${flag} must still answer`);
+      assert.notEqual(bare.stdout, "", `bare ${flag} must print`);
+    }
+    // A genuinely unknown option still names the token and exits 2 with
+    // empty stdout.
+    const bad = await run([`--bogus=${dir}`]);
+    assert.equal(bad.code, 2);
+    assert.equal(bad.stdout, "");
+    assert.ok(bad.stderr.startsWith(`horizon-inject: unknown option: --bogus=${dir}`));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

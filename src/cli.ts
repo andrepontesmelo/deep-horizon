@@ -17,6 +17,7 @@ import {
   usage,
   utcNow,
 } from "./store.ts";
+import { gapLine } from "./texts.ts";
 
 const COMMANDS = ["show", "about", "add", "close", "amend", "detail", "log", "session-end", "init"];
 const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin", "--summary", "--limit", "--detail", "--store"]);
@@ -34,7 +35,10 @@ function stderr(s) {
   process.stderr.write(s);
 }
 
-function cliVersion() {
+// Shared with the composer: horizon-inject --version prints the same
+// package version under the bin's own name (src/inject.ts imports this —
+// one reader of package.json, one fallback).
+export function cliVersion() {
   try {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     return typeof pkg.version === "string" ? pkg.version : "0.0.0";
@@ -235,7 +239,7 @@ export async function main(argv) {
         // array, unchanged (spec 3.1, 10.4).
         const lines = [];
         if (typeof g.data.about === "string") lines.push(`about  ${g.data.about}`);
-        for (const gap of g.data.gaps) lines.push(`${gap.id}  ${gap.text}`);
+        for (const gap of g.data.gaps) lines.push(gapLine(gap));
         if (lines.length > 0) stdout(lines.join("\n") + "\n");
       }
       return 0;
