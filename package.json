@@ -29,20 +29,41 @@
   "engines": {
     "node": ">=22.18"
   },
-  "bin": { "horizon": "bin/horizon.js", "horizon-inject": "bin/horizon-inject.js" },
+  "bin": {
+    "horizon": "bin/horizon.js",
+    "horizon-inject": "bin/horizon-inject.js"
+  },
   "exports": {
     ".": "./src/index.ts",
-    "./dsh": { "types": "./src/adapters/dsh.ts", "default": "./dist/adapters/dsh.js" },
+    "./dsh": {
+      "types": "./src/adapters/dsh.ts",
+      "default": "./dist/adapters/dsh.js"
+    },
     "./opencode": "./src/adapters/opencode.ts",
     "./pi": "./src/adapters/pi.ts",
     "./texts": "./src/texts.ts"
   },
-  "files": ["bin", "dist", "src", "adapters/hermes/__init__.py", "adapters/hermes/deep_horizon.py", "adapters/hermes/plugin.yaml", "adapters/zcode/session-start", "README.md", "LICENSE"],
-  "pi": { "extensions": ["./src/adapters/pi.ts"] },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "adapters/hermes/__init__.py",
+    "adapters/hermes/deep_horizon.py",
+    "adapters/hermes/plugin.yaml",
+    "adapters/zcode/session-start",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/adapters/pi.ts"
+    ]
+  },
   "scripts": {
     "build": "node scripts/build-dist.cjs",
     "prepare": "npm run build",
     "test": "npm run build && node --test test/*.test.js",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "sync:hermes": "bash scripts/sync-hermes-adapter.sh"
   }
 }
