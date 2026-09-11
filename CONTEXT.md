@@ -134,9 +134,13 @@ everything below inherits the nearest one.
 Placing the horizon into an agent session's context — the block when gaps are
 open, a nudge when they are not. The startup injection lands once, at the
 start of a genuinely new session — never resumed, compacted, or subagent
-sessions, which already carry context. Harnesses with no usable close hook
-add the **session-end steer**: a mid-session prompt asking the agent to run
-`horizon session-end` while it can still write the summary.
+sessions, which already carry context. The **param trigger** extends coverage
+to the moving-target case: harnesses that expose tool-call parameters inspect
+each call for target directories, and a touched repo with a store gets its
+horizon once per session, mid-session — storeless targets never fire here.
+Harnesses with no usable close hook add the **session-end steer**: a
+mid-session prompt asking the agent to run `horizon session-end` while it can
+still write the summary.
 
 ## Revision
 

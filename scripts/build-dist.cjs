@@ -12,6 +12,7 @@ for (const rel of ["cli.ts", "store.ts", "texts.ts", "index.ts", "adapters/dsh.t
   const src = readFileSync(join(__dirname, "..", "src", rel), "utf8");
   const js = stripTypeScriptTypes(src, { mode: "strip", sourceMap: false })
     .replaceAll('"./store.ts"', '"./store.js"')
+    .replaceAll('"../store.ts"', '"../store.js"') // adapters import the store resolver from src/adapters/
     .replaceAll('"./texts.ts"', '"./texts.js"');
   const target = join(outDir, rel.replace(/\.ts$/, ".js"));
   mkdirSync(dirname(target), { recursive: true });

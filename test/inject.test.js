@@ -346,6 +346,224 @@ test("dsh-seed-once. a re-fired agent/session-start for the same agent injects o
   assert.deepEqual(calls, ["inject", "inject-2", "inject-3"], "the re-fire after a failed delivery must deliver");
 });
 
+// --- The DSH param trigger (tools/pre-execute, HL-23) ---
+
+// Shared fixture: a top-level agent plus an apply() whose spawnBin records
+// and returns fixed text, so composition never leaves the test.
+function paramFixture(spawnStdout, header = { cwd: "/launched-elsewhere", delegationDepth: 0, origin: "user" }) {
+  const calls = [];
+  const spawned = [];
+  const agent = {
+    session: { header },
+    inject(message) { calls.push({ kind: "inject", message }); },
+    steer() {},
+  };
+  return {
+    agent,
+    calls,
+    spawned,
+    spawnBin: (bin, args) => {
+      spawned.push({ bin, args });
+      return { status: 0, stdout: typeof spawnStdout === "function" ? spawnStdout(args) : spawnStdout, stderr: "" };
+    },
+  };
+}
+
+// The harness hands the adapter deep-frozen parsed arguments; mirror that.
+function frozen(x) {
+  const clone = structuredClone(x);
+  (function deep(o) {
+    if (o && typeof o === "object") {
+      for (const v of Object.values(o)) deep(v);
+      Object.freeze(o);
+    }
+  })(clone);
+  return clone;
+}
+
+test("dsh-param-1. a bash touch of a stored repo queues its horizon once, and the gate is never vetoed", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Param trigger gap"]);
+    const mod = await import(ADAPTER);
+    const fx = paramFixture("MOCK-PARAM-HORIZON");
+    const registered = mod.apply({}, fx);
+    let nextCalls = 0;
+    const gate = await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `git -C ${repo} status && cat ${repo}/README.md` }), agent: fx.agent },
+      () => { nextCalls += 1; return { kind: "allow" }; },
+    );
+    assert.deepEqual(gate, { kind: "allow" }, "the handler must return next()'s result, never a veto");
+    assert.equal(nextCalls, 1, "next() must be called exactly once");
+    assert.deepEqual(fx.spawned, [{ bin: "horizon-inject", args: ["--harness", "dsh", "--cwd", repo] }]);
+    assert.equal(fx.calls.length, 1, "exactly one inject");
+    assert.equal(fx.calls[0].message.content[0].text, "MOCK-PARAM-HORIZON");
+    assert.equal(fx.calls[0].message.role, "user");
+    // The same tool call again: once per store per session, never twice.
+    await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `git -C ${repo} log --oneline` }), agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.equal(fx.spawned.length, 1, "the same store must not spawn twice");
+    assert.equal(fx.calls.length, 1, "the same store must not inject twice");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("dsh-param-2. a different stored repo touched mid-session gets its own horizon (file_path walks up)", async () => {
+  const repoA = freshDir();
+  const repoB = freshDir();
+  try {
+    seed(repoA, ["Repo A gap"]);
+    seed(repoB, ["Repo B gap"]);
+    mkdirSync(join(repoB, "sub"), { recursive: true });
+    const mod = await import(ADAPTER);
+    const fx = paramFixture((args) => `MOCK:${args[args.indexOf("--cwd") + 1]}`);
+    const registered = mod.apply({}, fx);
+    await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `git -C ${repoA} status` }), agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    // A file_path whose directory has no store still resolves the nearest
+    // ancestor store, exactly like the bin resolves --cwd.
+    await registered["tools/pre-execute"](
+      { name: "str_replace_editor", arguments: frozen({ file_path: join(repoB, "sub", "file.txt") }), agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.deepEqual(fx.spawned.map((s) => s.args[3]), [repoA, join(repoB, "sub")], "each touch spawns once; --cwd is the touched dir and the bin resolves the store itself");
+    assert.deepEqual(fx.calls.map((c) => c.message.content[0].text), [`MOCK:${repoA}`, `MOCK:${join(repoB, "sub")}`]);
+  } finally {
+    rmSync(repoA, { recursive: true, force: true });
+    rmSync(repoB, { recursive: true, force: true });
+  }
+});
+
+test("dsh-param-3. a storeless target never fires — no spawn, no inject, no bootstrap", async () => {
+  const bare = freshDir();
+  try {
+    const mod = await import(ADAPTER);
+    const fx = paramFixture("MOCK-SHOULD-NOT-APPEAR");
+    const registered = mod.apply({}, fx);
+    const gate = await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `ls ${bare} && cd ${bare}/deeper`, workdir: bare }), agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.deepEqual(gate, { kind: "allow" });
+    assert.deepEqual(fx.spawned, [], "a storeless target must not spawn");
+    assert.deepEqual(fx.calls, [], "a storeless target must not inject");
+  } finally {
+    rmSync(bare, { recursive: true, force: true });
+  }
+});
+
+test("dsh-param-4. subagent sessions never fire the param trigger", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Subagent gap"]);
+    const mod = await import(ADAPTER);
+    for (const header of [
+      { cwd: "/x", delegationDepth: 0, origin: "subagent" },
+      { cwd: "/x", delegationDepth: 1, origin: "user" },
+      { cwd: "/x", delegationDepth: 3, origin: "subagent" },
+    ]) {
+      const fx = paramFixture("MOCK-SUBAGENT");
+      const registered = mod.apply({}, fx);
+      await registered["tools/pre-execute"](
+        { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }), agent: { session: { header }, inject() {} } },
+        () => ({ kind: "allow" }),
+      );
+      assert.deepEqual(fx.spawned, [], `subagent must not spawn for ${JSON.stringify(header)}`);
+    }
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("dsh-param-5. malformed or empty arguments: no throw, no inject, gate still passes", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Malformed gap"]);
+    const mod = await import(ADAPTER);
+    for (const args of [undefined, "not json at all", {}, [], frozen({ command: 42 }), frozen({ path: null })]) {
+      const fx = paramFixture("MOCK-MALFORMED");
+      const registered = mod.apply({}, fx);
+      await assert.doesNotReject(registered["tools/pre-execute"](
+        { name: "bash", arguments: args, agent: fx.agent },
+        () => ({ kind: "allow" }),
+      ));
+      assert.deepEqual(fx.spawned, [], `no spawn for arguments ${JSON.stringify(args)}`);
+      assert.deepEqual(fx.calls, [], `no inject for arguments ${JSON.stringify(args)}`);
+    }
+    // An unparseable-JSON call must still be able to touch a store through
+    // another field, but a broken command string alone must not throw.
+    const fx = paramFixture("MOCK-OK");
+    const registered = mod.apply({}, fx);
+    const gate = await registered["tools/pre-execute"](
+      { name: "bash", arguments: "git -C TOTAL-GARBAGE", agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.deepEqual(gate, { kind: "allow" }, "a raw-string arguments payload must not block the call");
+    assert.deepEqual(fx.calls, []);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("dsh-param-6. the store the startup injection served is not re-injected by the param path", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Startup gap"]);
+    const mod = await import(ADAPTER);
+    const fx = paramFixture("MOCK-STARTUP", { cwd: repo, delegationDepth: 0, origin: "user" });
+    const registered = mod.apply({}, fx);
+    await registered["agent/session-start"]({ agent: fx.agent, source: "startup" });
+    assert.equal(fx.calls.length, 1, "startup injects once");
+    await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }), agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.equal(fx.spawned.length, 1, "the param path must not re-spawn for the launch repo");
+    assert.equal(fx.calls.length, 1, "the param path must not re-inject the launch repo");
+    // A different repo still fires after the startup one was served.
+    const other = freshDir();
+    try {
+      seed(other, ["Other gap"]);
+      await registered["tools/pre-execute"](
+        { name: "bash", arguments: frozen({ command: `git -C ${other} status` }), agent: fx.agent },
+        () => ({ kind: "allow" }),
+      );
+      assert.equal(fx.spawned.length, 2);
+      assert.equal(fx.calls.length, 2);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("dsh-param-7. end-to-end: the param trigger composes through the real bins", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Param e2e gap"]);
+    const mod = await import(ADAPTER);
+    const registered = mod.apply({ on() {} });
+    const injected = [];
+    const gate = await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `git -C ${repo} status --short` }), agent: { session: { header: { cwd: "/launched-elsewhere", delegationDepth: 0, origin: "user" } }, inject(m) { injected.push(m); } } },
+      () => ({ kind: "allow" }),
+    );
+    assert.deepEqual(gate, { kind: "allow" });
+    assert.equal(injected.length, 1);
+    const text = injected[0].content[0].text;
+    assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
+    assert.ok(text.includes("g_00000001  Param e2e gap"));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("45. no adapter contains a literal of any section-10 text (spec acceptance 36, made real)", async () => {
   const { readdirSync, statSync } = await import("node:fs");
   const { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT } = await import(new URL("../src/index.ts", import.meta.url).pathname);

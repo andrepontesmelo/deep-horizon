@@ -91,6 +91,18 @@ set but no gaps are, the horizon block when gaps are open (the about line
 prefixes it when set). A storeless launch from the home directory stays
 silent — $HOME is not a project.
 
+A session launched in repo A that touches repo B mid-session is covered by a
+second injection path, the **param trigger** (`tools/pre-execute`): every tool
+call's arguments are inspected for target directories — a `workdir` field, the
+directories of `file_path`/`path` arguments, and absolute paths in `command`
+strings (which covers `git -C <dir>` targets). When a touched directory
+resolves to a repo with a horizon store, that repo's horizon is queued for the
+next step — once per repo per session, the launch repo's own horizon never
+re-fired, subagents excluded, and never for a storeless target (the bootstrap
+nudge does not fire here; that is the startup path's job). Like everything
+else in the adapter it fails open: malformed arguments, a failed spawn, or an
+error queue nothing and never block the tool call.
+
 Session end is best-effort by necessity: DSH has no usable close hook —
 `agent/disposed` fires unawaited after the loop stops, when model text is
 already gone. So on the first turn stop of a top-level session the adapter

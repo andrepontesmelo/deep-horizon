@@ -15,8 +15,21 @@
 // agent/session-end event, and agent/disposed fires unawaited after the loop
 // stops, so on every turn stop of a top-level session the agent is steered
 // once to run `horizon session-end` while model text is still available.
+//
+// The param trigger (HL-23, parity with hermes' pre_llm_call trigger): the
+// `tools/pre-execute` waterfall fires for every tool execution with the
+// call's parsed arguments, so a session launched in repo A that touches repo
+// B mid-session (`git -C B`, absolute paths, a workdir argument) still gets
+// repo B's horizon — queued once per store per session via agent.inject,
+// and only for stores that already exist (no bootstrap here; that is the
+// startup path's job). A tool call is never vetoed: the handler is
+// pass-through by construction (it always returns next()) and fail-open
+// inside.
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
+import { isRecord, resolveStore } from "../store.ts";
 
 const HARNESS = "dsh";
 
@@ -47,9 +60,17 @@ function injectable(header, source) {
   if (!header || typeof header !== "object") return false;
   if (!header.cwd || typeof header.cwd !== "string") return false;
   if (source !== "startup") return false;
-  if ((header.delegationDepth ?? 0) > 0) return false;
-  if (header.origin === "subagent") return false;
-  return true;
+  return !subagentHeader(header);
+}
+
+// The one subagent rule every handler shares: a delegationDepth above zero
+// or a subagent origin is never injected into. An unreadable header counts
+// as a subagent (fail closed for injection — noise is avoidable, a missing
+// horizon is not harm).
+function subagentHeader(header) {
+  if (!header || typeof header !== "object") return true;
+  if ((header.delegationDepth ?? 0) > 0) return true;
+  return header.origin === "subagent";
 }
 
 // Agents already nudged toward a mid-session session-end (one addendum per
@@ -62,9 +83,52 @@ const prompted = new WeakSet();
 // retryable. Weak so disposal can collect them.
 const seeded = new WeakSet();
 
+// Horizon stores already served this session, per agent: the param trigger
+// injects a store at most once per session, and the store the startup
+// injection served is recorded here too, so a session launched inside a
+// repo never re-injects that repo's horizon on a mid-session touch. Weak
+// like the sets above.
+const served = new WeakMap();
+
+function servedFor(agent) {
+  let seen = served.get(agent);
+  if (!seen) {
+    seen = new Set();
+    served.set(agent, seen);
+  }
+  return seen;
+}
+
+// Candidate target directories in one tool call's parsed arguments (the
+// harness hands them deep-frozen — read-only here, nothing is mutated).
+// Field-based, not tool-name-based, so unknown tool shapes simply yield no
+// candidates. Relative paths never candidate: the adapter cannot know the
+// shell's cwd, and resolving one against the harness process would guess
+// (the hermes trigger drops them for the same reason).
+const ABS_PATH = /(?:^|[\s(=;,"'`])((?:~\/|\/)[^\s'"`;|&)]*)/g;
+
+function candidateDirs(args) {
+  if (!isRecord(args)) return [];
+  const out = [];
+  const push = (value) => {
+    if (typeof value !== "string" || value.length === 0) return;
+    if (value.startsWith("~/")) value = join(homedir(), value.slice(2));
+    if (isAbsolute(value)) out.push(value);
+  };
+  push(args.workdir);
+  for (const key of ["file_path", "path"]) {
+    if (typeof args[key] === "string") push(dirname(args[key]));
+  }
+  if (typeof args.command === "string") {
+    // Absolute tokens cover `git -C <dir>` targets too: they are just
+    // whitespace-delimited absolute paths in the command string.
+    for (const m of args.command.matchAll(ABS_PATH)) push(m[1]);
+  }
+  return out;
+}
+
 function turnStoppingAddendum(agent) {
-  const header = agent?.session?.header;
-  if (!header || (header.delegationDepth ?? 0) > 0 || header.origin === "subagent") return;
+  if (subagentHeader(agent?.session?.header)) return;
   if (prompted.has(agent)) return;
   if (typeof agent.id !== "string" || agent.id.length === 0) return;
   const sid = agent.id;
@@ -101,7 +165,52 @@ export function apply(ctx, overrides = {}) {
     } catch {
       // A rejecting inject must never take the session down; the horizon
       // returns next startup.
+      return;
     }
+    // Whatever the launch cwd's startup injection served counts as served:
+    // a mid-session touch of the launch repo must not re-inject it.
+    try {
+      const found = resolveStore(header.cwd, { readonly: true });
+      if (found) servedFor(agent).add(found.dir);
+    } catch {
+      // Fail open: an unresolvable launch store only means the param
+      // trigger may serve it later.
+    }
+  }
+
+  // The HL-23 param trigger. `tools/pre-execute` is a cordis waterfall: a
+  // listener that never calls next() vetoes the tool call, so this handler
+  // is pass-through by construction — it always returns next()'s result,
+  // and everything it does before that is fail-open. The gate shapes it may
+  // return are next()'s own (allow), never deny/ask.
+  async function onPreExecute(exec, next) {
+    try {
+      const agent = exec?.agent;
+      if (!agent || typeof agent.inject !== "function") return;
+      if (subagentHeader(agent?.session?.header)) return;
+      for (const dir of candidateDirs(exec.arguments)) {
+        const found = resolveStore(dir, { readonly: true });
+        if (!found || found.open.code !== undefined) continue;
+        const seen = servedFor(agent);
+        if (seen.has(found.dir)) continue;
+        seen.add(found.dir);
+        let delivered = false;
+        try {
+          const result = spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", dir]);
+          if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout.length > 0) {
+            agent.inject(message(result.stdout));
+            delivered = true;
+          }
+        } catch {
+          // Fail open (D2): an unresolvable bin or a rejecting inject
+          // leaves the session untouched.
+        }
+        if (!delivered) seen.delete(found.dir);
+      }
+    } catch {
+      // A trigger error must never reach the tool call.
+    }
+    return next();
   }
 
   async function onTurnStopping(event) {
@@ -115,6 +224,7 @@ export function apply(ctx, overrides = {}) {
   if (ctx && typeof ctx.on === "function") {
     ctx.on("agent/session-start", onSessionStart);
     ctx.on("agent/turn-stopping", onTurnStopping);
+    ctx.on("tools/pre-execute", onPreExecute);
   }
-  return { "agent/session-start": onSessionStart, "agent/turn-stopping": onTurnStopping };
+  return { "agent/session-start": onSessionStart, "agent/turn-stopping": onTurnStopping, "tools/pre-execute": onPreExecute };
 }
