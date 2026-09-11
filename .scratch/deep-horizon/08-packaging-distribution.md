@@ -82,7 +82,7 @@ overriding the Claude-Code-first recommendation. Trade-off recorded honestly:
 DSH is where the close hook is weakest — no `agent/session-end` event exists,
 and `agent/disposed` fires after the loop stops, is unawaited, and steering
 at that point is discarded (HL-10). So the reference implementation gets
-built where session-end must use the **mid-session fallback** (§3.6's
+built where session-end must use the **mid-session fallback** (§3.7's
 "called mid-session where no usable close hook exists") from day one.
 Upside: the fallback path — which has to work everywhere — is proven first
 rather than bolted on after a Claude-Code-shaped implementation. DSH's

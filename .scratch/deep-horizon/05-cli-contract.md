@@ -677,6 +677,11 @@ composition stays single-sourced there, never per-adapter).
     `amend`, `about` itself) and is removed only by `about --clear`, which
     preserves the gaps. A non-string `about` in `gaps.json` is malformed
     (exit 7), and an unset store never gains the field from a rewrite.
+39. The horizon block carries the detail pointer — the one line naming
+    `horizon detail <id>` as the retrieval path — and neither nudge does:
+    no gaps exist in the nudge states, so no details can either. Details
+    content itself never appears in any injected text. (Pinned in code by
+    the `pointer-1`/`pointer-2` tests in test/inject.test.js.)
 
 ---
 
