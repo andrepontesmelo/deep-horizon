@@ -141,8 +141,8 @@ test("54. the Hermes plugin register() wires the section, the finalize hook, and
       "# A child session renders empty even with the bins missing (fail open).",
       "assert deep_horizon._section_text({'session_id': 'x', 'cwd': '/tmp', 'parent_session_id': 'p'}) == ''",
       "# The subagent guard returns before cwd resolution: nothing is stashed",
-      "# for it, so its (never-firing) finalize can never inherit a cwd.",
-      "assert 'x' not in deep_horizon._session_cwd, 'subagent renders must not stash a cwd'",
+      "# for it, so its (never-firing) finalize can never inherit a store.",
+      "assert 'x' not in deep_horizon._session_store, 'subagent renders must not stash a store'",
       "# The finalize handler swallows a spawn failure (fail open). Stripping",
       "# PATH does NOT hide the bins here — _spawn_bin prefers the repo's own",
       "# bin/ dir in a checkout — so simulate the unresolvable bin directly.",
@@ -1040,11 +1040,13 @@ test("75. the Hermes section keeps the first candidate when neither cwd has a st
   }
 });
 
-test("76. the Hermes session-end spawn resolves --cwd with the same rule: the launch dir's store wins, the first candidate otherwise", () => {
+test("76. the Hermes session-end spawn hands back the stashed injection store with --store; the never-injected fallback keeps --cwd", () => {
   // The close record must land in the store the session actually injected
-  // from. Without --cwd the bin would resolve from the gateway's own working
-  // directory instead, so the finalize hook passes the _resolve_horizon_cwd
-  // result explicitly.
+  // from. The section freezes the --json answer's store per session; the
+  // finalize hands it back with --store — immune to the missing payload cwd
+  // and to any chdir since turn one. A session that never injected (no
+  // stash) falls back to --cwd with the first candidate: payload cwd, else
+  // the process cwd; session-end on a storeless cwd is a safe no-op.
   const dir = freshDir();
   try {
     const launch = join(dir, "launch");
@@ -1059,6 +1061,13 @@ test("76. the Hermes session-end spawn resolves --cwd with the same rule: the la
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
       "import deep_horizon",
+      "# The section runs first, against the REAL bins, from the launch dir:",
+      "# a storeless session cwd defers to the launch dir's store, and the",
+      "# answer's store field is frozen for the close hook.",
+      "deep_horizon._section_text({'session_id': 's-stash', 'cwd': " + JSON.stringify(sessionCwd) + "})",
+      "assert deep_horizon._session_store.get('s-stash') == " + JSON.stringify(join(launch, ".horizon")) + ", deep_horizon._session_store",
+      "# Now the spawn is fake, the process chdir'd away, and the finalize",
+      "# arrives with no cwd key at all (the -z payload shape).",
       "spawns = []",
       "def fake_spawn(bin_name, args):",
       "    spawns.append((bin_name, list(args)))",
@@ -1069,66 +1078,129 @@ test("76. the Hermes session-end spawn resolves --cwd with the same rule: the la
       "    name, args = spawns[0]",
       "    assert name == 'horizon', name",
       "    assert args[:3] == ['session-end', '--harness', 'hermes'], args",
-      "    i = args.index('--cwd')",
-      "    assert args[args.index('--session') + 1] == 's-end', args",
-      "    return args[i + 1]",
-      "# Storeless session cwd + stored launch dir: the launch dir wins.",
-      "deep_horizon._on_session_finalize({'session_id': 's-end', 'cwd': " + JSON.stringify(sessionCwd) + ", 'reason': 'shutdown'})",
-      "assert ran_args() == " + JSON.stringify(launch) + ", 'session-end must spawn --cwd <launch dir>'",
-      "# Both storeless: the first candidate (the session cwd) stands.",
+      "    return args",
+      "def run(session_id):",
+      "    deep_horizon._on_session_finalize({'session_id': session_id, 'reason': 'shutdown'})",
+      "    return ran_args()",
+      "args = run('s-stash')",
+      "assert args[args.index('--session') + 1] == 's-stash', args",
+      "assert '--store' in args and args[args.index('--store') + 1] == " + JSON.stringify(join(launch, ".horizon")) + ", args",
+      "assert '--cwd' not in args, 'a stashed store must not also carry --cwd: ' + str(args)",
+      "# Pop-on-use: the stash entry is consumed by that finalize, so a",
+      "# second one for the same id takes the payload/process fallback",
+      "# (--cwd, never --store).",
       "import os",
       "os.chdir(" + JSON.stringify(other) + ")",
       "spawns.clear()",
-      "deep_horizon._on_session_finalize({'session_id': 's-end', 'cwd': " + JSON.stringify(sessionCwd) + ", 'reason': 'shutdown'})",
-      "assert ran_args() == " + JSON.stringify(sessionCwd) + ", 'storeless: session-end must spawn --cwd <session cwd>'",
-      "# No cwd in the payload at all: the process cwd is the only candidate.",
-      "os.chdir(" + JSON.stringify(launch) + ")",
+      "args = run('s-stash')",
+      "assert '--store' not in args, args",
+      "assert args[args.index('--cwd') + 1] == " + JSON.stringify(other) + ", 'the stash must pop on use: the second finalize falls back to the process cwd'",
+      "# An unseen session id takes the fallback with the first candidate:",
+      "# a payload cwd (if a future core adds one) is trusted as-is.",
       "spawns.clear()",
-      "deep_horizon._on_session_finalize({'session_id': 's-end', 'reason': 'shutdown'})",
-      "assert ran_args() == " + JSON.stringify(launch) + ", 'cwd-less payload must spawn --cwd <process cwd>'",
-      "# The stash: the section freezes the resolved cwd per session, so a",
-      "# cwd-less finalize (the real -z payload) uses the FROZEN cwd, not the",
-      "# exit-time process cwd. Simulate the -z shape: section rendered for a",
-      "# storeless session cwd from the stored launch dir, then chdir away,",
-      "# then finalize with no cwd key at all.",
-      "deep_horizon._section_text({'session_id': 's-stash', 'cwd': " + JSON.stringify(sessionCwd) + "})",
-      "os.chdir(" + JSON.stringify(other) + ")",
-      "spawns.clear()",
-      "deep_horizon._on_session_finalize({'session_id': 's-stash', 'reason': 'shutdown'})",
-      "assert len(spawns) == 1, spawns",
-      "_n, _a = spawns[0]",
-      "assert _a[_a.index('--session') + 1] == 's-stash', _a",
-      "assert _a[_a.index('--cwd') + 1] == " + JSON.stringify(launch) + ", 'cwd-less finalize must use the section-frozen cwd, not ' + os.getcwd()",
-      "# Pop-on-use: the stash entry is consumed by that finalize, so a",
-      "# second one for the same id takes the payload/process fallback.",
-      "spawns.clear()",
-      "deep_horizon._on_session_finalize({'session_id': 's-stash', 'reason': 'shutdown'})",
-      "assert len(spawns) == 1, spawns",
-      "_n, _a = spawns[0]",
-      "assert _a[_a.index('--cwd') + 1] == " + JSON.stringify(other) + ", 'the stash must pop on use: the second finalize falls back to the process cwd'",
-      "# An unseen session id still takes the payload/process fallback.",
-      "spawns.clear()",
-      "deep_horizon._on_session_finalize({'session_id': 's-unseen', 'reason': 'shutdown'})",
-      "assert len(spawns) == 1, spawns",
-      "_n, _a = spawns[0]",
-      "assert _a[_a.index('--cwd') + 1] == " + JSON.stringify(other) + ", 'unseen session falls back to the process cwd'",
-      "# The REAL dispatcher shape: flat kwargs, no payload dict — plugins_dispatch",
-      "# calls callback(**flat) with session_id/platform/reason as keywords. The",
-      "# exact -z production path: section frozen from the stored launch dir,",
-      "# process chdir'd away, finalize arrives as keywords only.",
-      "os.chdir(" + JSON.stringify(launch) + ")",
-      "deep_horizon._section_text({'session_id': 's-flat', 'cwd': " + JSON.stringify(sessionCwd) + "})",
-      "os.chdir(" + JSON.stringify(other) + ")",
+      "deep_horizon._on_session_finalize({'session_id': 's-pay', 'cwd': " + JSON.stringify(sessionCwd) + ", 'reason': 'shutdown'})",
+      "args = spawns[0][1]",
+      "assert '--cwd' in args and args[args.index('--cwd') + 1] == " + JSON.stringify(sessionCwd) + ", args",
+      "# The REAL dispatcher shape: flat kwargs, no payload dict, no cwd —",
+      "# the process cwd stands.",
       "spawns.clear()",
       "deep_horizon._on_session_finalize(session_id='s-flat', platform='cli', reason='shutdown')",
-      "assert len(spawns) == 1, spawns",
-      "_n, _a = spawns[0]",
-      "assert _a[_a.index('--session') + 1] == 's-flat', _a",
-      "assert _a[_a.index('--cwd') + 1] == " + JSON.stringify(launch) + ", 'flat-kwargs finalize must read session_id and use the section-frozen cwd'",
+      "args = spawns[0][1]",
+      "assert '--cwd' in args and args[args.index('--cwd') + 1] == " + JSON.stringify(other) + ", args",
       "print('OK')",
       "",
     ].join("\n"));
     const r = runPython([script], { cwd: launch });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hermes-param-release. a failed or nonzero spawn releases the (session, repo) claim so the next touch retries; a storeless answer is remembered", () => {
+  // The once-per-(session, repo) contract aligned with dsh-param-9: the
+  // claim is taken before the spawn and released on failure — one transient
+  // failure must not silence a repo for the rest of the session. A
+  // storeless --json answer, by contrast, is a total answer: the claim
+  // holds and the repo never re-spawns.
+  const dir = freshDir();
+  try {
+    const repo = join(dir, "repo");
+    seed(repo, ["hermes release gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
+      "repo = " + JSON.stringify(repo),
+      "hist1 = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'git -C ' + repo + ' status'})}},",
+      "]}]",
+      "hist2 = hist1 + [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c2', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': repo + '/notes.md'})}},",
+      "]}]",
+      "def ctx(r):",
+      "    return r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "def first_sight():",
+      "    return ctx(deep_horizon._pre_llm_call(session_id='s-rel', conversation_history=[]))",
+      "def call(history):",
+      "    return ctx(deep_horizon._pre_llm_call(session_id='s-rel', conversation_history=history))",
+      "state = {'count': 0}",
+      "def raising_spawn(bin_name, args):",
+      "    state['count'] += 1",
+      "    raise FileNotFoundError('transient')",
+      "deep_horizon._spawn_bin = raising_spawn",
+      "assert not first_sight(), 'turn 1 injects nothing'",
+      "assert state['count'] == 0, 'turn 1 must not spawn'",
+      "# The c1 touch claims the repo, the spawn fails, the claim releases.",
+      "assert not call(hist1), 'a failed spawn injects nothing'",
+      "assert state['count'] == 1, state",
+      "assert ('s-rel', repo) not in deep_horizon._seen, 'a failed spawn must release the claim'",
+      "# The retry: the NEXT touch (c2, the delta hook's retry unit) spawns",
+      "# again and delivers — a transient failure never silenced the repo.",
+      "def ok_spawn(bin_name, args):",
+      "    state['count'] += 1",
+      "    return (0, json.dumps({'text': 'RETRY-BLOCK', 'store': repo}), '')",
+      "deep_horizon._spawn_bin = ok_spawn",
+      "c = call(hist2)",
+      "assert 'RETRY-BLOCK' in c, 'the released claim must allow the next touch to deliver: %r' % (c[:80],)",
+      "assert state['count'] == 2, state",
+      "# Once-per holds after delivery: the same history re-fires nothing.",
+      "assert not call(hist2), 'a delivered repo must not re-inject'",
+      "assert state['count'] == 2, 'a delivered repo must not re-spawn'",
+      "# A nonzero exit releases the claim too.",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
+      "state['count'] = 0",
+      "def nonzero_spawn(bin_name, args):",
+      "    state['count'] += 1",
+      "    return (7, '', 'boom')",
+      "deep_horizon._spawn_bin = nonzero_spawn",
+      "assert not first_sight()",
+      "assert not call(hist1)",
+      "assert ('s-rel', repo) not in deep_horizon._seen, 'a nonzero exit must release the claim'",
+      "# A storeless answer keeps its claim: remembered, never re-spawned.",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
+      "state['count'] = 0",
+      "def storeless_spawn(bin_name, args):",
+      "    state['count'] += 1",
+      "    return (0, json.dumps({'text': 'NUDGE-NOT-DELIVERED', 'store': None}), '')",
+      "deep_horizon._spawn_bin = storeless_spawn",
+      "assert not first_sight()",
+      "assert not call(hist1), 'a storeless answer must stay silent on the param path'",
+      "assert ('s-rel', repo) in deep_horizon._seen, 'a storeless answer keeps its claim'",
+      "assert not call(hist1), 'a storeless repo must not re-spawn'",
+      "assert state['count'] == 1, state",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
     assert.equal(r.code, 0, `python failed: ${r.stderr}`);
     assert.equal(r.stdout.trim(), "OK");
   } finally {
