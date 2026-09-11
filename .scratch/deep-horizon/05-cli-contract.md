@@ -247,10 +247,15 @@ Appends a session record. Called by a close hook, or mid-session as the
 fallback where no usable close hook exists (HL-10).
 
 ```
-horizon session-end --harness hermes --session <id> [--summary "<text>"]
+horizon session-end --harness hermes --session <id> [--summary "<text>"] [--store <dir>]
 ```
 
 - `--summary` omitted → `summary: null`. **Never** a placeholder string.
+- `--store <dir>` targets that store directory directly instead of walking up
+  from `--cwd` — the close hooks hand back the dir `horizon-inject --json`
+  resolved at injection. A path that is not an existing directory is the
+  storeless twin: a silent no-op (exit 0); a store that exists but is
+  malformed is the usual exit 7.
 - `gaps_added` / `gaps_closed` are computed by the CLI, not passed in: it reads
   which gap mutations carried this `--session` id in their provenance and which
   closes it recorded for that session.

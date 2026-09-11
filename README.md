@@ -43,7 +43,7 @@ commands:
   detail <id> "<text>"      set or rewrite a gap's details (2048 code points max)
   detail <id> --clear       remove a gap's details
   log [--limit N]           print session records, newest first
-  session-end --harness <name> --session <id> [--summary "<text>"]
+  session-end --harness <name> --session <id> [--summary "<text>"] [--store <dir>]
   init                      create .horizon/ in --cwd
 ```
 
