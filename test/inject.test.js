@@ -266,7 +266,6 @@ test("42. the DSH adapter guards: only source==='startup', never subagents (dept
     const calls = [];
     const registered = mod.apply({}, {
       spawnBin: (bin) => { calls.push({ bin }); return { status: 0, stdout: "X", stderr: "" }; },
-      findBin: (b) => b,
     });
     await registered["agent/session-start"]({ agent, source });
     return calls;
@@ -293,7 +292,6 @@ test("43. horizon-inject unresolved: the DSH adapter injects nothing and the ses
   const calls = [];
   const registered = mod.apply({}, {
     spawnBin: () => { throw new Error("spawnSync horizon-inject ENOENT"); },
-    findBin: (b) => b,
   });
   await assert.doesNotReject(registered["agent/session-start"]({
     agent: {
@@ -311,7 +309,6 @@ test("44. horizon-inject nonzero exit: nothing injected", async () => {
   const calls = [];
   const registered = mod.apply({}, {
     spawnBin: () => ({ status: 7, stdout: "", stderr: "horizon: malformed gaps.json: ..." }),
-    findBin: (b) => b,
   });
   await assert.doesNotReject(registered["agent/session-start"]({
     agent: {
@@ -766,7 +763,7 @@ test("45. no adapter contains a literal of any section-10 text (spec acceptance 
 
 test("46. the DSH adapter returns a turn-stopping addendum: the mid-session session-end prompt", async () => {
   const mod = await import(ADAPTER);
-  const registered = mod.apply({}, { spawnBin: () => ({ status: 0, stdout: "", stderr: "" }), findBin: (b) => b });
+  const registered = mod.apply({}, { spawnBin: () => ({ status: 0, stdout: "", stderr: "" }) });
   assert.ok(registered["agent/turn-stopping"], "the adapter must register agent/turn-stopping");
   const agent = {
     session: { header: { cwd: "/somewhere", delegationDepth: 0, origin: "user" } },
