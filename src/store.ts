@@ -486,6 +486,25 @@ export function addGap(cwd, { id, text, details, harness, sessionId, tty, origin
   return writeGapsFile(opened.dir, nextDocument(cur.data, [...cur.data.gaps, gap]));
 }
 
+// The preamble closeGap, amendGap, setDetail, and readGap share: the id must
+// be legal, the store resolved (never created), the document readable, and
+// the gap found — each failure its own exit, in the order the tests pin. An
+// id off the slug grammar can never exist in a store (read validation
+// rejects such stores), so it is rejected as invalid, exit 5, the same
+// family as an unknown id but named for what it is. Returns
+// { dir, cur, gap } on success, or { error } carrying { code, message }.
+function loadOpenGap(cwd, id) {
+  if (!validId(id)) return { error: { code: 5, message: `horizon: invalid gap id: ${id}` } };
+  const opened = openForWrite(cwd, false);
+  if (opened === null) return { error: { code: 5, message: `horizon: unknown gap id: ${id}` } };
+  if (opened.error) return { error: opened.error };
+  const cur = readGapsFile(opened.dir);
+  if (!cur.ok) return { error: { code: cur.code, message: cur.message } };
+  const gap = cur.data.gaps.find((g) => g.id === id);
+  if (!gap) return { error: { code: 5, message: `horizon: unknown gap id: ${id}` } };
+  return { dir: opened.dir, cur, gap };
+}
+
 // closeGap removes an open gap and retires its id in the same write
 // (closed_ids grows), never creating a store: a storeless cwd means the id
 // cannot exist (exit 5). The close record lands first (ADV-3): closes.jsonl
@@ -493,28 +512,21 @@ export function addGap(cwd, { id, text, details, harness, sessionId, tty, origin
 // open and the store unchanged. `sessionId` names the closing session on the
 // record.
 export function closeGap(cwd, id, sessionId) {
-  // An id off the slug grammar can never exist in a store (read validation
-  // rejects such stores), so it is rejected here: exit 5, same family as an
-  // unknown id, but named as invalid.
-  if (!validId(id)) return { code: 5, message: `horizon: invalid gap id: ${id}` };
-  const opened = openForWrite(cwd, false);
-  if (opened === null) return { code: 5, message: `horizon: unknown gap id: ${id}` };
-  if (opened.error) return opened.error;
-  const cur = readGapsFile(opened.dir);
-  if (!cur.ok) return { code: cur.code, message: cur.message };
-  const gap = cur.data.gaps.find((g) => g.id === id);
-  if (!gap) return { code: 5, message: `horizon: unknown gap id: ${id}` };
-  const next = nextDocument(cur.data, cur.data.gaps.filter((g) => g.id !== id));
-  next.closed_ids = [...cur.data.closed_ids, id];
-  const a = appendLine(opened.dir, CLOSES_FILE, {
+  const loaded = loadOpenGap(cwd, id);
+  if (loaded.error) return loaded.error;
+  const next = nextDocument(loaded.cur.data, loaded.cur.data.gaps.filter((g) => g.id !== id));
+  next.closed_ids = [...loaded.cur.data.closed_ids, id];
+  const a = appendLine(loaded.dir, CLOSES_FILE, {
     ts: utcNow(),
     session_id: sessionId,
     gap_id: id,
     added_session_id:
-      gap.provenance && typeof gap.provenance.session_id === "string" ? gap.provenance.session_id : "unknown",
+      loaded.gap.provenance && typeof loaded.gap.provenance.session_id === "string"
+        ? loaded.gap.provenance.session_id
+        : "unknown",
   });
   if (a) return a;
-  return writeGapsFile(opened.dir, next);
+  return writeGapsFile(loaded.dir, next);
 }
 
 // amendGap rewrites one gap's text in place — the wording was wrong, not the
@@ -522,17 +534,12 @@ export function closeGap(cwd, id, sessionId) {
 // text cap is checked only after the id is known to be open, matching the
 // exits the CLI taught (an unknown id beats a bad text).
 export function amendGap(cwd, id, text) {
-  if (!validId(id)) return { code: 5, message: `horizon: invalid gap id: ${id}` };
-  const opened = openForWrite(cwd, false);
-  if (opened === null) return { code: 5, message: `horizon: unknown gap id: ${id}` };
-  if (opened.error) return opened.error;
-  const cur = readGapsFile(opened.dir);
-  if (!cur.ok) return { code: cur.code, message: cur.message };
-  if (!cur.data.gaps.some((g) => g.id === id)) return { code: 5, message: `horizon: unknown gap id: ${id}` };
+  const loaded = loadOpenGap(cwd, id);
+  if (loaded.error) return loaded.error;
   const bad = validateGapText(text);
   if (bad) return { code: 3, message: bad };
-  const gaps = cur.data.gaps.map((g) => (g.id === id ? { ...g, text } : g));
-  return writeGapsFile(opened.dir, nextDocument(cur.data, gaps));
+  const gaps = loaded.cur.data.gaps.map((g) => (g.id === id ? { ...g, text } : g));
+  return writeGapsFile(loaded.dir, nextDocument(loaded.cur.data, gaps));
 }
 
 // setDetail writes or clears one gap's extended context (the title line and
@@ -540,18 +547,13 @@ export function amendGap(cwd, id, text) {
 // unset gap stays without it. Like amend (which appends nothing), detail
 // changes log nothing: they are visible through the revision counter only.
 export function setDetail(cwd, id, { text = null, clear = false }) {
-  if (!validId(id)) return { code: 5, message: `horizon: invalid gap id: ${id}` };
-  const opened = openForWrite(cwd, false);
-  if (opened === null) return { code: 5, message: `horizon: unknown gap id: ${id}` };
-  if (opened.error) return opened.error;
-  const cur = readGapsFile(opened.dir);
-  if (!cur.ok) return { code: cur.code, message: cur.message };
-  if (!cur.data.gaps.some((g) => g.id === id)) return { code: 5, message: `horizon: unknown gap id: ${id}` };
+  const loaded = loadOpenGap(cwd, id);
+  if (loaded.error) return loaded.error;
   if (!clear) {
     const bad = validateDetailText(text);
     if (bad) return { code: 3, message: bad };
   }
-  const gaps = cur.data.gaps.map((g) => {
+  const gaps = loaded.cur.data.gaps.map((g) => {
     if (g.id !== id) return g;
     if (clear) {
       const { details: _dropped, ...rest } = g;
@@ -559,7 +561,7 @@ export function setDetail(cwd, id, { text = null, clear = false }) {
     }
     return { ...g, details: text };
   });
-  return writeGapsFile(opened.dir, nextDocument(cur.data, gaps));
+  return writeGapsFile(loaded.dir, nextDocument(loaded.cur.data, gaps));
 }
 
 // setAbout writes or clears the human-authored one line saying what the
@@ -588,15 +590,9 @@ export function setAbout(cwd, { text = null, clear = false }) {
 // is), so a reader verb — `horizon detail <id>` print mode — rejects exactly
 // like a writer. { ok, data: gap } or { ok: false, code, message }.
 export function readGap(cwd, id) {
-  if (!validId(id)) return { ok: false, code: 5, message: `horizon: invalid gap id: ${id}` };
-  const found = resolveStore(cwd);
-  if (!found) return { ok: false, code: 5, message: `horizon: unknown gap id: ${id}` };
-  if (found.open.code !== undefined) return { ok: false, code: found.open.code, message: found.open.message };
-  const cur = readGapsFile(found.dir);
-  if (!cur.ok) return { ok: false, code: cur.code, message: cur.message };
-  const gap = cur.data.gaps.find((g) => g.id === id);
-  if (!gap) return { ok: false, code: 5, message: `horizon: unknown gap id: ${id}` };
-  return { ok: true, data: gap };
+  const loaded = loadOpenGap(cwd, id);
+  if (loaded.error) return { ok: false, ...loaded.error };
+  return { ok: true, data: loaded.gap };
 }
 
 // .gitattributes pins the store files to byte-exact form (spec 4.1): git
