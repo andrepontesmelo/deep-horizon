@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, rmdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { freshDir, runCli, seed, specFence, withDir } from "./harness.js";
+import { main } from "../src/cli.ts";
 
 const BIN = new URL("../bin/horizon.js", import.meta.url).pathname;
 
@@ -1534,4 +1535,27 @@ test("detail-15. help lists the detail verb", async () => {
   const r = await runCli(["--help"]);
   assert.equal(r.code, 0);
   assert.match(r.stdout, /detail <id>/);
+});
+
+// The sink seam, pinned where it landed: main() reports through the handed-in
+// writers and the return value IS the exit code — the whole contract the
+// harness and the bins share, and the reason the bins stayed byte-identical
+// while the suite moved in-process.
+test("sink-1. main writes through the handed-in sink and returns the code; the fail paths report through it too", async () => {
+  await withDir(async (dir) => {
+    const out = [];
+    const err = [];
+    const sink = {
+      stdout: (s) => { out.push(s); return true; },
+      stderr: (s) => { err.push(s); return true; },
+    };
+    assert.equal(await main(["add", "sink-gap", "Sink gap", "--cwd", dir], sink), 0);
+    assert.equal(out.join(""), "sink-gap\n");
+    assert.equal(err.join(""), "");
+    assert.equal(await main(["close", "no-such-gap", "--cwd", dir], sink), 5);
+    assert.ok(err.join("").includes("no-such-gap"), "the failure must reach the sink's stderr");
+    assert.equal(out.join(""), "sink-gap\n", "a failed round must not add stdout");
+    assert.equal(await main(["no-such-command"], sink), 2);
+    assert.ok(err.join("").includes("unknown command"));
+  });
 });
