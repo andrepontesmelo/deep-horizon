@@ -291,7 +291,7 @@ test("43. horizon-inject unresolved: the DSH adapter injects nothing and the ses
   const mod = await import(ADAPTER);
   const calls = [];
   const registered = mod.apply({}, {
-    spawnBin: () => { throw new Error("spawnSync horizon-inject ENOENT"); },
+    spawnBin: () => { throw new Error("horizon-inject ENOENT"); },
   });
   await assert.doesNotReject(registered["agent/session-start"]({
     agent: {
