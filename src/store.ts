@@ -11,7 +11,7 @@ export const MAX_TEXT_POINTS = 512;
 export const MAX_DETAIL_POINTS = 2048;
 const HORIZON_DIR = ".horizon";
 const GAPS_FILE = "gaps.json";
-export const SESSIONS_FILE = "sessions.jsonl";
+const SESSIONS_FILE = "sessions.jsonl";
 const CLOSES_FILE = "closes.jsonl";
 const GITIGNORE_BODY = "sessions.jsonl\n*.tmp.*\n";
 
@@ -23,7 +23,9 @@ function codePoints(s) {
   return [...s].length;
 }
 
-export function utcNow() {
+// Wall-clock stamp for every record the store writes (added_at, close ts,
+// session-record ts): ISO 8601 with the milliseconds trimmed.
+function utcNow() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
@@ -370,7 +372,8 @@ export function readSessions(storeDir) {
 // sessions.jsonl / closes.jsonl: single appendFileSync write of one line
 // terminated by an explicit \n. No read, no parse, no lock (spec 4).
 // Returns null on success, or { code: 7, message } naming the file.
-export function appendLine(storeDir, file, obj) {
+// Internal: closeGap and recordSession are the only appenders.
+function appendLine(storeDir, file, obj) {
   const path = join(storeDir, file);
   try {
     appendFileSync(path, JSON.stringify(obj) + "\n", { encoding: "utf8" });
@@ -380,7 +383,10 @@ export function appendLine(storeDir, file, obj) {
   return null;
 }
 
-export function readCloses(storeDir, sessionId) {
+// Close records for one session: the whole file parsed, then filtered by
+// session_id — the only reader is recordSession's join. An absent file is
+// an empty history, like sessions.jsonl.
+function readCloses(storeDir, sessionId) {
   const path = join(storeDir, CLOSES_FILE);
   if (!existsSync(path)) return { ok: true, records: [] };
   const parsed = parseJsonlFile(path);
