@@ -144,10 +144,11 @@ still write the summary.
 
 ## Revision
 
-A counter on `gaps.json`, incremented on every write. A writer reads a
-revision, and its write is accepted only if the stored revision still matches —
-otherwise it is **rejected**, telling the caller the horizon changed underneath
-it and to re-read and retry.
+A monotonic counter on `gaps.json`, incremented on every write. It records
+that a write happened — it guards nothing: a writer never re-reads it, and a
+revision that moved underneath a write never **rejects** that write.
 
-This is what makes two harnesses safe to run at once without lockfiles, which
-strand when a process is killed.
+So concurrent writes are **last-writer-wins**. Two harnesses sharing the
+store never corrupt its structure — every write replaces the file whole — but
+a racing write's content can be lost, superseded by whichever write landed
+last.

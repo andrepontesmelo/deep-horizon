@@ -6,7 +6,7 @@ description: >-
   composer; this plugin never contains the section-10 texts itself) and closes
   sessions with `horizon session-end --harness hermes`. Fails open when the
   horizon binary is not installed: sessions proceed with no injected horizon.
-version: 0.1.0
+version: 0.2.0
 author: Andre Pontes Melo
 # The close hook register() actually subscribes to. `hermes plugins doctor`
 # warns when a registered hook is not declared here; keep the two in step

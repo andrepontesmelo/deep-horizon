@@ -65,6 +65,11 @@ dsh --profile <profile> --from-default-profile sdk-minimal --dump-config
 dsh plugin --profile <profile> add file:/abs/path/deep-horizon-<version>.tgz
 ```
 
+Upgrading: bump the version, `npm pack`, and re-run the `dsh plugin add` —
+or remove the plugin, then re-add. Re-adding an unchanged version prints
+"Already up to date" and silently keeps the old bits, and `--dump-config`
+cannot catch stale content.
+
 `npm pack deep-horizon` (by name) packs the registry copy, not this code. The
 `plugin add` warns that deep-horizon "declares no dsh.bundle — installed as a
 plain dependency, not a profile layer". That is expected; the manual step it
