@@ -147,6 +147,7 @@ inject — `hermes plugins disable horizon-line`, then delete
 npm install -g deep-horizon
 git clone https://github.com/andrepontesmelo/deep-horizon
 rsync -a --exclude __pycache__ deep-horizon/adapters/hermes/ ~/.hermes/plugins/deep-horizon/
+rm -rf ~/.hermes/plugins/deep-horizon/__pycache__   # upgrades: --exclude keeps the OLD bytecode
 # no rsync? coreutils only:
 #   cp -r deep-horizon/adapters/hermes ~/.hermes/plugins/deep-horizon && \
 #     rm -rf ~/.hermes/plugins/deep-horizon/__pycache__
@@ -154,8 +155,9 @@ hermes plugins enable deep-horizon
 systemctl --user restart hermes-gateway   # the gateway loads plugins at start
 ```
 
-(rsync form shown: a bare `cp -r` ships the clone's stale `__pycache__`
-bytecode; the `cp` + `rm -rf` fallback needs coreutils only.)
+(The `rm -rf` matters on upgrades: `--exclude` stops rsync copying the
+clone's `__pycache__` in, but it also stops it deleting the destination's
+stale bytecode — a bare `cp -r` ships it too.)
 
 cwd contract: gateway sessions get their working directory from `terminal.cwd`
 in hermes config. A placeholder value (`.`) resolves to the home directory —
