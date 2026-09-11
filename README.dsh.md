@@ -15,7 +15,7 @@ Mount in the profile's `cordis.patch.yml`:
 ```yaml
 - insert:
     - id: deep-horizon
-      name: deep-horizon
+      name: deep-horizon/dsh
 ```
 
 Ceremony identical to moving-target's proven path (its README). Whether

@@ -66,7 +66,7 @@ Mount in the profile's `cordis.patch.yml`:
 ```yaml
 - insert:
     - id: deep-horizon
-      name: deep-horizon
+      name: deep-horizon/dsh
 ```
 
 Session-end uses the mid-session fallback: the adapter prompts the agent to
