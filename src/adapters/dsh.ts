@@ -31,37 +31,14 @@
 // once. A tool call is never vetoed: the
 // handler is pass-through by construction (it always returns next()) and
 // fail-open inside.
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+// The shared spawn/parse policy (support.ts): one resolution order, one
+// timeout, one PATH fallback — the DEF-ADV-14-1 fix lives here now, so this
+// adapter can no longer hang a tool call on a stuck bin.
+import { isRecord, parseInjectAnswer, runBin } from "./support.ts";
 
 const HARNESS = "dsh";
-
-// Resolve and run a horizon bin. A repo checkout (this file still sitting in
-// src/adapters/) runs bin/<name>.js with the current node; an installed
-// package relies on the global bin on PATH (D2). Async on purpose: the param
-// trigger probes a call's fresh dirs concurrently, and a synchronous spawn
-// would serialize the batch inside the awaited waterfall. Returns a promise
-// for {status, stdout, stderr}; test overrides may return the shape
-// synchronously — callers await it either way. Rejects when the binary
-// cannot be spawned at all (ENOENT) — callers treat that as fail-open.
-function defaultSpawnBin(binName, args) {
-  return new Promise((resolveSpawn, rejectSpawn) => {
-    const local = new URL(`../../bin/${binName}.js`, import.meta.url);
-    const child = existsSync(local)
-      ? spawn(process.execPath, [local.pathname, ...args])
-      : spawn(binName, args);
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", rejectSpawn);
-    child.on("close", (code) => resolveSpawn({ status: code ?? -1, stdout, stderr }));
-  });
-}
 
 function message(text) {
   return {
@@ -69,29 +46,6 @@ function message(text) {
     content: [{ type: "text", text }],
     source: { kind: "plugin", plugin: "deep-horizon", form: "instructions" },
   };
-}
-
-// Plain-record guard for tool-call arguments (the harness hands parsed JSON
-// of arbitrary shape). Local by design: adapters are glue and never import
-// the core's store module.
-function isRecord(x) {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
-// The horizon-inject --json answer: {"text": string, "store": string|null}.
-// Anything off-shape is a failed probe (null), never an injection — the
-// adapter trusts only the total answer the composer documents.
-function parseAnswer(stdout) {
-  if (typeof stdout !== "string" || stdout.length === 0) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed) || typeof parsed.text !== "string") return null;
-  if (parsed.store !== null && typeof parsed.store !== "string") return null;
-  return { text: parsed.text, store: parsed.store };
 }
 
 // Cheap guards only, mirroring moving-target: top-level sessions only, and
@@ -195,7 +149,7 @@ function turnStoppingAddendum(agent) {
 // only for tests (spawnBin). Handlers are async (await-able, never sync-
 // throwing) and returned so tests can drive them without a live harness.
 export function apply(ctx, overrides = {}) {
-  const spawnBin = overrides.spawnBin ?? defaultSpawnBin;
+  const spawnBin = overrides.spawnBin ?? runBin;
 
   async function onSessionStart({ agent, source }) {
     const header = agent?.session?.header;
@@ -208,7 +162,7 @@ export function apply(ctx, overrides = {}) {
       return; // fail open (D2): unresolvable bin injects nothing
     }
     if (!result || result.status !== 0) return;
-    const answer = parseAnswer(result.stdout);
+    const answer = parseInjectAnswer(result.stdout);
     if (!answer || answer.text.length === 0) return;
     try {
       agent.inject(message(answer.text));
@@ -240,7 +194,7 @@ export function apply(ctx, overrides = {}) {
     } catch {
       return; // fail open (D2); the dir stays unprobed — the next call retries
     }
-    const answer = result && result.status === 0 ? parseAnswer(result.stdout) : null;
+    const answer = result && result.status === 0 ? parseInjectAnswer(result.stdout) : null;
     if (!answer) return; // nonzero or off-shape: unprobed, unclaimed — retry next call
     // The bin's answer is the one store-existence rule: store null is
     // silence (never the nudge), remembered so a storeless repo does
