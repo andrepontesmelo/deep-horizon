@@ -20,30 +20,47 @@
 // `tools/pre-execute` waterfall fires for every tool execution with the
 // call's parsed arguments, so a session launched in repo A that touches repo
 // B mid-session (`git -C B`, absolute paths, a workdir argument) still gets
-// repo B's horizon — queued once per store per session via agent.inject,
-// and only for stores that already exist (no bootstrap here; that is the
-// startup path's job). A tool call is never vetoed: the handler is
-// pass-through by construction (it always returns next()) and fail-open
-// inside.
-import { spawnSync } from "node:child_process";
+// repo B's horizon — queued once per store per session via agent.inject.
+// The trigger never discovers stores for itself: it asks the bin
+// (`horizon-inject --json`), whose total answer carries the text plus the
+// resolved store dir the dedup keys on — null for a storeless target (no
+// bootstrap here; that is the startup path's job), remembered so a storeless
+// repo never re-spawns on every tool call. A call's fresh dirs probe
+// concurrently — the spawns are independent and the waterfall awaits the
+// batch either way — and N dirs resolving to one store still inject exactly
+// once. A tool call is never vetoed: the
+// handler is pass-through by construction (it always returns next()) and
+// fail-open inside.
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
-import { isRecord, resolveStore } from "../store.ts";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const HARNESS = "dsh";
 
 // Resolve and run a horizon bin. A repo checkout (this file still sitting in
 // src/adapters/) runs bin/<name>.js with the current node; an installed
-// package relies on the global bin on PATH (D2). Throws when the binary
+// package relies on the global bin on PATH (D2). Async on purpose: the param
+// trigger probes a call's fresh dirs concurrently, and a synchronous spawn
+// would serialize the batch inside the awaited waterfall. Returns a promise
+// for {status, stdout, stderr}; test overrides may return the shape
+// synchronously — callers await it either way. Rejects when the binary
 // cannot be spawned at all (ENOENT) — callers treat that as fail-open.
 function defaultSpawnBin(binName, args) {
-  const local = new URL(`../../bin/${binName}.js`, import.meta.url);
-  const res = existsSync(local)
-    ? spawnSync(process.execPath, [local.pathname, ...args], { encoding: "utf8" })
-    : spawnSync(binName, args, { encoding: "utf8" });
-  if (res.error) throw res.error;
-  return { status: res.status ?? -1, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+  return new Promise((resolveSpawn, rejectSpawn) => {
+    const local = new URL(`../../bin/${binName}.js`, import.meta.url);
+    const child = existsSync(local)
+      ? spawn(process.execPath, [local.pathname, ...args])
+      : spawn(binName, args);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", rejectSpawn);
+    child.on("close", (code) => resolveSpawn({ status: code ?? -1, stdout, stderr }));
+  });
 }
 
 function message(text) {
@@ -52,6 +69,29 @@ function message(text) {
     content: [{ type: "text", text }],
     source: { kind: "plugin", plugin: "deep-horizon", form: "instructions" },
   };
+}
+
+// Plain-record guard for tool-call arguments (the harness hands parsed JSON
+// of arbitrary shape). Local by design: adapters are glue and never import
+// the core's store module.
+function isRecord(x) {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+// The horizon-inject --json answer: {"text": string, "store": string|null}.
+// Anything off-shape is a failed probe (null), never an injection — the
+// adapter trusts only the total answer the composer documents.
+function parseAnswer(stdout) {
+  if (typeof stdout !== "string" || stdout.length === 0) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || typeof parsed.text !== "string") return null;
+  if (parsed.store !== null && typeof parsed.store !== "string") return null;
+  return { text: parsed.text, store: parsed.store };
 }
 
 // Cheap guards only, mirroring moving-target: top-level sessions only, and
@@ -83,20 +123,22 @@ const prompted = new WeakSet();
 // retryable. Weak so disposal can collect them.
 const seeded = new WeakSet();
 
-// Horizon stores already served this session, per agent: the param trigger
-// injects a store at most once per session, and the store the startup
-// injection served is recorded here too, so a session launched inside a
-// repo never re-injects that repo's horizon on a mid-session touch. Weak
-// like the sets above.
-const served = new WeakMap();
+// What a session already knows, per agent. `served` — the horizon stores
+// already injected this session (the startup injection's store included):
+// the once-per dedup key. `probed` — every repo path the bin has already
+// answered for this session, mapped to that answer (null = storeless:
+// silence, and never a re-spawn). A failed delivery releases both the
+// store's claim and the dir's probe so the next call retries. Weak like the
+// sets above, so disposal can collect them.
+const memories = new WeakMap();
 
-function servedFor(agent) {
-  let seen = served.get(agent);
-  if (!seen) {
-    seen = new Set();
-    served.set(agent, seen);
+function memoryFor(agent) {
+  let mem = memories.get(agent);
+  if (!mem) {
+    mem = { served: new Set(), probed: new Map() };
+    memories.set(agent, mem);
   }
-  return seen;
+  return mem;
 }
 
 // Candidate target directories in one tool call's parsed arguments (the
@@ -104,16 +146,25 @@ function servedFor(agent) {
 // Field-based, not tool-name-based, so unknown tool shapes simply yield no
 // candidates. Relative paths never candidate: the adapter cannot know the
 // shell's cwd, and resolving one against the harness process would guess
-// (the hermes trigger drops them for the same reason).
+// (the hermes trigger drops them for the same reason). Absolute tokens are
+// lexically normalized (path.resolve — no filesystem access) so token
+// spellings of one path (`/a/b`, `/a/b//b`, `/a/b/.`) share one probe key,
+// and a dir named twice in one call is probed once.
 const ABS_PATH = /(?:^|[\s(=;,"'`])((?:~\/|\/)[^\s'"`;|&)]*)/g;
 
 function candidateDirs(args) {
   if (!isRecord(args)) return [];
   const out = [];
+  const seen = new Set();
   const push = (value) => {
     if (typeof value !== "string" || value.length === 0) return;
     if (value.startsWith("~/")) value = join(homedir(), value.slice(2));
-    if (isAbsolute(value)) out.push(value);
+    if (!isAbsolute(value)) return;
+    const dir = resolve(value);
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      out.push(dir);
+    }
   };
   push(args.workdir);
   for (const key of ["file_path", "path"]) {
@@ -152,29 +203,64 @@ export function apply(ctx, overrides = {}) {
     if (seeded.has(agent)) return;
     let result;
     try {
-      result = spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", header.cwd]);
+      result = await spawnBin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", header.cwd]);
     } catch {
       return; // fail open (D2): unresolvable bin injects nothing
     }
     if (!result || result.status !== 0) return;
-    const text = typeof result.stdout === "string" ? result.stdout : "";
-    if (text.length === 0) return;
+    const answer = parseAnswer(result.stdout);
+    if (!answer || answer.text.length === 0) return;
     try {
-      agent.inject(message(text));
+      agent.inject(message(answer.text));
       seeded.add(agent);
     } catch {
       // A rejecting inject must never take the session down; the horizon
       // returns next startup.
       return;
     }
-    // Whatever the launch cwd's startup injection served counts as served:
-    // a mid-session touch of the launch repo must not re-inject it.
+    // The bin's answer is this session's knowledge of the launch dir: the
+    // store it served counts as served (a mid-session touch must not
+    // re-inject it), and the launch dir counts as probed so the param path
+    // never re-asks the bin for it.
+    const mem = memoryFor(agent);
+    if (answer.store !== null) mem.served.add(answer.store);
+    mem.probed.set(header.cwd, answer.store);
+  }
+
+  // One dir's probe, as its own concurrent task: ask the bin, remember the
+  // answer, deliver at most one inject per store. Fail-open per probe; a
+  // failed delivery releases both the store's claim and the dir's probe so
+  // the next call retries (dsh-param-9). All post-spawn bookkeeping runs on
+  // the single thread, so check-then-claim is atomic per answer and N dirs
+  // resolving to one store still inject exactly once.
+  async function probeAndDeliver(agent, mem, dir) {
+    let result;
     try {
-      const found = resolveStore(header.cwd, { readonly: true });
-      if (found) servedFor(agent).add(found.dir);
+      result = await spawnBin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", dir]);
     } catch {
-      // Fail open: an unresolvable launch store only means the param
-      // trigger may serve it later.
+      return; // fail open (D2); the dir stays unprobed — the next call retries
+    }
+    const answer = result && result.status === 0 ? parseAnswer(result.stdout) : null;
+    if (!answer) return; // nonzero or off-shape: unprobed, unclaimed — retry next call
+    // The bin's answer is the one store-existence rule: store null is
+    // silence (never the nudge), remembered so a storeless repo does
+    // not re-spawn on every tool call.
+    mem.probed.set(dir, answer.store);
+    if (answer.store === null) return;
+    if (mem.served.has(answer.store)) return;
+    mem.served.add(answer.store);
+    if (answer.text.length === 0) return; // a total silence: claimed, nothing to deliver
+    let delivered = false;
+    try {
+      agent.inject(message(answer.text));
+      delivered = true;
+    } catch {
+      // A rejecting inject releases the claim below: the next identical
+      // call retries the delivery (dsh-param-9).
+    }
+    if (!delivered) {
+      mem.served.delete(answer.store);
+      mem.probed.delete(dir);
     }
   }
 
@@ -187,25 +273,14 @@ export function apply(ctx, overrides = {}) {
     try {
       const agent = exec?.agent;
       if (agent && typeof agent.inject === "function" && !subagentHeader(agent?.session?.header)) {
-        for (const dir of candidateDirs(exec.arguments)) {
-          const found = resolveStore(dir, { readonly: true });
-          if (!found || found.open.code !== undefined) continue;
-          const seen = servedFor(agent);
-          if (seen.has(found.dir)) continue;
-          seen.add(found.dir);
-          let delivered = false;
-          try {
-            const result = spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", dir]);
-            if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout.length > 0) {
-              agent.inject(message(result.stdout));
-              delivered = true;
-            }
-          } catch {
-            // Fail open (D2): an unresolvable bin or a rejecting inject
-            // leaves the session untouched.
-          }
-          if (!delivered) seen.delete(found.dir);
-        }
+        const mem = memoryFor(agent);
+        // Fresh dirs probe concurrently: the spawns are independent, and the
+        // waterfall awaits the batch either way — `cp /a/x /b/y /c/z` with
+        // three unseen dirs must not pay three serial node startups inside
+        // it. Keys are normalized (candidateDirs), so duplicates are already
+        // gone; each survivor's once-per bookkeeping is its own task.
+        const fresh = candidateDirs(exec.arguments).filter((dir) => !mem.probed.has(dir));
+        await Promise.all(fresh.map((dir) => probeAndDeliver(agent, mem, dir)));
       }
     } catch {
       // A trigger error must never reach the tool call.

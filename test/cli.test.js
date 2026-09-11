@@ -692,6 +692,53 @@ test("29. missing --harness or --session: exit 2, nothing appended", async () =>
   }
 });
 
+// --store is the close hooks' round-trip: the dir horizon-inject --json
+// resolved, handed back so teardown never re-discovers (the harness process
+// may have chdir'd since the injection).
+test("session-end-store. --store targets that store directly; an absent or non-dir path is the storeless no-op; a malformed store still exits 7", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Store target gap"]);
+    const store = join(dir, ".horizon");
+    // The record lands in the named store, discovered nowhere: the command
+    // runs from a cwd with no store at all.
+    const elsewhere = freshDir();
+    try {
+      const r = await run(["session-end", "--harness", "t", "--session", "s-store", "--store", store, "--cwd", elsewhere]);
+      assert.equal(r.code, 0, r.stderr);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+    const rec = JSON.parse(readFileSync(join(store, "sessions.jsonl"), "utf8").trim());
+    assert.equal(rec.session_id, "s-store");
+    assert.deepEqual(rec.gaps_added, []);
+    // An absent path is the storeless twin: silent no-op, exit 0.
+    const gone = await run(["session-end", "--harness", "t", "--session", "s-gone", "--store", join(dir, "nope")]);
+    assert.equal(gone.code, 0);
+    // A file, not a directory: the same no-op.
+    const filePath = join(dir, "plain-file");
+    writeFileSync(filePath, "x");
+    const notDir = await run(["session-end", "--harness", "t", "--session", "s-file", "--store", filePath]);
+    assert.equal(notDir.code, 0);
+    const lines = readFileSync(join(store, "sessions.jsonl"), "utf8");
+    assert.ok(!lines.includes("s-gone"), "an absent --store must record nothing");
+    assert.ok(!lines.includes("s-file"), "a non-directory --store must record nothing");
+    // A store that exists but is malformed: the normal error path applies.
+    const broken = freshDir();
+    try {
+      mkdirSync(join(broken, ".horizon"), { recursive: true });
+      writeFileSync(join(broken, ".horizon", "gaps.json"), "{not json");
+      const bad = await run(["session-end", "--harness", "t", "--session", "s-bad", "--store", join(broken, ".horizon")]);
+      assert.equal(bad.code, 7);
+      assert.match(bad.stderr, /gaps\.json/);
+    } finally {
+      rmSync(broken, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- log (30-31) ---
 
 test("30. log prints newest first and honours --limit", async () => {

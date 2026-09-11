@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   SESSIONS_FILE,
   addGap,
@@ -18,7 +19,7 @@ import {
 } from "./store.ts";
 
 const COMMANDS = ["show", "about", "add", "close", "amend", "detail", "log", "session-end", "init"];
-const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin", "--summary", "--limit", "--detail"]);
+const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin", "--summary", "--limit", "--detail", "--store"]);
 const BOOL_FLAGS = new Set(["--json", "--help", "--version", "--clear"]);
 
 function flagKey(name) {
@@ -57,7 +58,7 @@ function helpText() {
     "  detail <id> \"<text>\"      set or rewrite a gap's details (2048 code points max)\n" +
     "  detail <id> --clear       remove a gap's details\n" +
     "  log [--limit N]           print session records, newest first\n" +
-    "  session-end --harness <name> --session <id> [--summary \"<text>\"]\n" +
+    "  session-end --harness <name> --session <id> [--summary \"<text>\"] [--store <dir>]\n" +
     "  init                      create .horizon/ in --cwd\n"
   );
 }
@@ -348,10 +349,27 @@ export async function main(argv) {
         return fail(2, "horizon: session-end requires --harness and --session");
       }
       const summary = explicit.has("summary") ? opts.summary : null;
-      const r = resolveStore(cwd);
-      if (!r) return 0;
-      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
-      const storeDir = r.dir;
+      // --store is the close hooks' round-trip: the dir horizon-inject --json
+      // already resolved, handed back so teardown does not re-discover (the
+      // harness process may have chdir'd since the injection). A path that is
+      // not an existing directory mirrors the storeless-cwd semantics — a
+      // silent no-op, the store-vanished-mid-session case at teardown — while
+      // anything that exists is read by the normal paths, so a malformed
+      // store still exits 7.
+      let storeDir = null;
+      if (explicit.has("store")) {
+        let st = null;
+        try {
+          st = statSync(opts.store);
+        } catch { /* absent: the storeless twin */ }
+        if (!st || !st.isDirectory()) return 0;
+        storeDir = resolve(opts.store);
+      } else {
+        const r = resolveStore(cwd);
+        if (!r) return 0;
+        if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
+        storeDir = r.dir;
+      }
       const g = readGapsFile(storeDir);
       if (!g.ok) return fail(g.code, g.message);
       const sid = opts.session;
