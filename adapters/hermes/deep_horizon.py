@@ -274,9 +274,14 @@ def _section_text(session_info) -> str:
         return ""
 
 
-async def _on_session_finalize(payload=None, **_ignored) -> None:
+def _on_session_finalize(payload=None, **_ignored) -> None:
     """Close hook: append a session record with summary omitted (null).
-    Swallows everything — finalize is teardown; nothing here may break it."""
+    Swallows everything — finalize is teardown; nothing here may break it.
+
+    Sync by contract: hermes' invoke_hook dispatches callbacks synchronously
+    and never awaits a coroutine (verified live, 2026-09-10) — an async def
+    here returns a coroutine nobody runs and the hook body silently never
+    executes. Keep this a plain def; there is nothing to await anyway."""
     try:
         info = payload if isinstance(payload, dict) else {}
         session_id = info.get("session_id")
