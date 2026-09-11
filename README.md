@@ -15,9 +15,17 @@ between sessions and between tools.
 **CLI first, adapter second.** The binary must be on PATH before any adapter
 is configured; hooks fail open (they inject nothing) when the bin is missing.
 
+There is **no npm release yet** — `npm install -g deep-horizon` 404s on
+registry.npmjs.org (this repo's open gap `npm-release`). Install from a
+checkout:
+
 ```bash
-npm install -g deep-horizon
+git clone https://github.com/andrepontesmelo/deep-horizon
+npm install -g ./deep-horizon    # `prepare` runs the build, so dist/ ships
 ```
+
+Publishing is the intended route, not a user step today: once `npm publish`
+runs, the block above becomes `npm install -g deep-horizon` again.
 
 Status: this package ships the CLI core (`horizon`), the `horizon-inject`
 composer, and adapters for every harness below (Claude Code has no npm
@@ -85,8 +93,8 @@ re-discovers it: `horizon session-end --harness <name> --session <id>
 Install from a built checkout, CLI first:
 
 ```bash
-npm install -g deep-horizon
 git clone https://github.com/andrepontesmelo/deep-horizon
+npm install -g ./deep-horizon   # the CLI, from this clone — see Install
 cd deep-horizon && npm pack     # prepare runs the build, so the tgz is never stale
 dsh --profile <profile> --from-default-profile sdk-minimal --dump-config
 dsh plugin --profile <profile> add file:/abs/path/deep-horizon-<version>.tgz
@@ -150,7 +158,7 @@ Omitting `--summary` records `summary: null` — a summary is never fabricated.
 ### 2. Claude Code
 
 ```bash
-npm install -g deep-horizon
+npm install -g ./deep-horizon    # from a clone of this repo — see Install
 ```
 
 `.claude/settings.json` (project-local, checked into the repo):
@@ -193,7 +201,7 @@ record carries `summary: null` — the close hook cannot elicit model text.
 ### 3. pi
 
 ```bash
-npm install -g deep-horizon
+npm install -g ./deep-horizon    # from a clone of this repo — see Install
 ```
 
 `~/.pi/agent/settings.json`:
@@ -207,8 +215,8 @@ The extension entry point is the package's `exports["./pi"]` module:
 first `before_agent_start` prompt returns it as a persistent message. Only
 the `startup` reason stashes — `new`, `resume`, `fork`, and `reload` arrive
 inside a running process or replay an existing horizon. The `git:` package
-specifier is proven live; the `npm:deep-horizon` variant is documented but
-unprobed.
+specifier is proven live; `npm:deep-horizon` does not resolve today (no
+registry release), so point the specifier at the repo.
 
 **Subagent opt-out:** pi has no discriminator for subagent sessions, so the
 adapter skips injection when `HORIZON_SUBAGENT` is set to a truthy value
@@ -226,7 +234,7 @@ cwd-discovery form. No `--summary` either way, so the record carries
 ### 4. opencode — DEGRADED
 
 ```bash
-npm install -g deep-horizon
+npm install -g ./deep-horizon    # from a clone of this repo — see Install
 ```
 
 `opencode.json` (project):
@@ -243,9 +251,9 @@ excluded via `session.parentID`; and **opencode sessions write no session
 records** — no close hook exists, so opencode sessions are invisible to the
 log. Its gaps still read and write like every other harness's.
 
-If Bun does not resolve the npm package from the global install, the fallback
-is a local plugin at `.opencode/plugin/deep-horizon.ts` (live-verified
-shape):
+`"plugin": ["deep-horizon"]` resolves a registry package, and there is none
+yet — the route today is the local plugin at
+`.opencode/plugin/deep-horizon.ts` (live-verified shape):
 
 ```ts
 import { apply } from "deep-horizon/opencode";
@@ -261,8 +269,8 @@ inject — `hermes plugins disable horizon-line`, then delete
 `~/.hermes/plugins/horizon-line`, before installing deep-horizon.
 
 ```bash
-npm install -g deep-horizon
 git clone https://github.com/andrepontesmelo/deep-horizon
+npm install -g ./deep-horizon    # the CLI — see Install
 rsync -a --exclude __pycache__ deep-horizon/adapters/hermes/ ~/.hermes/plugins/deep-horizon/
 rm -rf ~/.hermes/plugins/deep-horizon/__pycache__   # upgrades: --exclude keeps the OLD bytecode
 # no rsync? coreutils only:
@@ -314,7 +322,7 @@ error injects nothing and never blocks a session.
 ### 6. ZCode
 
 ```bash
-npm install -g deep-horizon
+npm install -g ./deep-horizon    # from a clone of this repo — see Install
 ```
 
 The adapter is one POSIX sh script shipped inside the package
@@ -392,11 +400,13 @@ and nothing fires at process exit.
 ## Manual use, no global install
 
 ```
-npx -p deep-horizon horizon show
-npx -p deep-horizon horizon-inject --harness <name>
+node ./deep-horizon/bin/horizon.js show
+node ./deep-horizon/bin/horizon-inject.js --harness <name>
 ```
 
-(`-p` is required: the package name is not a bin name.)
+(The bins import `dist/`, so run `npm install` in the clone first — its
+`prepare` builds it. `npx -p deep-horizon` resolves the registry, which has
+no such package yet.)
 
 ## License
 
