@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seed } from "./seed.js";
@@ -1205,5 +1205,219 @@ test("hermes-param-release. a failed or nonzero spawn releases the (session, rep
     assert.equal(r.stdout.trim(), "OK");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- ZCode: adapters/zcode/ sh+jq hooks + the checked-in .zcode/config.json ---
+
+const ZCODE_DIR = join(ROOT, "adapters", "zcode");
+
+function runHook(script, { input, cwd, env = {} } = {}) {
+  const r = spawnSync("sh", [script], {
+    input: input ?? "",
+    encoding: "utf8",
+    cwd,
+    env: { ...process.env, ...env },
+  });
+  return {
+    code: r.status ?? -1,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+    error: r.error,
+  };
+}
+
+function sessionStartPayload(cwd, extra = {}) {
+  // The stdin shape the harness sends (zcode.cjs fft(): camelCase native
+  // fields plus snake_case aliases). No subagent discriminator exists on it.
+  return JSON.stringify({
+    hookEventName: "SessionStart",
+    hook_event_name: "SessionStart",
+    source: "startup",
+    session_id: "sess_z1",
+    sessionId: "sess_z1",
+    cwd,
+    agentName: "zcode-main",
+    agent_type: "zcode-main",
+    mode: "yolo",
+    model: "m",
+    timestamp: "2026-09-11T00:00:00Z",
+    ...extra,
+  });
+}
+
+test("81. the ZCode session-start hook injects ONLY on fresh startups, through the additionalContext envelope the harness requires", () => {
+  // Probed zcode.cjs (3.11.2-22): parseHookStdout (jni) ignores stdout that
+  // does not start with "{" — plain text never injects — and the output
+  // mapping (Oni) reads only camelCase "additionalContext" into the session
+  // history. The schema is strict (any extra key marks the run failed), so
+  // the envelope must carry exactly that one key.
+  const dir = freshDir();
+  try {
+    seed(dir, ["ZCode startup gap"]);
+    const r = runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(dir),
+      cwd: dir,
+    });
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(parsed).sort(), ["additionalContext"],
+      "the envelope must carry exactly additionalContext — the harness schema rejects extra keys");
+    assert.ok(parsed.additionalContext.startsWith("This project has a horizon"));
+    assert.ok(parsed.additionalContext.includes("gap-1  ZCode startup gap"));
+    assert.ok(parsed.additionalContext.includes("`horizon detail <id>` prints it"),
+      "the zcode path must carry the core's detail pointer");
+    // Resume replays the persisted history (the original injection rides in
+    // it), so only source "startup" injects.
+    const resumed = runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(dir, { source: "resume" }),
+      cwd: dir,
+    });
+    assert.equal(resumed.code, 0);
+    assert.equal(resumed.stdout, "", "a resumed session must not re-inject");
+    // The payload has no subagent discriminator (probed: no parent_session_id,
+    // no task_type; agentName is ambiguous), so no guard is built — a payload
+    // of the real shape injects, fail-open.
+    assert.ok(!("parent_session_id" in JSON.parse(sessionStartPayload(dir))));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("82. the ZCode session-start hook fails open: malformed stdin, empty stdin, and a missing bin all exit 0 silently", () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["ZCode fail-open gap"]);
+    for (const input of ["not json", "", "{}"]) {
+      const r = runHook(join(ZCODE_DIR, "session-start"), { input, cwd: dir });
+      assert.equal(r.code, 0, `input ${JSON.stringify(input)} must not fail the hook`);
+      assert.equal(r.stdout, "", `input ${JSON.stringify(input)} must inject nothing`);
+    }
+    // Missing bin: run an isolated copy of the script (no ../../bin sibling)
+    // with a PATH that has jq and node but no horizon bins — the exact
+    // installed-package shape minus deep-horizon.
+    const isolated = join(dir, "isolated");
+    mkdirSync(isolated, { recursive: true });
+    const fakeBin = join(dir, "fakebin");
+    mkdirSync(fakeBin, { recursive: true });
+    for (const tool of ["jq", "node", "sh", "dirname", "pwd", "cat", "command"]) {
+      const resolved = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
+      if (resolved.status === 0 && resolved.stdout.trim()) {
+        try { symlinkSync(resolved.stdout.trim(), join(fakeBin, tool)); } catch {}
+      }
+    }
+    copyFileSync(join(ZCODE_DIR, "session-start"), join(isolated, "session-start"));
+    const r = runHook(join(isolated, "session-start"), {
+      input: sessionStartPayload(dir),
+      cwd: dir,
+      env: { PATH: fakeBin },
+    });
+    assert.equal(r.code, 0, "a missing bin must never fail the hook");
+    assert.equal(r.stdout, "", "a missing bin must inject nothing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("83. the ZCode stop-steer hook fires once per session: decision-block steer naming the session, then record and marker guards hold it silent", () => {
+  // Probed zcode.cjs: a Stop hook's {"decision":"block","reason":...} (exit 0)
+  // sets stopShouldContinue and pushes the reason into additionalContexts, so
+  // the turn re-runs with the reason text injected (max 3 continuations).
+  const dir = freshDir();
+  const tmp = freshDir();
+  try {
+    seed(dir, ["ZCode steer gap"]);
+    const hook = join(ZCODE_DIR, "stop-steer");
+    const sid = "sess_steer1";
+    const stopPayload = JSON.stringify({ hookEventName: "Stop", hook_event_name: "Stop", session_id: sid, sessionId: sid, cwd: dir, stop_hook_active: false });
+    // First turn stop: the steer fires.
+    const r = runHook(hook, { input: stopPayload, cwd: dir, env: { TMPDIR: tmp } });
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(parsed).sort(), ["decision", "reason"],
+      "the steer must be exactly the decision/reason block shape");
+    assert.equal(parsed.decision, "block");
+    assert.ok(parsed.reason.includes(`--harness zcode --session ${sid}`),
+      `the steer must name the CLI invocation, got: ${parsed.reason}`);
+    assert.ok(parsed.reason.includes("--summary"), "the steer must mention the optional summary");
+    assert.ok(existsSync(join(tmp, `horizon-zcode-steer-${sid}`)), "the marker must be written before steering");
+    // Second stop, same session: the marker holds it silent.
+    const r2 = runHook(hook, { input: stopPayload, cwd: dir, env: { TMPDIR: tmp } });
+    assert.equal(r2.code, 0);
+    assert.equal(r2.stdout, "", "the marker must keep the steer once per session");
+    // A session whose record is already in the store: silent even with a
+    // fresh marker dir — the record guard reads sessions.jsonl the way the
+    // CLI resolves the store (walk up from cwd).
+    const tmp2 = freshDir();
+    try {
+      writeFileSync(
+        join(dir, ".horizon", "sessions.jsonl"),
+        JSON.stringify({ ts: "2026-09-11T00:00:00Z", harness: "zcode", session_id: "sess_done", summary: null, gaps_added: [], gaps_closed: [] }) + "\n",
+      );
+      const r3 = runHook(hook, {
+        input: JSON.stringify({ hookEventName: "Stop", session_id: "sess_done", cwd: dir }),
+        cwd: dir,
+        env: { TMPDIR: tmp2 },
+      });
+      assert.equal(r3.code, 0);
+      assert.equal(r3.stdout, "", "an existing session record must keep the steer silent");
+      assert.equal(readdirSync(tmp2).length, 0, "a recorded session must not even write a marker");
+    } finally {
+      rmSync(tmp2, { recursive: true, force: true });
+    }
+    // Malformed stdin: silent, and no marker is written.
+    const tmp3 = freshDir();
+    try {
+      const r4 = runHook(hook, { input: "not json", cwd: dir, env: { TMPDIR: tmp3 } });
+      assert.equal(r4.code, 0);
+      assert.equal(r4.stdout, "", "malformed stdin must inject nothing");
+      assert.equal(readdirSync(tmp3).length, 0, "malformed stdin must not write a marker");
+    } finally {
+      rmSync(tmp3, { recursive: true, force: true });
+    }
+    // A storeless working directory: silent, no marker — storeless
+    // `horizon session-end` exits 0 without writing, so steering there
+    // would spend the user's yes on a no-op.
+    const tmp4 = freshDir();
+    try {
+      const r5 = runHook(hook, {
+        input: JSON.stringify({ hookEventName: "Stop", session_id: "sess_nowhere", cwd: tmp4 }),
+        cwd: tmp4,
+        env: { TMPDIR: tmp4 },
+      });
+      assert.equal(r5.code, 0);
+      assert.equal(r5.stdout, "", "a storeless dir must not be steered");
+      assert.equal(readdirSync(tmp4).length, 0, "a storeless dir must not write a marker");
+    } finally {
+      rmSync(tmp4, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("84. the ZCode adapter ships its config and scripts: .zcode/config.json wires hooks.enabled true to the packaged, executable scripts", () => {
+  const configPath = join(ROOT, ".zcode", "config.json");
+  assert.ok(existsSync(configPath), "the project-local .zcode/config.json must be checked in");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  assert.equal(config.hooks.enabled, true, "config-file hooks are disabled by default; enabled:true is required");
+  // SessionStart, matcher startup only.
+  assert.ok(Array.isArray(config.hooks.events.SessionStart) && config.hooks.events.SessionStart.length === 1);
+  assert.equal(config.hooks.events.SessionStart[0].matcher, "startup");
+  // Stop: no matcher (match all turns); the once-per-session guard lives in the script.
+  assert.ok(Array.isArray(config.hooks.events.Stop) && config.hooks.events.Stop.length === 1);
+  assert.equal(config.hooks.events.Stop[0].matcher, undefined);
+  // Both events point at the shipped scripts, and the package ships them executable.
+  const startCmd = config.hooks.events.SessionStart[0].hooks[0].command;
+  const stopCmd = config.hooks.events.Stop[0].hooks[0].command;
+  assert.ok(startCmd.includes("adapters/zcode/session-start"), `SessionStart must run the shipped script, got: ${startCmd}`);
+  assert.ok(stopCmd.includes("adapters/zcode/stop-steer"), `Stop must run the shipped script, got: ${stopCmd}`);
+  for (const name of ["session-start", "stop-steer"]) {
+    const script = join(ZCODE_DIR, name);
+    assert.ok(existsSync(script), `adapters/zcode/${name} must exist`);
+    assert.ok((statSync(script).mode & 0o111) !== 0, `adapters/zcode/${name} must be executable`);
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    assert.ok(pkg.files.includes(`adapters/zcode/${name}`), `package.json files must ship adapters/zcode/${name}`);
   }
 });

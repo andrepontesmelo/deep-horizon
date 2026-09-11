@@ -37,7 +37,7 @@
     "./pi": "./src/adapters/pi.ts",
     "./texts": "./src/texts.ts"
   },
-  "files": ["bin", "dist", "src", "adapters/hermes/__init__.py", "adapters/hermes/deep_horizon.py", "adapters/hermes/plugin.yaml", "README.md", "LICENSE"],
+  "files": ["bin", "dist", "src", "adapters/hermes/__init__.py", "adapters/hermes/deep_horizon.py", "adapters/hermes/plugin.yaml", "adapters/zcode/session-start", "adapters/zcode/stop-steer", "README.md", "LICENSE"],
   "pi": { "extensions": ["./src/adapters/pi.ts"] },
   "scripts": {
     "build": "node scripts/build-dist.cjs",
