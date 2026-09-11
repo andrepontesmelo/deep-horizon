@@ -36,7 +36,7 @@ commands:
   about                     print the about line
   about "<text>"            set or replace the about line (what this project is)
   about --clear             unset the about line
-  add <id> "<text>"         append a gap under a slug id; prints the id
+  add <id> "<text>"         append a gap under a caller-chosen slug id; prints the id
   close <id>                remove a gap; frees a slot
   amend <id> "<text>"       rewrite a gap's text in place
   log [--limit N]           print session records, newest first

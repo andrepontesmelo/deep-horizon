@@ -55,7 +55,7 @@ function helpText() {
     "  about --clear             unset the about line\n" +
     "  add <id> \"<text>\"         append a gap under a caller-chosen slug id; prints the id\n" +
     "  close <id>                remove a gap; frees a slot\n" +
-    "  amend <id> \"<text>\"        rewrite a gap's text in place\n" +
+    "  amend <id> \"<text>\"       rewrite a gap's text in place\n" +
     "  log [--limit N]           print session records, newest first\n" +
     "  session-end --harness <name> --session <id> [--summary \"<text>\"]\n" +
     "  init                      create .horizon/ in --cwd\n"
