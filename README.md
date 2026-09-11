@@ -36,7 +36,7 @@ commands:
   about                     print the about line
   about "<text>"            set or replace the about line (what this project is)
   about --clear             unset the about line
-  add "<text>"              append a gap; prints the new id
+  add <id> "<text>"         append a gap under a slug id; prints the id
   close <id>                remove a gap; frees a slot
   amend <id> "<text>"       rewrite a gap's text in place
   log [--limit N]           print session records, newest first
@@ -45,11 +45,16 @@ commands:
 ```
 
 Only the human closes a gap. The agent proposes — `horizon add` / `horizon
-close` run only after the human says yes. The about line is one human-authored
-line saying what this project **is** (gaps say where the work is heading);
-when set, it is injected ahead of the horizon block. Store files:
-`.horizon/gaps.json` (the open gaps + the about line), `.horizon/sessions.jsonl`
-and `.horizon/closes.jsonl` (append-only history).
+close` run only after the human says yes. Gap ids are chosen, not minted:
+`horizon add plant-photo-lookup "A person can hand a photo to the app and get
+the plant named."` — a slug of 3–40 lowercase letters, digits, and hyphens,
+starting with a letter. An id is never reused, even after its gap closes, so a
+name always means the same gap for the life of the project. The about line is
+one human-authored line saying what this project **is** (gaps say where the
+work is heading); when set, it is injected ahead of the horizon block. Store
+files: `.horizon/gaps.json` (the open gaps, the retired ids of closed gaps,
+and the about line), `.horizon/sessions.jsonl` and `.horizon/closes.jsonl`
+(append-only history).
 
 ## Per-harness setup
 

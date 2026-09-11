@@ -27,11 +27,13 @@ One thing the human wants that does not exist yet, written as a capability, use
 case, or piece of functionality — **never as a task**. One line of plain text,
 no newlines, at most **512 Unicode code points**.
 
-Identified by a short opaque id (`g_3f9a2c1b`), minted once on add and never
-reused. Ids are deliberately **not sequential**: sequential numbering invites
-reading `g_3` as more important than `g_5`, and gaps carry no priority order.
-The id is what session records and the log reference, so a gap's text stays
-free to be amended without invalidating history.
+Identified by a short slug id (`plant-photo-lookup`), chosen by whoever types
+the add — agent or human — and never reused: a closed gap's id is retired for
+the life of the project. Ids are deliberately **not sequential**: numbering
+gaps invites reading gap 3 as more important than gap 5, and gaps carry no
+priority order. A slug is a name, not a position — it cannot be counted,
+sorted, or ranked. The id is what session records and the log reference, so a
+gap's text stays free to be amended without invalidating history.
 
 The two caps do different jobs. The character cap forces each gap to stay
 high-level: no details, no chosen approach, no decision history. The count cap
@@ -56,7 +58,8 @@ artifact's trustworthiness, and being wrong in that direction costs more than
 carrying a stale gap.
 
 Closed gaps live on in the session log — the project's record of what actually
-got built, and the answer to "when did this close, and in which session?"
+got built, and the answer to "when did this close, and in which session?" A
+close also retires the gap's id: no gap added later may carry it.
 
 ## Propose
 

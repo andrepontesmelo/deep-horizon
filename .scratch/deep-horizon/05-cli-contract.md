@@ -10,8 +10,7 @@ asking a question, and a TDD implementation should be able to turn every
 acceptance test in §9 red before writing code.
 
 **The CLI contains no LLM calls, no network access, and no nondeterminism
-beyond the clock and the id generator.** Same inputs, same store state, same
-output — always.
+beyond the clock.** Same inputs, same store state, same output — always.
 
 ---
 
@@ -39,7 +38,7 @@ repo-root store unless they carry their own `.horizon/`.
   "revision": 7,
   "gaps": [
     {
-      "id": "g_3f9a2c1b",
+      "id": "plant-photo-lookup",
       "text": "A person can hand a photo to the app and get the plant named.",
       "added_at": "2026-09-08T15:04:11Z",
       "provenance": {
@@ -49,7 +48,8 @@ repo-root store unless they carry their own `.horizon/`.
         "origin": "agent-proposed"
       }
     }
-  ]
+  ],
+  "closed_ids": ["rental-compare"]
 }
 ```
 
@@ -58,7 +58,13 @@ repo-root store unless they carry their own `.horizon/`.
 - `revision` — monotonic integer, incremented on **every** successful write.
   A counter, not a compare-and-swap token (§4).
 - `gaps` — **open gaps only**, ordered by `added_at` ascending (insertion
-  order). Never more than 5. A closed gap is *removed* from this array.
+  order). Never more than 5. A closed gap is *removed* from this array. Every
+  `id` must match the slug grammar (§3.2); a store carrying an id that does
+  not — including the abandoned `g_<8 hex>` shape — is malformed (exit 7).
+- `closed_ids` — every id ever closed, in close order; `add` rejects a reuse
+  (§3.2). **Missing reads as empty** (stores written before the field existed
+  stay valid) and is **written on the next save**. Present but not an array of
+  valid ids is malformed (exit 7).
 - `about` — **optional** top-level string: the one human-authored line saying
   what this project *is*, distinct from the gaps, which say where the work is
   heading (§10.4). Absent = unset; present but not a string is malformed
@@ -73,7 +79,7 @@ repo-root store unless they carry their own `.horizon/`.
 One object per line, appended, never rewritten:
 
 ```json
-{"ts":"2026-09-08T16:20:03Z","harness":"hermes","session_id":"20260908_152139_780660","summary":"Settled the store format and wrote the CLI contract.","gaps_added":["g_3f9a2c1b"],"gaps_closed":["g_77c1e004"]}
+{"ts":"2026-09-08T16:20:03Z","harness":"hermes","session_id":"20260908_152139_780660","summary":"Settled the store format and wrote the CLI contract.","gaps_added":["plant-photo-lookup"],"gaps_closed":["rental-compare"]}
 ```
 
 - `summary` — **nullable**. `null` is valid and normal: at least one harness
@@ -111,8 +117,8 @@ need zero parsing.
 Human form (no `--json`), gaps in insertion order:
 
 ```
-g_3f9a2c1b  A person can hand a photo to the app and get the plant named.
-g_77c1e004  Rentals can be compared across sites without re-entering filters.
+plant-photo-lookup  A person can hand a photo to the app and get the plant named.
+rental-compare  Rentals can be compared across sites without re-entering filters.
 ```
 
 - Exactly one line per gap: id, two spaces, text.
@@ -135,33 +141,49 @@ g_77c1e004  Rentals can be compared across sites without re-entering filters.
 - No store at all → prints nothing, exit **0**. A project without a horizon is
   the normal case and must stay silent and cheap (HL-03 r1/r2).
 
-### 3.2 `horizon add "<text>"`
+### 3.2 `horizon add <id> "<text>"`
 
-Appends a gap. Mints an id, increments `revision`, writes atomically.
+Appends a gap under the caller-supplied id, increments `revision`, writes
+atomically. **The id is not minted**: the caller names the gap, positionally
+first, so a text starting with dashes is still text.
 
+The id is a slug: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, 3–40 chars — lowercase
+letters and digits, hyphen-separated, starting with a letter. Example:
+`plant-photo-lookup`. There is **no compatibility** with the abandoned
+`g_<8 hex>` shape: it fails the grammar everywhere.
+
+- Missing id or missing text → exit 2.
+- Id off the grammar (uppercase, leading/trailing hyphen, too short, too long,
+  or the old `g_<hex>` shape) → exit 2, stating the id.
 - Rejects text over 512 code points (§5, exit 3).
 - Rejects text containing `\n` or `\r` (exit 3).
 - Rejects empty or whitespace-only text (exit 3).
 - Rejects when 5 gaps are already open (exit 4) — a **hard reject**, naming the
   open gaps so the caller can choose one to close.
+- Rejects a duplicate id (exit 8): an id that is already an open gap, or one
+  that appears in `closed_ids`. Ids are **never reused** for the life of the
+  project — a name always means the same gap.
 - Creates `.horizon/` in `--cwd` if no store exists anywhere up the tree, and
   says so on stderr.
 
-Prints the new id on stdout: `g_3f9a2c1b`.
+Prints the id on stdout: `plant-photo-lookup`.
 
 ### 3.3 `horizon close <id>`
 
-Removes the gap from `gaps.json`, increments `revision`, records the close for
-the session record (§3.6).
+Removes the gap from `gaps.json`, appends the id to `closed_ids` in the same
+write — retiring it from any future `add` — increments `revision`, records the
+close for the session record (§3.6).
 
+- Id off the grammar → exit 5, named as invalid.
 - Unknown or already-closed id → exit 5.
 - Prints nothing on success (exit 0).
 
 ### 3.4 `horizon amend <id> "<text>"`
 
-Rewrites a gap's text in place. Same validation as `add`. The id is unchanged,
-so history stays valid (HL-04). Any *open* gap may be amended.
+Rewrites a gap's text in place. Same text validation as `add`. The id is
+unchanged, so history stays valid (HL-04). Any *open* gap may be amended.
 
+- Id off the grammar → exit 5, named as invalid.
 - Unknown id → exit 5.
 - Text failures → exit 3.
 
@@ -286,12 +308,13 @@ read honestly afterward.
 | Code | Meaning | stderr |
 |---|---|---|
 | 0 | Success (including "no gaps" and "no store") | — |
-| 2 | Usage error — unknown command, missing required flag | usage line |
+| 2 | Usage error — unknown command, missing required flag or argument, id off the slug grammar on `add` | usage line |
 | 3 | Text rejected — over cap, contains a newline, or empty | states the actual count or the offending character |
 | 4 | Cap reached — 5 gaps already open | lists the open gaps with ids |
-| 5 | Unknown gap id | states the id |
+| 5 | Unknown or invalid gap id (`close`/`amend`) | states the id |
 | 6 | Write failed after retries — the OS held the store file open | names the file and the errno |
-| 7 | Store unreadable or malformed JSON | names the file and the parse error |
+| 7 | Store unreadable or malformed JSON — including gap ids or `closed_ids` entries off the slug grammar | names the file and the parse error |
+| 8 | Duplicate id on `add` — already an open gap, or closed before (ids are never reused) | states the id |
 
 **0 for an absent store is deliberate.** `horizon show` runs at the start of
 every session on every project, and most projects have no horizon. A non-zero
@@ -336,13 +359,26 @@ The list a TDD implementation turns red first.
 11. Empty and whitespace-only text are rejected, exit 3.
 12. The 6th add is rejected with exit 4, and the store still has exactly 5.
 13. A rejected add does not increment `revision`.
-14. Two adds mint different ids; ids match `^g_[0-9a-f]{8}$`.
+14. `add` prints the caller-supplied id; ids match
+    `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, 3–40 chars.
+14a. Missing id or missing text → exit 2.
+14b. An id off the grammar (uppercase, leading/trailing hyphen, too short, too
+     long, or the old `g_<hex>` shape) is rejected, exit 2, stating the id;
+     the shortest (3 chars), longest (40 chars), and digit-bearing ids pass.
+14c. Adding an id that is already an open gap: exit 8, store and revision
+     unchanged.
+14d. Adding an id that appears in `closed_ids`: exit 8 — ids are never reused.
+14e. `close` appends the id to `closed_ids`; a store without the field reads
+     as empty and gains it on the next whole-file save.
+14f. A store whose gap ids (or `closed_ids` entries) do not match the grammar
+     is malformed: exit 7, same family as other malformed stores.
 15. `add` in a directory with no store creates one and says so.
 
 **close / amend**
 16. `close` removes the gap from `gaps.json` and frees a slot: after closing
     one of 5, an add succeeds.
 17. `close` on an unknown id: exit 5, store unchanged.
+17b. `close` or `amend` with an id off the grammar: exit 5, named as invalid.
 18. `close` twice on the same id: the second is exit 5.
 19. `amend` changes text but not the id or `added_at`.
 20. `amend` past the cap is rejected, exit 3, text unchanged on disk.
