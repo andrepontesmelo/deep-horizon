@@ -1266,6 +1266,22 @@ test("83. the ZCode stop-steer hook fires once per session: decision-block steer
     } finally {
       rmSync(tmp3, { recursive: true, force: true });
     }
+    // A storeless working directory: silent, no marker — storeless
+    // `horizon session-end` exits 0 without writing, so steering there
+    // would spend the user's yes on a no-op.
+    const tmp4 = freshDir();
+    try {
+      const r5 = runHook(hook, {
+        input: JSON.stringify({ hookEventName: "Stop", session_id: "sess_nowhere", cwd: tmp4 }),
+        cwd: tmp4,
+        env: { TMPDIR: tmp4 },
+      });
+      assert.equal(r5.code, 0);
+      assert.equal(r5.stdout, "", "a storeless dir must not be steered");
+      assert.equal(readdirSync(tmp4).length, 0, "a storeless dir must not write a marker");
+    } finally {
+      rmSync(tmp4, { recursive: true, force: true });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });

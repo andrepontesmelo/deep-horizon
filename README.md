@@ -363,7 +363,10 @@ the agent is told to ask the user, then run
 horizon session-end --harness zcode --session <id> [--summary "<text>"]
 ```
 
-The steer is held to once per session by two guards: a record for the
+The steer fires only where a horizon store exists somewhere above the
+working directory — storeless, `horizon session-end` exits 0 without
+writing, and a steer there would spend the user's yes on a no-op. It is
+held to once per session by two guards: a record for the
 session id already in `.horizon/sessions.jsonl` (the store found by
 walking up from the working directory, like the CLI), or a marker file
 `$TMPDIR/horizon-zcode-steer-<id>`, written before steering. Omitting
