@@ -1445,3 +1445,250 @@ test("about-7. non-string about in gaps.json: exit 7 naming the file, store unto
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- per-gap details (optional extended context, HL gap-details) ---
+
+test("detail-1. add --detail stores details; human show is unchanged; show --json carries the field", async () => {
+  const dir = freshDir();
+  try {
+    const a = await run(["add", "One-line want", "--detail", "Origin: the user's complaint about X.\nWhy: it costs an hour a week.", "--cwd", dir]);
+    assert.equal(a.code, 0, `stderr: ${a.stderr}`);
+    const id = a.stdout.trim();
+    // Human show output unchanged: exactly one `id␣␣text` line per gap, no details.
+    const s = await run(["show", "--cwd", dir]);
+    assert.equal(s.code, 0);
+    assert.equal(s.stdout, `${id}  One-line want\n`);
+    // --json gains the details field (present when set).
+    const j = await run(["show", "--cwd", dir, "--json"]);
+    assert.equal(j.code, 0);
+    const parsed = JSON.parse(j.stdout);
+    assert.equal(parsed[0].details, "Origin: the user's complaint about X.\nWhy: it costs an hour a week.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-2. a plain add writes no details field; show --json omits it", async () => {
+  const dir = freshDir();
+  try {
+    await run(["add", "No details here", "--cwd", dir]);
+    const gap = JSON.parse((await run(["show", "--cwd", dir, "--json"])).stdout)[0];
+    assert.ok(!("details" in gap), "unset details must be absent, not null");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-3. detail <id> prints the stored details verbatim, multi-line included", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Want", "--detail", "line one\nline two", "--cwd", dir])).stdout.trim();
+    const r = await run(["detail", id, "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.equal(r.stdout, "line one\nline two\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-4. detail <id> with no stored details prints the explicit no-details message, exit 0 — never silence", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Bare gap", "--cwd", dir])).stdout.trim();
+    const r = await run(["detail", id, "--cwd", dir]);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /^no details for g_[0-9a-f]{8}\n$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-5. detail <id> \"<text>\" sets and rewrites; each write bumps revision; title and id untouched", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Want", "--cwd", dir])).stdout.trim();
+    const r1 = await run(["detail", id, "First context", "--cwd", dir]);
+    assert.equal(r1.code, 0, `stderr: ${r1.stderr}`);
+    assert.equal(readGaps(dir).gaps[0].details, "First context");
+    const rev1 = readGaps(dir).revision;
+    const r2 = await run(["detail", id, "Second context", "--cwd", dir]);
+    assert.equal(r2.code, 0, `stderr: ${r2.stderr}`);
+    const state = readGaps(dir);
+    assert.equal(state.gaps[0].details, "Second context");
+    assert.equal(state.revision, rev1 + 1);
+    assert.equal(state.gaps[0].text, "Want");
+    assert.equal(state.gaps[0].id, id);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-6. detail <id> --clear removes the field entirely, bumps revision, preserves the title", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Want", "--detail", "Context", "--cwd", dir])).stdout.trim();
+    const before = readGaps(dir).revision;
+    const r = await run(["detail", id, "--clear", "--cwd", dir]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const state = readGaps(dir);
+    assert.ok(!("details" in state.gaps[0]), "details must be absent, not null");
+    assert.equal(state.gaps[0].text, "Want");
+    assert.equal(state.revision, before + 1);
+    // Print mode now reports no details.
+    const p = await run(["detail", id, "--cwd", dir]);
+    assert.equal(p.code, 0);
+    assert.match(p.stdout, /no details/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-7. caps and code points: 2048 accepted (astral emoji counted as code points); 2049 rejected with the count; empty and blank rejected; multi-line allowed", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Want", "--cwd", dir])).stdout.trim();
+    const over = await run(["detail", id, "x".repeat(2049), "--cwd", dir]);
+    assert.equal(over.code, 3);
+    assert.match(over.stderr, /gap details are 2049 code points; the limit is 2048\. Not saved\./);
+    assert.ok(!("details" in readGaps(dir).gaps[0]), "a rejected write must not create the field");
+    assert.equal((await run(["detail", id, "x".repeat(2048), "--cwd", dir])).code, 0);
+    assert.equal((await run(["detail", id, "🐟".repeat(2048), "--cwd", dir])).code, 0, `astral code points miscounted: stderr`);
+    const emojiOver = await run(["detail", id, "🐟".repeat(2049), "--cwd", dir]);
+    assert.equal(emojiOver.code, 3);
+    assert.match(emojiOver.stderr, /2049/);
+    const nl = await run(["detail", id, "a\nb", "--cwd", dir]);
+    assert.equal(nl.code, 0, "multi-line details must be allowed");
+    assert.equal((await run(["detail", id, "", "--cwd", dir])).code, 3);
+    assert.equal((await run(["detail", id, "   ", "--cwd", dir])).code, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-8. unknown id: exit 5 (no store, store without the id, set and print modes); usage errors: exit 2", async () => {
+  const dir = freshDir();
+  try {
+    // No store anywhere: the id cannot exist, same exit as close/amend.
+    assert.equal((await run(["detail", "g_deadbeef", "--cwd", dir])).code, 5);
+    await run(["init", "--cwd", dir]);
+    const bad = await run(["detail", "g_deadbeef", "--cwd", dir]);
+    assert.equal(bad.code, 5);
+    assert.match(bad.stderr, /g_deadbeef/);
+    assert.equal((await run(["detail", "--cwd", dir])).code, 2);
+    await run(["add", "Want", "--detail", "C", "--cwd", dir]);
+    assert.equal((await run(["detail", "g_deadbeef", "text", "--cwd", dir])).code, 5);
+    const id = readGaps(dir).gaps[0].id;
+    assert.equal((await run(["detail", id, "text", "--clear", "--cwd", dir])).code, 2);
+    assert.equal((await run(["detail", id, "one", "two", "--cwd", dir])).code, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-9. add --detail validation: over-cap details reject the whole add (exit 3, no gap created); empty details reject; a bad title still wins", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const over = await run(["add", "Want", "--detail", "x".repeat(2049), "--cwd", dir]);
+    assert.equal(over.code, 3);
+    assert.match(over.stderr, /2049/);
+    assert.equal(readGaps(dir).gaps.length, 0, "no gap may be created");
+    assert.equal((await run(["add", "Want", "--detail", "", "--cwd", dir])).code, 3);
+    assert.equal(readGaps(dir).gaps.length, 0);
+    assert.equal((await run(["add", "", "--detail", "fine", "--cwd", dir])).code, 3);
+    const ok = await run(["add", "Want", "--detail", "fine", "--cwd", dir]);
+    assert.equal(ok.code, 0, `stderr: ${ok.stderr}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-10. amend stays title-only: details survive amend; amend takes no details argument", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Original", "--detail", "Keep me", "--cwd", dir])).stdout.trim();
+    const m = await run(["amend", id, "Reworded", "--cwd", dir]);
+    assert.equal(m.code, 0);
+    const gap = readGaps(dir).gaps[0];
+    assert.equal(gap.text, "Reworded");
+    assert.equal(gap.details, "Keep me");
+    // Three positionals is still a usage error: amend has no details form.
+    assert.equal((await run(["amend", id, "Reworded", "extra", "--cwd", dir])).code, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-11. details survive whole-file rewrites (close of another gap, about set)", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const a = (await run(["add", "First", "--detail", "First context", "--cwd", dir])).stdout.trim();
+    const b = (await run(["add", "Second", "--cwd", dir])).stdout.trim();
+    await run(["close", b, "--cwd", dir]);
+    await run(["about", "About line", "--cwd", dir]);
+    const state = readGaps(dir);
+    assert.equal(state.gaps.length, 1);
+    assert.equal(state.gaps[0].id, a);
+    assert.equal(state.gaps[0].details, "First context");
+    assert.equal(state.about, "About line");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-12. non-string details in gaps.json: exit 7 naming the file, store untouched", async () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, ".horizon"), { recursive: true });
+    const raw = '{"version":1,"revision":1,"gaps":[{"id":"g_00000001","text":"T","details":42,"added_at":"2026-09-08T15:00:11Z","provenance":{}}]}';
+    writeFileSync(join(dir, ".horizon", "gaps.json"), raw + "\n");
+    const r = await run(["show", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /gaps\.json/);
+    assert.match(r.stderr, /details is not a string/);
+    assert.equal(readFileSync(join(dir, ".horizon", "gaps.json"), "utf8"), raw + "\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-13. a rejected detail write does not bump revision", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Want", "--detail", "C", "--cwd", dir])).stdout.trim();
+    const before = readGaps(dir).revision;
+    assert.equal((await run(["detail", id, "x".repeat(2049), "--cwd", dir])).code, 3);
+    assert.equal(readGaps(dir).revision, before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-14. detail changes log nothing (amend's treatment): no sessions.jsonl or closes.jsonl entries", async () => {
+  const dir = freshDir();
+  try {
+    await run(["init", "--cwd", dir]);
+    const id = (await run(["add", "Want", "--cwd", dir])).stdout.trim();
+    await run(["detail", id, "C", "--cwd", dir]);
+    await run(["detail", id, "--clear", "--cwd", dir]);
+    const { existsSync } = await import("node:fs");
+    assert.ok(!existsSync(join(dir, ".horizon", "sessions.jsonl")), "detail writes must not append session records");
+    assert.ok(!existsSync(join(dir, ".horizon", "closes.jsonl")), "detail writes must not append close records");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detail-15. help lists the detail verb", async () => {
+  const r = await run(["--help"]);
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /detail <id>/);
+});

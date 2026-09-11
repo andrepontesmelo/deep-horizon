@@ -2,4 +2,4 @@
 // and the render function, plus what the bins share. Adapters import from
 // here in tests; composition itself is single-sourced in horizon-inject.
 export { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT, horizonBlock, aboutPrefix } from "./texts.ts";
-export { STORE_VERSION, MAX_GAPS, MAX_TEXT_POINTS } from "./store.ts";
+export { STORE_VERSION, MAX_GAPS, MAX_TEXT_POINTS, MAX_DETAIL_POINTS } from "./store.ts";

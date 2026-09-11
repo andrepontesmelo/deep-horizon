@@ -5,6 +5,9 @@ import { dirname, join, resolve } from "node:path";
 export const STORE_VERSION = 1;
 export const MAX_GAPS = 5;
 export const MAX_TEXT_POINTS = 512;
+// Per-gap details (optional extended context): multi-line allowed, so the only
+// shape rule is the cap. Rejected at write time, never truncated.
+export const MAX_DETAIL_POINTS = 2048;
 export const HORIZON_DIR = ".horizon";
 export const GAPS_FILE = "gaps.json";
 export const SESSIONS_FILE = "sessions.jsonl";
@@ -12,7 +15,7 @@ export const CLOSES_FILE = "closes.jsonl";
 export const GITIGNORE_BODY = "sessions.jsonl\n*.tmp.*\n";
 
 export function usage() {
-  return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|log|session-end|init> [...]";
+  return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init> [...]";
 }
 
 export function codePoints(s) {
@@ -201,6 +204,13 @@ export function readGapsFile(storeDir) {
     }
     if (!validId(g.id)) {
       return { ok: false, code: 7, message: `horizon: ${path}: invalid store: gaps[${i}] has an invalid gap id: ${JSON.stringify(g.id)}` };
+    }
+    // `details` (optional extended context behind the one line) is optional:
+    // absent = unset. Present, it must be a string — the same malformed-store
+    // exit as the checks above, never a silent drop. The 2048 cap is a write-
+    // time rejection (exit 3), not a read-time one, like every text cap here.
+    if (g.details !== undefined && typeof g.details !== "string") {
+      return { ok: false, code: 7, message: `horizon: ${path}: invalid store: gaps[${i}].details is not a string` };
     }
   }
   return { ok: true, data };
