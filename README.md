@@ -363,19 +363,31 @@ receives the horizon like any other session — noise, not harm. Every
 hook fails open: a missing bin, a missing `jq`, or any error injects
 nothing and never blocks the session.
 
-Session end: ZCode has no close hook, so nothing writes the record
-automatically. A session is closed by hand:
+Session end: ZCode has no close hook — `Stop` fires at the end of every
+assistant turn — so the duty rides the startup injection itself. When a
+store exists and the payload carries a session id, the hook appends a
+zcode-only tail to the composed block telling the agent that, when the
+user is wrapping up the session, it should offer
 
 ```
 horizon session-end --harness zcode --session <id>
 ```
+
+with a one-line `--summary` of what the session did if the user gives
+one, none if they don't — the record then carries `summary: null`; a
+summary is never invented. If the user declines, the agent lets it go.
+The tail rides only when a store exists somewhere above the working
+directory (a storeless composition is empty and injects nothing) and
+only when the payload carries a session id: without the id the agent
+cannot name the record, and a placeholder id would write a wrong one.
 
 Known limitations, stated bluntly: no param trigger — ZCode's
 `PreToolUse` hook sees tool arguments and could carry a mid-session
 injection, but its stdout-to-context path is unproven, so the adapter
 ships without one (like Claude Code). And no true close hook: a session
 interrupted with SIGINT/SIGTERM — or a terminal closed — writes no
-record, because nothing fires at process exit.
+record, because the duty lives in a once-per-session startup injection
+and nothing fires at process exit.
 
 ## Manual use, no global install
 

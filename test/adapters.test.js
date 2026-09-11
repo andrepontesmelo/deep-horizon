@@ -1238,6 +1238,57 @@ test("82. the ZCode session-start hook fails open: malformed stdin, empty stdin,
   }, "horizon-adapter-test-");
 });
 
+test("83. the ZCode session-start hook carries the session-end duty: a session id in the payload appends the close tail, its absence injects the horizon alone", async () => {
+  // ZCode has no close hook (the retired stop-steer probe: Stop fires at the
+  // end of every assistant turn), so the close duty rides the once-per-session
+  // startup injection as adapter glue — the composer stays harness-agnostic.
+  // The tail names the record the agent is to close, so it needs the payload's
+  // real session id; without one, a placeholder id would write a wrong record.
+  await withDir(async (dir) => {
+    seed(dir, ["ZCode close gap"]);
+    const sid = "sess_close1";
+    const r = runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(dir, { sessionId: sid, session_id: sid }),
+      cwd: dir,
+    });
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(parsed).sort(), ["additionalContext"],
+      "the envelope still carries exactly additionalContext — the harness schema rejects extra keys");
+    assert.ok(parsed.additionalContext.startsWith("This project has a horizon"),
+      "the horizon block must still lead the injection");
+    assert.ok(parsed.additionalContext.includes(`horizon session-end --harness zcode --session ${sid}`),
+      `the tail must name the close command with the real session id, got: ${parsed.additionalContext}`);
+    assert.ok(parsed.additionalContext.includes("--summary"), "the tail must mention the optional summary");
+    assert.ok(parsed.additionalContext.includes("summary: null"), "the tail must pin the no-summary record shape");
+    // Without a session id the horizon injects and the tail does not — the
+    // agent cannot run the command without its id.
+    const bare = runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(dir, { sessionId: null, session_id: null }),
+      cwd: dir,
+    });
+    assert.equal(bare.code, 0);
+    const bareParsed = JSON.parse(bare.stdout);
+    assert.deepEqual(Object.keys(bareParsed).sort(), ["additionalContext"]);
+    assert.ok(bareParsed.additionalContext.startsWith("This project has a horizon"),
+      "the horizon must inject even without a session id");
+    assert.ok(!bareParsed.additionalContext.includes("session-end"),
+      "no session id, no tail");
+    // A storeless dir that is $HOME: no output at all (os.homedir honours
+    // $HOME on POSIX, pinned by inject's home-suppress-2) — the tail cannot
+    // appear without the horizon text, and the empty-text check gates both.
+    await withDir(async (storeless) => {
+      const none = runHook(join(ZCODE_DIR, "session-start"), {
+        input: sessionStartPayload(storeless, { sessionId: sid, session_id: sid }),
+        cwd: storeless,
+        env: { HOME: storeless },
+      });
+      assert.equal(none.code, 0);
+      assert.equal(none.stdout, "", "a storeless dir must inject nothing, tail included");
+    }, "horizon-adapter-test-");
+  }, "horizon-adapter-test-");
+});
+
 test("84. the ZCode adapter ships its config and scripts: .zcode/config.json wires hooks.enabled true to the packaged, executable scripts", () => {
   const configPath = join(ROOT, ".zcode", "config.json");
   assert.ok(existsSync(configPath), "the project-local .zcode/config.json must be checked in");
