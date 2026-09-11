@@ -110,7 +110,7 @@ test("home-suppress-2. end-to-end: the bin silences a storeless $HOME (exit 0, e
   }
 });
 
-test("37. inject has a --json mode: {\"text\":<string>} on stdout, nothing else", async () => {
+test("37. inject has a --json mode: {\"text\",\"store\"} on stdout, nothing else", async () => {
   const dir = freshDir();
   try {
     seed(dir, ["Only one gap"]);
@@ -120,8 +120,37 @@ test("37. inject has a --json mode: {\"text\":<string>} on stdout, nothing else"
     assert.equal(typeof parsed.text, "string");
     assert.ok(parsed.text.startsWith("This project has a horizon"));
     assert.ok(parsed.text.includes("gap-1  Only one gap"));
-    assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text }));
+    // The total answer: the resolved store dir rides along with the text.
+    assert.equal(parsed.store, join(dir, ".horizon"));
+    assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text, store: join(dir, ".horizon") }));
     assert.ok(!r.stderr, "stderr must stay empty on success");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The storeless twin of 37: no store anywhere above the cwd, so store is
+// null — the nudge text still composes (the storeless-nudge case), and the
+// home-silence case is the total answer {"",""} twin: empty text, null store.
+test("inject-json-storeless. --json answers store:null when no store resolves; plain stdout stays byte-identical", async () => {
+  const dir = freshDir();
+  try {
+    const j = await run(["--cwd", dir, "--json"]);
+    assert.equal(j.code, 0);
+    const parsed = JSON.parse(j.stdout);
+    assert.equal(parsed.store, null, "a storeless cwd must answer store:null");
+    assert.ok(parsed.text.startsWith("This project has no horizon yet"), "the storeless nudge still composes");
+    assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text, store: null }));
+    // Plain mode: the same text, no JSON wrapper (the non-json contract).
+    const plain = await run(["--cwd", dir]);
+    assert.equal(plain.code, 0);
+    assert.equal(plain.stdout, parsed.text);
+    // Home silence: empty text, null store — nothing to hand back. (os.homedir()
+    // honours $HOME on POSIX; the mechanism is pinned by home-suppress-2.)
+    const env = { ...process.env, HOME: dir };
+    const silent = await run(["--cwd", dir, "--json"], { env });
+    assert.equal(silent.code, 0);
+    assert.deepEqual(JSON.parse(silent.stdout), { text: "", store: null });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

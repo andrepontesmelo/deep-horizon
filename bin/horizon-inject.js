@@ -7,8 +7,12 @@
 //
 // Flags mirror the CLI's global options so harness glue can forward them
 // (--cwd, --harness, --session, --origin); only --cwd changes behaviour.
-// --json swaps the composed text for {"text": <string>} for programmatic
-// callers. Unknown flags are a usage error (exit 2).
+// --json is the total answer for a cwd: {"text": <string>, "store":
+// <string|null>} — the composed text plus the store directory resolution
+// already paid for, null when no store was found (the silence and
+// storeless-nudge cases). Plain stdout stays text-only: empty output means
+// silent, the contract the non-json callers rely on. Unknown flags are a
+// usage error (exit 2).
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolveStore, readGapsFile, suppressBootstrap } from "../dist/store.js";
@@ -56,6 +60,9 @@ function main() {
         "Prints the about line (when set) and a blank line, then the section-10 horizon\n" +
         "block when the store has open gaps; with no gaps, the warm nudge when an about\n" +
         "line is set, the bootstrap nudge when neither is.\n" +
+        "--json prints one JSON line instead: {\"text\": <string>, \"store\": <string|null>}\n" +
+        "— the composed text plus the resolved store directory (null when no store was\n" +
+        "found). Plain stdout stays text-only; empty output means silent.\n" +
         "Read-only: never writes the store. The composition twin of `horizon show` (spec D6).\n",
     );
     return;
@@ -72,12 +79,16 @@ function main() {
   const cwd = parsed.opts?.cwd;
   const json = !!parsed.opts?.json;
   let text;
+  let store = null;
   let exitCode = 0;
   try {
     // readonly (D6): pure composition — resolve+read, never write. The tmp
     // sweep and store materialization stay CLI-only side effects.
     const dir = cwd ?? process.cwd();
     const found = resolveStore(dir, { readonly: true });
+    // The resolution rides along in --json: adapters hand it back to
+    // session-end --store instead of re-walking for themselves.
+    store = found ? found.dir : null;
     // A storeless $HOME is not a project: emit nothing (exit 0, empty stdout —
     // the adapters treat empty stdout as a silent no-op).
     const homeSilence = suppressBootstrap({ cwd: dir, storeFound: !!found, home: homedir() });
@@ -129,7 +140,7 @@ function main() {
     return;
   }
   if (json) {
-    process.stdout.write(JSON.stringify({ text }) + "\n");
+    process.stdout.write(JSON.stringify({ text, store }) + "\n");
   } else {
     process.stdout.write(text);
   }
