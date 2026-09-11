@@ -1451,7 +1451,7 @@ test("about-7. non-string about in gaps.json: exit 7 naming the file, store unto
 test("detail-1. add --detail stores details; human show is unchanged; show --json carries the field", async () => {
   const dir = freshDir();
   try {
-    const a = await run(["add", "One-line want", "--detail", "Origin: the user's complaint about X.\nWhy: it costs an hour a week.", "--cwd", dir]);
+    const a = await run(["add", "one-line-want", "One-line want", "--detail", "Origin: the user's complaint about X.\nWhy: it costs an hour a week.", "--cwd", dir]);
     assert.equal(a.code, 0, `stderr: ${a.stderr}`);
     const id = a.stdout.trim();
     // Human show output unchanged: exactly one `id␣␣text` line per gap, no details.
@@ -1471,7 +1471,7 @@ test("detail-1. add --detail stores details; human show is unchanged; show --jso
 test("detail-2. a plain add writes no details field; show --json omits it", async () => {
   const dir = freshDir();
   try {
-    await run(["add", "No details here", "--cwd", dir]);
+    await run(["add", "no-details", "No details here", "--cwd", dir]);
     const gap = JSON.parse((await run(["show", "--cwd", dir, "--json"])).stdout)[0];
     assert.ok(!("details" in gap), "unset details must be absent, not null");
   } finally {
@@ -1483,7 +1483,7 @@ test("detail-3. detail <id> prints the stored details verbatim, multi-line inclu
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Want", "--detail", "line one\nline two", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "want", "Want", "--detail", "line one\nline two", "--cwd", dir])).stdout.trim();
     const r = await run(["detail", id, "--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     assert.equal(r.stdout, "line one\nline two\n");
@@ -1496,10 +1496,10 @@ test("detail-4. detail <id> with no stored details prints the explicit no-detail
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Bare gap", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "bare-gap", "Bare gap", "--cwd", dir])).stdout.trim();
     const r = await run(["detail", id, "--cwd", dir]);
     assert.equal(r.code, 0);
-    assert.match(r.stdout, /^no details for g_[0-9a-f]{8}\n$/);
+    assert.match(r.stdout, /^no details for bare-gap\n$/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1509,7 +1509,7 @@ test("detail-5. detail <id> \"<text>\" sets and rewrites; each write bumps revis
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Want", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "want", "Want", "--cwd", dir])).stdout.trim();
     const r1 = await run(["detail", id, "First context", "--cwd", dir]);
     assert.equal(r1.code, 0, `stderr: ${r1.stderr}`);
     assert.equal(readGaps(dir).gaps[0].details, "First context");
@@ -1530,7 +1530,7 @@ test("detail-6. detail <id> --clear removes the field entirely, bumps revision, 
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Want", "--detail", "Context", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "want", "Want", "--detail", "Context", "--cwd", dir])).stdout.trim();
     const before = readGaps(dir).revision;
     const r = await run(["detail", id, "--clear", "--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
@@ -1551,7 +1551,7 @@ test("detail-7. caps and code points: 2048 accepted (astral emoji counted as cod
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Want", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "want", "Want", "--cwd", dir])).stdout.trim();
     const over = await run(["detail", id, "x".repeat(2049), "--cwd", dir]);
     assert.equal(over.code, 3);
     assert.match(over.stderr, /gap details are 2049 code points; the limit is 2048\. Not saved\./);
@@ -1570,18 +1570,27 @@ test("detail-7. caps and code points: 2048 accepted (astral emoji counted as cod
   }
 });
 
-test("detail-8. unknown id: exit 5 (no store, store without the id, set and print modes); usage errors: exit 2", async () => {
+test("detail-8. unknown id: exit 5 (no store, store without the id, set and print modes); invalid id: exit 5, named as invalid; usage errors: exit 2", async () => {
   const dir = freshDir();
   try {
     // No store anywhere: the id cannot exist, same exit as close/amend.
-    assert.equal((await run(["detail", "g_deadbeef", "--cwd", dir])).code, 5);
+    assert.equal((await run(["detail", "no-such-gap", "--cwd", dir])).code, 5);
     await run(["init", "--cwd", dir]);
-    const bad = await run(["detail", "g_deadbeef", "--cwd", dir]);
+    const bad = await run(["detail", "no-such-gap", "--cwd", dir]);
     assert.equal(bad.code, 5);
-    assert.match(bad.stderr, /g_deadbeef/);
+    assert.match(bad.stderr, /no-such-gap/);
+    // An id off the slug grammar is named as invalid — the same split
+    // close/amend apply (acceptance 17b, D7).
+    const invalid = await run(["detail", "g_deadbeef", "--cwd", dir]);
+    assert.equal(invalid.code, 5);
+    assert.match(invalid.stderr, /invalid gap id/);
+    assert.match(invalid.stderr, /g_deadbeef/);
     assert.equal((await run(["detail", "--cwd", dir])).code, 2);
-    await run(["add", "Want", "--detail", "C", "--cwd", dir]);
-    assert.equal((await run(["detail", "g_deadbeef", "text", "--cwd", dir])).code, 5);
+    await run(["add", "want", "Want", "--detail", "C", "--cwd", dir]);
+    assert.equal((await run(["detail", "no-such-gap", "text", "--cwd", dir])).code, 5);
+    const invalidSet = await run(["detail", "g_deadbeef", "text", "--cwd", dir]);
+    assert.equal(invalidSet.code, 5);
+    assert.match(invalidSet.stderr, /invalid gap id/);
     const id = readGaps(dir).gaps[0].id;
     assert.equal((await run(["detail", id, "text", "--clear", "--cwd", dir])).code, 2);
     assert.equal((await run(["detail", id, "one", "two", "--cwd", dir])).code, 2);
@@ -1594,14 +1603,14 @@ test("detail-9. add --detail validation: over-cap details reject the whole add (
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const over = await run(["add", "Want", "--detail", "x".repeat(2049), "--cwd", dir]);
+    const over = await run(["add", "want", "Want", "--detail", "x".repeat(2049), "--cwd", dir]);
     assert.equal(over.code, 3);
     assert.match(over.stderr, /2049/);
     assert.equal(readGaps(dir).gaps.length, 0, "no gap may be created");
-    assert.equal((await run(["add", "Want", "--detail", "", "--cwd", dir])).code, 3);
+    assert.equal((await run(["add", "want", "Want", "--detail", "", "--cwd", dir])).code, 3);
     assert.equal(readGaps(dir).gaps.length, 0);
-    assert.equal((await run(["add", "", "--detail", "fine", "--cwd", dir])).code, 3);
-    const ok = await run(["add", "Want", "--detail", "fine", "--cwd", dir]);
+    assert.equal((await run(["add", "want", "", "--detail", "fine", "--cwd", dir])).code, 3);
+    const ok = await run(["add", "want", "Want", "--detail", "fine", "--cwd", dir]);
     assert.equal(ok.code, 0, `stderr: ${ok.stderr}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1612,7 +1621,7 @@ test("detail-10. amend stays title-only: details survive amend; amend takes no d
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Original", "--detail", "Keep me", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "original", "Original", "--detail", "Keep me", "--cwd", dir])).stdout.trim();
     const m = await run(["amend", id, "Reworded", "--cwd", dir]);
     assert.equal(m.code, 0);
     const gap = readGaps(dir).gaps[0];
@@ -1629,8 +1638,8 @@ test("detail-11. details survive whole-file rewrites (close of another gap, abou
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const a = (await run(["add", "First", "--detail", "First context", "--cwd", dir])).stdout.trim();
-    const b = (await run(["add", "Second", "--cwd", dir])).stdout.trim();
+    const a = (await run(["add", "first", "First", "--detail", "First context", "--cwd", dir])).stdout.trim();
+    const b = (await run(["add", "second", "Second", "--cwd", dir])).stdout.trim();
     await run(["close", b, "--cwd", dir]);
     await run(["about", "About line", "--cwd", dir]);
     const state = readGaps(dir);
@@ -1647,7 +1656,7 @@ test("detail-12. non-string details in gaps.json: exit 7 naming the file, store 
   const dir = freshDir();
   try {
     mkdirSync(join(dir, ".horizon"), { recursive: true });
-    const raw = '{"version":1,"revision":1,"gaps":[{"id":"g_00000001","text":"T","details":42,"added_at":"2026-09-08T15:00:11Z","provenance":{}}]}';
+    const raw = '{"version":1,"revision":1,"gaps":[{"id":"gap-1","text":"T","details":42,"added_at":"2026-09-08T15:00:11Z","provenance":{}}]}';
     writeFileSync(join(dir, ".horizon", "gaps.json"), raw + "\n");
     const r = await run(["show", "--cwd", dir]);
     assert.equal(r.code, 7);
@@ -1663,7 +1672,7 @@ test("detail-13. a rejected detail write does not bump revision", async () => {
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Want", "--detail", "C", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "want", "Want", "--detail", "C", "--cwd", dir])).stdout.trim();
     const before = readGaps(dir).revision;
     assert.equal((await run(["detail", id, "x".repeat(2049), "--cwd", dir])).code, 3);
     assert.equal(readGaps(dir).revision, before);
@@ -1676,7 +1685,7 @@ test("detail-14. detail changes log nothing (amend's treatment): no sessions.jso
   const dir = freshDir();
   try {
     await run(["init", "--cwd", dir]);
-    const id = (await run(["add", "Want", "--cwd", dir])).stdout.trim();
+    const id = (await run(["add", "want", "Want", "--cwd", dir])).stdout.trim();
     await run(["detail", id, "C", "--cwd", dir]);
     await run(["detail", id, "--clear", "--cwd", dir]);
     const { existsSync } = await import("node:fs");

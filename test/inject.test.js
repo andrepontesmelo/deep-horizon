@@ -561,7 +561,7 @@ test("dsh-param-7. end-to-end: the param trigger composes through the real bins"
     assert.equal(injected.length, 1);
     const text = injected[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
-    assert.ok(text.includes("g_00000001  Param e2e gap"));
+    assert.ok(text.includes("gap-1  Param e2e gap"));
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -930,7 +930,7 @@ test("pointer-2. details content never reaches injected text", async () => {
     writeFileSync(join(store, "gaps.json"), JSON.stringify(state, null, 2) + "\n");
     const r = await run(["--cwd", dir]);
     assert.equal(r.code, 0);
-    assert.ok(r.stdout.includes("g_00000001  Watchful gap"), "the title line must survive");
+    assert.ok(r.stdout.includes("gap-1  Watchful gap"), "the title line must survive");
     assert.ok(!r.stdout.includes("SECRET-DETAIL-CONTEXT"), "details content must never be injected");
   } finally {
     rmSync(dir, { recursive: true, force: true });
