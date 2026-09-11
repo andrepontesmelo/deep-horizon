@@ -1145,11 +1145,21 @@ test("inject-eq-flag. --cwd=<path> composes like the separate-arg form, plain an
     const parsed = JSON.parse(j.stdout);
     assert.equal(parsed.store, join(dir, ".horizon"));
     assert.ok(parsed.text.includes("gap-1  Equals form gap"));
-    // Bool flags reject the = form the way the CLI's parser does; a genuinely
-    // unknown option still names the token and exits 2 with empty stdout.
-    const boolEq = await run([`--cwd=${dir}`, "--json=x"]);
-    assert.equal(boolEq.code, 2);
-    assert.ok(boolEq.stderr.startsWith("horizon-inject: --json takes no value"));
+    // Bool flags reject the = form the way the CLI's parser does — all three
+    // of them, short-circuits included: --help=x is a usage error, never a
+    // help answer — while the bare forms still answer (and test 40 pins the
+    // bare forms' exit 0 through the same bin).
+    for (const flag of ["--json", "--help", "--version"]) {
+      const boolEq = await run([`--cwd=${dir}`, `${flag}=x`]);
+      assert.equal(boolEq.code, 2, `${flag}=x must be a usage error`);
+      assert.ok(boolEq.stderr.startsWith(`horizon-inject: ${flag} takes no value`), `${flag}=x: ${boolEq.stderr}`);
+      assert.equal(boolEq.stdout, "", `${flag}=x must print nothing on stdout`);
+      const bare = await run([flag]);
+      assert.equal(bare.code, 0, `bare ${flag} must still answer`);
+      assert.notEqual(bare.stdout, "", `bare ${flag} must print`);
+    }
+    // A genuinely unknown option still names the token and exits 2 with
+    // empty stdout.
     const bad = await run([`--bogus=${dir}`]);
     assert.equal(bad.code, 2);
     assert.equal(bad.stdout, "");

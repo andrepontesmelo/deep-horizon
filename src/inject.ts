@@ -55,13 +55,15 @@ function parseArgs(argv) {
       process.stderr.write(`horizon-inject: unknown option: ${t}\n`);
       return { error: 2 };
     }
+    // The = rejection outranks the short-circuits: --help=x and --version=x
+    // are usage errors, exactly like --json=x — never a help answer.
+    if (BOOL_FLAGS.has(name) && hasEq) {
+      process.stderr.write(`horizon-inject: ${name} takes no value\n`);
+      return { error: 2 };
+    }
     if (name === "--help") return { help: true };
     if (name === "--version") return { version: true };
     if (BOOL_FLAGS.has(name)) {
-      if (hasEq) {
-        process.stderr.write(`horizon-inject: ${name} takes no value\n`);
-        return { error: 2 };
-      }
       opts[name.slice(2)] = true;
       i += 1;
       continue;
