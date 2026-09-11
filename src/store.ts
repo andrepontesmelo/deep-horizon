@@ -23,12 +23,14 @@ export function utcNow() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-export function mintId() {
-  return `g_${randomBytes(4).toString("hex")}`;
-}
-
+// Gap ids are caller-supplied slugs, not minted tokens: 3–40 chars, lowercase
+// letters and digits, hyphen-separated, starting with a letter. The id is a
+// name the caller chooses on add, and it is never reused — closed_ids retires
+// it for the life of the project. There is no compatibility with the old
+// minted `g_<8 hex>` shape: a store carrying one is malformed (exit 7), and a
+// caller supplying one gets a usage error.
 export function validId(id) {
-  return /^g_[0-9a-f]{8}$/.test(id);
+  return typeof id === "string" && id.length >= 3 && id.length <= 40 && /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(id);
 }
 
 // Sweep stranded temp files left by a SIGKILLed writer: unlink
@@ -178,17 +180,34 @@ export function readGapsFile(storeDir) {
   if (!Array.isArray(data.gaps)) {
     return { ok: false, code: 7, message: `horizon: ${path}: invalid store: gaps is not an array` };
   }
+  // `closed_ids` — every id ever closed, so `add` can reject a reuse forever
+  // (spec 3.2). Missing reads as empty (stores written before the field
+  // existed stay valid) and is written on the next save; present, it must be
+  // an array of valid ids — anything else is the same malformed-store exit as
+  // the checks above.
+  if (data.closed_ids === undefined) data.closed_ids = [];
+  if (!Array.isArray(data.closed_ids)) {
+    return { ok: false, code: 7, message: `horizon: ${path}: invalid store: closed_ids is not an array` };
+  }
+  for (let i = 0; i < data.closed_ids.length; i += 1) {
+    if (!validId(data.closed_ids[i])) {
+      return { ok: false, code: 7, message: `horizon: ${path}: invalid store: closed_ids[${i}] is not a valid gap id` };
+    }
+  }
   for (let i = 0; i < data.gaps.length; i += 1) {
     const g = data.gaps[i];
     if (!isRecord(g) || typeof g.id !== "string" || typeof g.text !== "string") {
       return { ok: false, code: 7, message: `horizon: ${path}: invalid store: gaps[${i}] is not a gap object with id and text` };
+    }
+    if (!validId(g.id)) {
+      return { ok: false, code: 7, message: `horizon: ${path}: invalid store: gaps[${i}] has an invalid gap id: ${JSON.stringify(g.id)}` };
     }
   }
   return { ok: true, data };
 }
 
 export function emptyStore() {
-  return { version: STORE_VERSION, revision: 0, gaps: [] };
+  return { version: STORE_VERSION, revision: 0, gaps: [], closed_ids: [] };
 }
 
 let tmpSeq = 0;

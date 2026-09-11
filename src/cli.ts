@@ -10,13 +10,13 @@ import {
   codePoints,
   ensureStoreDir,
   isRecord,
-  mintId,
   readCloses,
   readGapsFile,
   readSessions,
   resolveStore,
   usage,
   utcNow,
+  validId,
   writeGapsFile,
 } from "./store.ts";
 
@@ -53,7 +53,7 @@ function helpText() {
     "  about                     print the about line\n" +
     "  about \"<text>\"            set or replace the about line (what this project is)\n" +
     "  about --clear             unset the about line\n" +
-    "  add \"<text>\"             append a gap; prints the new id\n" +
+    "  add <id> \"<text>\"         append a gap under a caller-chosen slug id; prints the id\n" +
     "  close <id>                remove a gap; frees a slot\n" +
     "  amend <id> \"<text>\"        rewrite a gap's text in place\n" +
     "  log [--limit N]           print session records, newest first\n" +
@@ -139,10 +139,11 @@ function validateGapText(text) {
 
 // Every whole-file gaps.json rewrite goes through here. Rebuilding the store
 // as a bare {version, revision, gaps} would silently drop the about line
-// (spec 10.4), so it is carried forward — but only when the current store
-// carries it: an unset store stays without the field.
+// (spec 10.4) and the closed ids (spec 3.2), so both are carried forward:
+// about only when the current store carries it (an unset store stays without
+// the field), closed_ids always — readGapsFile defaults it to [].
 function nextStore(cur, gaps) {
-  const next = { version: 1, revision: cur.revision + 1, gaps };
+  const next = { version: 1, revision: cur.revision + 1, gaps, closed_ids: cur.closed_ids ?? [] };
   if (cur.about !== undefined) next.about = cur.about;
   return next;
 }
@@ -192,8 +193,10 @@ export async function main(argv) {
   let text = null;
   let targetId = null;
   if (command === "add") {
-    if (rest.length === 0) return fail(2, "horizon: add requires <text>");
-    text = rest[0];
+    if (rest.length === 0) return fail(2, "horizon: add requires <id> <text>");
+    if (rest.length === 1) return fail(2, "horizon: add requires <text>");
+    targetId = rest[0];
+    text = rest[1];
   } else if (command === "close") {
     if (rest.length === 0) return fail(2, "horizon: close requires <id>");
     targetId = rest[0];
@@ -208,7 +211,7 @@ export async function main(argv) {
   }
   const flagTokens =
     command === "add"
-      ? rest.slice(1)
+      ? rest.slice(2)
       : command === "close"
         ? rest.slice(1)
         : command === "amend"
@@ -295,14 +298,21 @@ export async function main(argv) {
       }
       const cur = readGapsFile(storeDir);
       if (!cur.ok) return fail(cur.code, cur.message);
-      const next = { version: 1, revision: cur.data.revision + 1, gaps: cur.data.gaps };
-      if (!clear) next.about = text;
+      const next = nextStore(cur.data, cur.data.gaps);
+      if (clear) delete next.about;
+      else next.about = text;
       const w = writeGapsFile(storeDir, next);
       if (w) return fail(w.code, w.message);
       return 0;
     }
 
     case "add": {
+      // The id is caller-supplied and first: it must match the slug grammar
+      // (spec 3.2). There is no minting and no old-shape compatibility — an
+      // id that fails the grammar is a usage error naming the id.
+      if (!validId(targetId)) {
+        return fail(2, `horizon: invalid gap id: ${targetId}; ids are 3-40 chars of a-z, 0-9, and hyphens, starting with a letter`);
+      }
       const bad = validateGapText(text);
       if (bad) return fail(3, bad);
       const found = resolveStore(cwd);
@@ -321,11 +331,16 @@ export async function main(argv) {
       const cur = readGapsFile(storeDir);
       if (!cur.ok) return fail(cur.code, cur.message);
       if (cur.data.gaps.length >= MAX_GAPS) return fail(4, capMessage(cur.data.gaps));
-      let id = mintId();
-      const taken = new Set(cur.data.gaps.map((g) => g.id));
-      while (taken.has(id)) id = mintId();
+      // Ids are never reused for the life of the project: a collision with an
+      // open gap or with closed_ids is a hard reject (exit 8), not a remint.
+      if (cur.data.gaps.some((g) => g.id === targetId)) {
+        return fail(8, `horizon: duplicate gap id: ${targetId} is already open. Choose another id.`);
+      }
+      if (cur.data.closed_ids.includes(targetId)) {
+        return fail(8, `horizon: duplicate gap id: ${targetId} was closed and ids are never reused. Choose another id.`);
+      }
       const gap = {
-        id,
+        id: targetId,
         text,
         added_at: utcNow(),
         provenance: {
@@ -338,11 +353,15 @@ export async function main(argv) {
       const next = nextStore(cur.data, [...cur.data.gaps, gap]);
       const w = writeGapsFile(storeDir, next);
       if (w) return fail(w.code, w.message);
-      stdout(`${id}\n`);
+      stdout(`${targetId}\n`);
       return 0;
     }
 
     case "close": {
+      // An id off the slug grammar can never exist in a store (read
+      // validation rejects such stores), so it is rejected here: exit 5,
+      // same family as an unknown id, but named as invalid.
+      if (!validId(targetId)) return fail(5, `horizon: invalid gap id: ${targetId}`);
       const r = resolveStore(cwd);
       if (!r) return fail(5, `horizon: unknown gap id: ${targetId}`);
       if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
@@ -351,10 +370,12 @@ export async function main(argv) {
       if (!cur.ok) return fail(cur.code, cur.message);
       const gap = cur.data.gaps.find((g) => g.id === targetId);
       if (!gap) return fail(5, `horizon: unknown gap id: ${targetId}`);
+      // The closed id is retired in the same write: add can never reuse it.
       const next = nextStore(
         cur.data,
         cur.data.gaps.filter((g) => g.id !== targetId),
       );
+      next.closed_ids = [...cur.data.closed_ids, targetId];
       // Record first (ADV-3): the close record lands in closes.jsonl before
       // gaps.json shrinks, so an append failure leaves the gap open and the
       // store unchanged. A close record whose gap is still open (crash
@@ -374,6 +395,7 @@ export async function main(argv) {
     }
 
     case "amend": {
+      if (!validId(targetId)) return fail(5, `horizon: invalid gap id: ${targetId}`);
       const r = resolveStore(cwd);
       if (!r) return fail(5, `horizon: unknown gap id: ${targetId}`);
       if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
