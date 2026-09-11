@@ -66,6 +66,18 @@ files: `.horizon/gaps.json` (the open gaps, the retired ids of closed gaps,
 and the about line), `.horizon/sessions.jsonl` and `.horizon/closes.jsonl`
 (append-only history).
 
+## The adapter wire interface
+
+Every harness's glue is the same two calls, and neither discovers a store on
+its own. `horizon-inject --harness <name> --cwd <dir>` prints the text to
+inject — empty output means silent. With `--json` the answer is total: one
+JSON line, `{"text": <string>, "store": <string|null>}` — the composed text
+plus the store directory the composer already resolved (null when no store
+was found). The close hooks hand that store back, so teardown never
+re-discovers it: `horizon session-end --harness <name> --session <id>
+--store <dir>` (without a store the command still works, discovering from
+`--cwd`; a path that does not exist is a silent no-op).
+
 ## Per-harness setup
 
 ### 1. DeepSeek Harness (DSH) — reference implementation
@@ -205,7 +217,11 @@ in the child process environment. Fail-open: absent the variable, injection
 happens — a subagent that receives the horizon is noise, not harm.
 
 Close: `session_shutdown` runs `horizon session-end --harness pi --session
-<id>` — no `--summary`, so the record carries `summary: null`.
+<id>`, passing `--store` with the dir the startup injection resolved —
+surviving both the delivery (the text stash is spent on the first prompt)
+and any process chdir since. With no stashed store the command keeps its
+cwd-discovery form. No `--summary` either way, so the record carries
+`summary: null`.
 
 ### 4. opencode — DEGRADED
 
@@ -262,9 +278,9 @@ stale bytecode — a bare `cp -r` ships it too.)
 
 cwd contract: gateway sessions get their working directory from `terminal.cwd`
 in hermes config. A placeholder value (`.`) resolves to the home directory —
-set it to the real project root, or export `TERMINAL_CWD`. The plugin
-distrusts a session cwd with no `.horizon/` store visible and falls back to
-the launch directory when it has one.
+set it to the real project root, or export `TERMINAL_CWD`. The plugin never
+looks for stores itself: it asks `horizon-inject --json`, and a storeless
+session cwd defers to the launch directory when the bin finds a store there.
 
 Known hermes-side limitation: one-shot (`-z`) sessions skip
 `on_session_finalize`, so `horizon session-end` never runs for them (filed
@@ -290,8 +306,10 @@ error injects nothing and never blocks a session.
   subagents are skipped. The horizon arrives on the turn **after** the first
   touch: the first action in a repo is uninformed by design.
 - **Session end:** `on_session_finalize` →
-  `horizon session-end --harness hermes --session <id>` (summary omitted, so
-  the record carries `summary: null`).
+  `horizon session-end --harness hermes --session <id> --store <the store
+  the injection answer carried>` (summary omitted, so the record carries
+  `summary: null`; sessions that never injected fall back to cwd
+  discovery).
 
 ## Manual use, no global install
 

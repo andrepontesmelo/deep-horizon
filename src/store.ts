@@ -48,7 +48,9 @@ const TMP_SWEEP_MS = 60_000;
 
 // Every value that crosses a store-file boundary must be a plain record
 // (spec 7: anything else is malformed -> exit 7, never a TypeError).
-export function isRecord(x) {
+// Internal: the adapters guard their own wire payloads locally — nothing
+// outside this module imports the guard.
+function isRecord(x) {
   return typeof x === "object" && x !== null && !Array.isArray(x);
 }
 
