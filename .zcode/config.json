@@ -12,16 +12,6 @@
             }
           ]
         }
-      ],
-      "Stop": [
-        {
-          "hooks": [
-            {
-              "type": "command",
-              "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/stop-steer\""
-            }
-          ]
-        }
       ]
     }
   }

@@ -317,10 +317,10 @@ error injects nothing and never blocks a session.
 npm install -g deep-horizon
 ```
 
-The adapter is two POSIX sh scripts shipped inside the package
-(`adapters/zcode/session-start`, `adapters/zcode/stop-steer`); the hook
-config runs them straight from the global install, so there is no copy
-step. It needs `jq` and `node` on PATH.
+The adapter is one POSIX sh script shipped inside the package
+(`adapters/zcode/session-start`); the hook config runs it straight from
+the global install, so there is no copy step. It needs `jq` and `node`
+on PATH.
 
 `.zcode/config.json` (project-local, checked into the repo — this repo
 carries one; the same `hooks` block may instead live in the user config
@@ -341,16 +341,6 @@ carries one; the same `hooks` block may instead live in the user config
             }
           ]
         }
-      ],
-      "Stop": [
-        {
-          "hooks": [
-            {
-              "type": "command",
-              "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/stop-steer\""
-            }
-          ]
-        }
       ]
     }
   }
@@ -360,7 +350,7 @@ carries one; the same `hooks` block may instead live in the user config
 `"enabled": true` is load-bearing — ZCode disables config-file hooks by
 default. The `$(npm root -g)` expansion happens in the shell ZCode runs
 `command` hooks with; if the package was installed under a different
-global prefix (pnpm, bun), point the two commands at the real location.
+global prefix (pnpm, bun), point the command at the real location.
 
 Startup: the `SessionStart` hook matches `startup` only — the first turn
 of a fresh session — and injects one composed block through the
@@ -373,30 +363,19 @@ receives the horizon like any other session — noise, not harm. Every
 hook fails open: a missing bin, a missing `jq`, or any error injects
 nothing and never blocks the session.
 
-Session end: ZCode has no close hook — `Stop` fires at the end of every
-assistant turn. On the first stop of a session the adapter steers once:
-the agent is told to ask the user, then run
+Session end: ZCode has no close hook, so nothing writes the record
+automatically. A session is closed by hand:
 
 ```
-horizon session-end --harness zcode --session <id> [--summary "<text>"]
+horizon session-end --harness zcode --session <id>
 ```
-
-The steer fires only where a horizon store exists somewhere above the
-working directory — storeless, `horizon session-end` exits 0 without
-writing, and a steer there would spend the user's yes on a no-op. It is
-held to once per session by two guards: a record for the
-session id already in `.horizon/sessions.jsonl` (the store found by
-walking up from the working directory, like the CLI), or a marker file
-`$TMPDIR/horizon-zcode-steer-<id>`, written before steering. Omitting
-`--summary` records `summary: null` — a summary is never fabricated.
 
 Known limitations, stated bluntly: no param trigger — ZCode's
 `PreToolUse` hook sees tool arguments and could carry a mid-session
 injection, but its stdout-to-context path is unproven, so the adapter
 ships without one (like Claude Code). And no true close hook: a session
 interrupted with SIGINT/SIGTERM — or a terminal closed — writes no
-record, because `Stop` only steers at a turn boundary and nothing fires
-at process exit.
+record, because nothing fires at process exit.
 
 ## Manual use, no global install
 
