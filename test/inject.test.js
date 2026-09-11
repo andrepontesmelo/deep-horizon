@@ -1,31 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { seed, specFence } from "./harness.js";
+import { freshDir, runCli, runInject, seed, specFence, withDir } from "./harness.js";
 import { setAbout as storeSetAbout, setDetail } from "../src/store.ts";
 import { compose, resolveInjection } from "../src/inject.ts";
 
-const INJECT_BIN = new URL("../bin/horizon-inject.js", import.meta.url).pathname;
 const ADAPTER = new URL("../src/adapters/dsh.ts", import.meta.url).pathname;
-
-function run(args, opts = {}) {
-  return new Promise((resolve) => {
-    execFile(INJECT_BIN, args, { encoding: "utf8", ...opts }, (error, stdout, stderr) => {
-      resolve({
-        code: error && typeof error.code === "number" ? error.code : 0,
-        stdout,
-        stderr,
-      });
-    });
-  });
-}
-
-function freshDir() {
-  return mkdtempSync(join(tmpdir(), "horizon-inject-test-"));
-}
 
 // --- horizon-inject: composition (spec 10, D6) ---
 
@@ -33,7 +14,7 @@ test("35. inject prints the horizon block, gaps substituted verbatim, byte-for-b
   const dir = freshDir();
   try {
     seed(dir, ["A person can hand a photo to the app and get the plant named.", "Rentals can be compared across sites without re-entering filters."]);
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const show = "gap-1  A person can hand a photo to the app and get the plant named.\ngap-2  Rentals can be compared across sites without re-entering filters.\n";
@@ -49,13 +30,13 @@ test("36. inject prints the bootstrap nudge, exactly, on an absent store; on an 
   const bootstrap = specFence(spec, "### 10.2");
   const absent = freshDir();
   try {
-    const r1 = await run(["--cwd", absent]);
+    const r1 = await runInject(["--cwd", absent]);
     assert.equal(r1.code, 0);
     assert.equal(r1.stdout, bootstrap);
     const empty = freshDir();
     try {
       seed(empty, []);
-      const r2 = await run(["--cwd", empty]);
+      const r2 = await runInject(["--cwd", empty]);
       assert.equal(r2.code, 0);
       assert.equal(r2.stdout, bootstrap);
     } finally {
@@ -78,34 +59,32 @@ test("home-suppress-1. the bootstrap-silence decision: storeless $HOME silences,
   assert.equal(suppressBootstrap({ cwd: home, storeFound: true, home }), false, "a visible store — even at home — must never be suppressed");
 });
 
-test("home-suppress-2. end-to-end: the bin silences a storeless $HOME (exit 0, empty stdout) and keeps a deliberate home store", async () => {
-  // os.homedir() honours $HOME on POSIX, so a fake home keeps this
-  // deterministic regardless of the real ~/.horizon.
-  const fakeHome = mkdtempSync(join(tmpdir(), "horizon-fake-home-"));
-  try {
+test("home-suppress-2. end-to-end: main silences a storeless $HOME (exit 0, empty stdout) and keeps a deliberate home store", async () => {
+  // os.homedir() honours $HOME on POSIX, and runInject swaps the environment
+  // per call, so a fake home keeps this deterministic regardless of the real
+  // ~/.horizon — the same mechanism the spawned bin was subject to.
+  await withDir(async (fakeHome) => {
     const env = { ...process.env, HOME: fakeHome };
-    const r1 = await run(["--cwd", fakeHome], { env });
+    const r1 = await runInject(["--cwd", fakeHome], { env });
     assert.equal(r1.code, 0);
     assert.equal(r1.stdout, "", "the storeless-home bootstrap misfire must be silent");
     const proj = join(fakeHome, "git", "proj");
     mkdirSync(proj, { recursive: true });
-    const r2 = await run(["--cwd", proj], { env });
+    const r2 = await runInject(["--cwd", proj], { env });
     assert.equal(r2.code, 0);
     assert.ok(r2.stdout.startsWith("This project has no horizon yet"), "a storeless project still gets its nudge");
     seed(fakeHome, ["Deliberate home store gap"]);
-    const r3 = await run(["--cwd", fakeHome], { env });
+    const r3 = await runInject(["--cwd", fakeHome], { env });
     assert.equal(r3.code, 0);
     assert.ok(r3.stdout.includes("Deliberate home store gap"), "a deliberate home-level store keeps injecting");
-  } finally {
-    rmSync(fakeHome, { recursive: true, force: true });
-  }
+  }, "horizon-fake-home-");
 });
 
 test("37. inject has a --json mode: {\"text\",\"store\"} on stdout, nothing else", async () => {
   const dir = freshDir();
   try {
     seed(dir, ["Only one gap"]);
-    const r = await run(["--cwd", dir, "--json"]);
+    const r = await runInject(["--cwd", dir, "--json"]);
     assert.equal(r.code, 0);
     const parsed = JSON.parse(r.stdout);
     assert.equal(typeof parsed.text, "string");
@@ -126,20 +105,20 @@ test("37. inject has a --json mode: {\"text\",\"store\"} on stdout, nothing else
 test("inject-json-storeless. --json answers store:null when no store resolves; plain stdout stays byte-identical", async () => {
   const dir = freshDir();
   try {
-    const j = await run(["--cwd", dir, "--json"]);
+    const j = await runInject(["--cwd", dir, "--json"]);
     assert.equal(j.code, 0);
     const parsed = JSON.parse(j.stdout);
     assert.equal(parsed.store, null, "a storeless cwd must answer store:null");
     assert.ok(parsed.text.startsWith("This project has no horizon yet"), "the storeless nudge still composes");
     assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text, store: null }));
     // Plain mode: the same text, no JSON wrapper (the non-json contract).
-    const plain = await run(["--cwd", dir]);
+    const plain = await runInject(["--cwd", dir]);
     assert.equal(plain.code, 0);
     assert.equal(plain.stdout, parsed.text);
     // Home silence: empty text, null store — nothing to hand back. (os.homedir()
     // honours $HOME on POSIX; the mechanism is pinned by home-suppress-2.)
     const env = { ...process.env, HOME: dir };
-    const silent = await run(["--cwd", dir, "--json"], { env });
+    const silent = await runInject(["--cwd", dir, "--json"], { env });
     assert.equal(silent.code, 0);
     assert.deepEqual(JSON.parse(silent.stdout), { text: "", store: null });
   } finally {
@@ -156,7 +135,7 @@ test("38. inject makes no store writes: read-only dirs and read-only files still
       writeFileSync(join(store, name), readFileSync(join(store, name), "utf8"), { mode: 0o444 });
     }
     const before = readdirSync(store).sort().join(",");
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("Read-only world"));
     assert.equal(readdirSync(store).sort().join(","), before, "store directory listing changed");
@@ -169,7 +148,7 @@ test("38. inject makes no store writes: read-only dirs and read-only files still
         writeFileSync(join(emptyStore, name), readFileSync(join(emptyStore, name), "utf8"), { mode: 0o444 });
       }
       const beforeEmpty = readdirSync(emptyStore).sort().join(",");
-      const r2 = await run(["--cwd", empty]);
+      const r2 = await runInject(["--cwd", empty]);
       assert.equal(r2.code, 0);
       assert.ok(r2.stdout.startsWith("This project has no horizon yet"));
       assert.equal(readdirSync(emptyStore).sort().join(","), beforeEmpty, "store directory listing changed");
@@ -188,7 +167,7 @@ test("39. malformed gaps.json: inject exits 7 naming the file and prints no text
   try {
     mkdirSync(join(dir, ".horizon"), { recursive: true });
     writeFileSync(join(dir, ".horizon", "gaps.json"), '{"version":1,"revision":1,"gaps":[null]}');
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 7);
     assert.match(r.stderr, /gaps\.json/);
     assert.ok(!/TypeError|at /m.test(r.stderr), `raw stack leaked: ${r.stderr}`);
@@ -202,13 +181,13 @@ test("40. inject supports the CLI's global options (help/version, --harness/--se
   const dir = freshDir();
   try {
     seed(dir, ["Global options gap"]);
-    const help = await run(["--help"]);
+    const help = await runInject(["--help"]);
     assert.equal(help.code, 0);
     assert.ok(help.stdout.includes("horizon-inject"));
-    const version = await run(["--version"]);
+    const version = await runInject(["--version"]);
     assert.equal(version.code, 0);
     assert.match(version.stdout, /^horizon-inject \d+\.\d+\.\d+/);
-    const r = await run(["--cwd", dir, "--harness", "dsh", "--session", "abc", "--origin", "human"]);
+    const r = await runInject(["--cwd", dir, "--harness", "dsh", "--session", "abc", "--origin", "human"]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("Global options gap"));
   } finally {
@@ -840,14 +819,9 @@ test("49. inject embeds show stdout byte-for-byte even when gap texts carry $-re
   try {
     const texts = ["pay $& now", "cost $$5", "use $`tick", "tail $'mark", "plain $1 end"];
     const gaps = seed(dir, texts);
-    const HORIZON_BIN = new URL("../bin/horizon.js", import.meta.url).pathname;
-    const show = await new Promise((resolve) => {
-      execFile(process.execPath, [HORIZON_BIN, "show", "--cwd", dir], { encoding: "utf8" }, (error, stdout) => {
-        resolve({ code: error && typeof error.code === "number" ? error.code : 0, stdout });
-      });
-    });
+    const show = await runCli(["show", "--cwd", dir]);
     assert.equal(show.code, 0);
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     // spec 10: {{GAPS}} is horizon show stdout substituted verbatim, never
     // re-formatted — so the block must contain that stdout byte-for-byte.
@@ -875,7 +849,7 @@ test("about-inject-1. about + gaps: the about line, a blank line, then the byte-
   try {
     seed(dir, ["A person can hand a photo to the app and get the plant named."]);
     setAbout(dir, "AI plugin to help agents with long term goals");
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const show = "gap-1  A person can hand a photo to the app and get the plant named.\n";
@@ -884,7 +858,7 @@ test("about-inject-1. about + gaps: the about line, a blank line, then the byte-
       specFence(spec, "### 10.1").replace("{{GAPS}}", show);
     assert.equal(r.stdout, expected);
     // --json carries the same composed text in the text field.
-    const j = await run(["--cwd", dir, "--json"]);
+    const j = await runInject(["--cwd", dir, "--json"]);
     assert.equal(j.code, 0);
     assert.equal(JSON.parse(j.stdout).text, expected);
   } finally {
@@ -897,7 +871,7 @@ test("about-inject-2. about + no gaps: the about line, a blank line, then the wa
   try {
     seed(dir, []);
     setAbout(dir, "AI plugin to help agents with long term goals");
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const expected =
@@ -912,7 +886,7 @@ test("about-inject-3. without an about line: output is byte-identical to the pre
   const dir = freshDir();
   try {
     seed(dir, ["Only one gap"]);
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "gap-1  Only one gap\n");
@@ -952,7 +926,7 @@ test("inject-matrix. the five store states each produce exactly one variant — 
   cases.push(["about+gaps", aboutGaps, prefix + block.replace("{{GAPS}}", show), "block"]);
   try {
     for (const [label, dir, expected, variant] of cases) {
-      const r = await run(["--cwd", dir]);
+      const r = await runInject(["--cwd", dir]);
       assert.equal(r.code, 0, `${label}: ${r.stderr}`);
       assert.equal(r.stdout, expected, `${label}: wrong variant composed`);
       const present = Object.entries(openings).filter(([, opening]) => r.stdout.includes(opening));
@@ -976,18 +950,18 @@ test("pointer-1. the horizon block carries the detail pointer; neither nudge doe
   const dir = freshDir();
   try {
     seed(dir, ["Pointer gap"]);
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("`horizon detail <id>` prints it"), "the block must tell the session how to retrieve extended context");
     assert.ok(r.stdout.includes("extended context"), "the pointer must name the thing, not just the command");
     const empty = freshDir();
     try {
       seed(empty, []);
-      const r2 = await run(["--cwd", empty]);
+      const r2 = await runInject(["--cwd", empty]);
       assert.equal(r2.code, 0);
       assert.ok(!r2.stdout.includes("horizon detail"), "the bootstrap nudge must not carry the pointer");
       setAbout(empty, "About line");
-      const r3 = await run(["--cwd", empty]);
+      const r3 = await runInject(["--cwd", empty]);
       assert.equal(r3.code, 0);
       assert.ok(!r3.stdout.includes("horizon detail"), "the warm nudge must not carry the pointer");
     } finally {
@@ -1007,7 +981,7 @@ test("pointer-2. details content never reaches injected text", async () => {
     // Details go in through the store's own writer, never a hand-written file.
     const r0 = setDetail(dir, "gap-1", { text: "SECRET-DETAIL-CONTEXT\nmore secret context" });
     assert.equal(r0, null, `seeding details failed: ${r0 && r0.message}`);
-    const r = await run(["--cwd", dir]);
+    const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("gap-1  Watchful gap"), "the title line must survive");
     assert.ok(!r.stdout.includes("SECRET-DETAIL-CONTEXT"), "details content must never be injected");
@@ -1118,16 +1092,16 @@ test("inject-unit-3. resolveInjection: the {text, store} answer — store rides 
 // The deliberate wire change the extraction carried: --flag=value. The CLI's
 // parser always took --cwd=<path>; the bin's own loop answered "unknown
 // option" (exit 2) — a divergence nothing pinned. The extracted parser
-// mirrors the CLI's = handling; the seam (the shim's argv handoff) stays a
-// subprocess test, the unit tests above cannot see it.
+// mirrors the CLI's = handling; this test drives it through main() itself,
+// and the shim seam it used to need a subprocess for is the bin smoke's.
 test("inject-eq-flag. --cwd=<path> composes like the separate-arg form, plain and --json; unknown flags still exit 2", async () => {
   const dir = freshDir();
   try {
     seed(dir, ["Equals form gap"]);
-    const r = await run([`--cwd=${dir}`]);
+    const r = await runInject([`--cwd=${dir}`]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     assert.ok(r.stdout.includes("gap-1  Equals form gap"));
-    const j = await run([`--cwd=${dir}`, "--json"]);
+    const j = await runInject([`--cwd=${dir}`, "--json"]);
     assert.equal(j.code, 0);
     const parsed = JSON.parse(j.stdout);
     assert.equal(parsed.store, join(dir, ".horizon"));
@@ -1137,17 +1111,17 @@ test("inject-eq-flag. --cwd=<path> composes like the separate-arg form, plain an
     // help answer — while the bare forms still answer (and test 40 pins the
     // bare forms' exit 0 through the same bin).
     for (const flag of ["--json", "--help", "--version"]) {
-      const boolEq = await run([`--cwd=${dir}`, `${flag}=x`]);
+      const boolEq = await runInject([`--cwd=${dir}`, `${flag}=x`]);
       assert.equal(boolEq.code, 2, `${flag}=x must be a usage error`);
       assert.ok(boolEq.stderr.startsWith(`horizon-inject: ${flag} takes no value`), `${flag}=x: ${boolEq.stderr}`);
       assert.equal(boolEq.stdout, "", `${flag}=x must print nothing on stdout`);
-      const bare = await run([flag]);
+      const bare = await runInject([flag]);
       assert.equal(bare.code, 0, `bare ${flag} must still answer`);
       assert.notEqual(bare.stdout, "", `bare ${flag} must print`);
     }
     // A genuinely unknown option still names the token and exits 2 with
     // empty stdout.
-    const bad = await run([`--bogus=${dir}`]);
+    const bad = await runInject([`--bogus=${dir}`]);
     assert.equal(bad.code, 2);
     assert.equal(bad.stdout, "");
     assert.ok(bad.stderr.startsWith(`horizon-inject: unknown option: --bogus=${dir}`));
