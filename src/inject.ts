@@ -29,6 +29,17 @@ import { BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT, aboutPrefix, gapLine, horizonBlock } 
 const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin"]);
 const BOOL_FLAGS = new Set(["--json", "--help", "--version"]);
 
+// The output sink: the two writers main() reports through, defaulting to the
+// process streams. The bin never passes one — byte-identical behavior — and
+// the test harness hands a capturing pair, so a suite round is a function
+// call instead of a process spawn. Bound at call time, never import time.
+function processSink() {
+  return {
+    stdout: (s) => process.stdout.write(s),
+    stderr: (s) => process.stderr.write(s),
+  };
+}
+
 // The bin's own thin flag loop. It mirrors the CLI parser's --flag=value
 // handling (takeFlag in src/cli.ts) so --cwd=<path> means the same thing on
 // both bins — the CLI always accepted the = form while the bin answered
@@ -36,7 +47,7 @@ const BOOL_FLAGS = new Set(["--json", "--help", "--version"]);
 // that parser itself: there are no positionals here (any bare token is an
 // unknown option), --help/--version answer mid-loop, and the messages carry
 // the bin's own name.
-function parseArgs(argv) {
+function parseArgs(argv, sink) {
   const opts = {};
   let i = 0;
   while (i < argv.length) {
@@ -52,13 +63,13 @@ function parseArgs(argv) {
       hasEq = true;
     }
     if (!VALUE_FLAGS.has(name) && !BOOL_FLAGS.has(name)) {
-      process.stderr.write(`horizon-inject: unknown option: ${t}\n`);
+      sink.stderr(`horizon-inject: unknown option: ${t}\n`);
       return { error: 2 };
     }
     // The = rejection outranks the short-circuits: --help=x and --version=x
     // are usage errors, exactly like --json=x — never a help answer.
     if (BOOL_FLAGS.has(name) && hasEq) {
-      process.stderr.write(`horizon-inject: ${name} takes no value\n`);
+      sink.stderr(`horizon-inject: ${name} takes no value\n`);
       return { error: 2 };
     }
     if (name === "--help") return { help: true };
@@ -70,7 +81,7 @@ function parseArgs(argv) {
     }
     if (!hasEq) {
       if (i + 1 >= argv.length) {
-        process.stderr.write(`horizon-inject: ${name} requires a value\n`);
+        sink.stderr(`horizon-inject: ${name} requires a value\n`);
         return { error: 2 };
       }
       value = argv[i + 1];
@@ -147,18 +158,19 @@ export function resolveInjection(dir, { home }) {
 }
 
 // The bin entry, mirroring src/cli.ts's main: writes stdout and stderr
-// itself and returns the exit code for the shim to exit with.
-export async function main(argv) {
-  const parsed = parseArgs(argv);
+// itself (through the sink) and returns the exit code for the shim to exit
+// with — in-process, the return value IS the code.
+export async function main(argv, sink = processSink()) {
+  const parsed = parseArgs(argv, sink);
   if (parsed.error !== undefined) {
     return parsed.error;
   }
   if (parsed.help) {
-    process.stdout.write(helpText());
+    sink.stdout(helpText());
     return 0;
   }
   if (parsed.version) {
-    process.stdout.write(`horizon-inject ${cliVersion()}\n`);
+    sink.stdout(`horizon-inject ${cliVersion()}\n`);
     return 0;
   }
 
@@ -168,17 +180,17 @@ export async function main(argv) {
   try {
     answer = resolveInjection(cwd ?? process.cwd(), { home: homedir() });
   } catch {
-    process.stderr.write("horizon-inject: store read failed\n");
+    sink.stderr("horizon-inject: store read failed\n");
     return 7;
   }
   if (answer.error) {
-    process.stderr.write(`${answer.error.message}\n`);
+    sink.stderr(`${answer.error.message}\n`);
     return answer.error.code;
   }
   if (json) {
-    process.stdout.write(JSON.stringify({ text: answer.text, store: answer.store }) + "\n");
+    sink.stdout(JSON.stringify({ text: answer.text, store: answer.store }) + "\n");
   } else {
-    process.stdout.write(answer.text);
+    sink.stdout(answer.text);
   }
   return 0;
 }
