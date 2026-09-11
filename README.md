@@ -284,6 +284,11 @@ systemctl --user restart hermes-gateway   # the gateway loads plugins at start
 clone's `__pycache__` in, but it also stops it deleting the destination's
 stale bytecode — a bare `cp -r` ships it too.)
 
+From a checkout, `npm run sync:hermes` (or `bash
+scripts/sync-hermes-adapter.sh`) does the copy above plus a parity diff —
+one repeatable step instead of silent drift between repo and plugin dir.
+`HERMES_PLUGIN_DIR` overrides the destination.
+
 cwd contract: gateway sessions get their working directory from `terminal.cwd`
 in hermes config. A placeholder value (`.`) resolves to the home directory —
 set it to the real project root, or export `TERMINAL_CWD`. The plugin never
