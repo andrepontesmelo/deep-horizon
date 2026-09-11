@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seed } from "./seed.js";
+import { seed, specFence } from "./harness.js";
 import { setAbout as storeSetAbout, setDetail } from "../src/store.ts";
 import { compose, resolveInjection } from "../src/inject.ts";
 
@@ -25,16 +25,6 @@ function run(args, opts = {}) {
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), "horizon-inject-test-"));
-}
-
-// Extract the inside of a fenced block that follows `heading` in the spec.
-function specFence(specLines, heading) {
-  const h = specLines.findIndex((l) => l.startsWith(heading));
-  assert.notEqual(h, -1, `missing ${heading} in spec`);
-  const open = specLines.findIndex((l, i) => i > h && l === "```");
-  const close = specLines.findIndex((l, i) => i > open && l === "```");
-  assert.ok(open > h && close > open, `unclosed fence after ${heading}`);
-  return specLines.slice(open + 1, close).join("\n");
 }
 
 // --- horizon-inject: composition (spec 10, D6) ---

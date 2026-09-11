@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seed } from "./seed.js";
+import { seed, specFence } from "./harness.js";
 
 const BIN = new URL("../bin/horizon.js", import.meta.url).pathname;
 
@@ -814,18 +814,10 @@ test("34. exported texts equal the spec section 10 fence blocks byte-for-byte", 
   const SRC = new URL("../src/texts.ts", import.meta.url).pathname;
   const SPEC = new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url).pathname;
   const spec = readFileSync(SPEC, "utf8").split("\n");
-  function fenceAfter(heading) {
-    const h = spec.findIndex((l) => l.startsWith(heading));
-    assert.notEqual(h, -1, `missing ${heading} in spec`);
-    const open = spec.findIndex((l, i) => i > h && l === "```");
-    const close = spec.findIndex((l, i) => i > open && l === "```");
-    assert.ok(open > h && close > open, `unclosed fence after ${heading}`);
-    return spec.slice(open + 1, close).join("\n");
-  }
   const { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT } = await import(SRC);
-  assert.equal(HORIZON_BLOCK_TEMPLATE, fenceAfter("### 10.1"));
-  assert.equal(BOOTSTRAP_NUDGE_TEXT, fenceAfter("### 10.2"));
-  assert.equal(NUDGE_TEXT, fenceAfter("### 10.3"));
+  assert.equal(HORIZON_BLOCK_TEMPLATE, specFence(spec, "### 10.1"));
+  assert.equal(BOOTSTRAP_NUDGE_TEXT, specFence(spec, "### 10.2"));
+  assert.equal(NUDGE_TEXT, specFence(spec, "### 10.3"));
 });
 
 // --- Adversary regression gates (ADV-1..12, fix card t_76f202ea) ---
