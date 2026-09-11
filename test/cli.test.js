@@ -249,8 +249,7 @@ test("14e. close appends to closed_ids; a legacy store without the field reads e
     assert.deepEqual(readGaps(dir).closed_ids, ["gone-soon"]);
     // A store written before closed_ids existed: missing reads as empty, and
     // the next whole-file save writes the field.
-    const legacy = freshDir();
-    try {
+    await withDir(async (legacy) => {
       mkdirSync(join(legacy, ".horizon"), { recursive: true });
       writeFileSync(
         join(legacy, ".horizon", "gaps.json"),
@@ -264,9 +263,7 @@ test("14e. close appends to closed_ids; a legacy store without the field reads e
       const m = await runCli(["amend", "old-gap", "Legacy amended", "--cwd", legacy]);
       assert.equal(m.code, 0, `stderr: ${m.stderr}`);
       assert.deepEqual(readGaps(legacy).closed_ids, []);
-    } finally {
-      rmSync(legacy, { recursive: true, force: true });
-    }
+    });
   });
 });
 
@@ -594,13 +591,10 @@ test("session-end-store. --store targets that store directly; an absent or non-d
     const store = join(dir, ".horizon");
     // The record lands in the named store, discovered nowhere: the command
     // runs from a cwd with no store at all.
-    const elsewhere = freshDir();
-    try {
+    await withDir(async (elsewhere) => {
       const r = await runCli(["session-end", "--harness", "t", "--session", "s-store", "--store", store, "--cwd", elsewhere]);
       assert.equal(r.code, 0, r.stderr);
-    } finally {
-      rmSync(elsewhere, { recursive: true, force: true });
-    }
+    });
     const rec = JSON.parse(readFileSync(join(store, "sessions.jsonl"), "utf8").trim());
     assert.equal(rec.session_id, "s-store");
     assert.deepEqual(rec.gaps_added, []);
@@ -616,16 +610,13 @@ test("session-end-store. --store targets that store directly; an absent or non-d
     assert.ok(!lines.includes("s-gone"), "an absent --store must record nothing");
     assert.ok(!lines.includes("s-file"), "a non-directory --store must record nothing");
     // A store that exists but is malformed: the normal error path applies.
-    const broken = freshDir();
-    try {
+    await withDir(async (broken) => {
       mkdirSync(join(broken, ".horizon"), { recursive: true });
       writeFileSync(join(broken, ".horizon", "gaps.json"), "{not json");
       const bad = await runCli(["session-end", "--harness", "t", "--session", "s-bad", "--store", join(broken, ".horizon")]);
       assert.equal(bad.code, 7);
       assert.match(bad.stderr, /gaps\.json/);
-    } finally {
-      rmSync(broken, { recursive: true, force: true });
-    }
+    });
   });
 });
 
@@ -1095,13 +1086,10 @@ test("X4. init writes .horizon/.gitattributes (* -text); JSONL reader tolerates 
     assert.ok(existsSync(ga), ".gitattributes missing after init");
     assert.equal(readFileSync(ga, "utf8"), "* -text\n");
     // First add (store created by add, not init) also ships the .gitattributes.
-    const dir2 = freshDir();
-    try {
+    await withDir(async (dir2) => {
       await runCli(["add", "ships-attrs", "Ships gitattributes too", "--cwd", dir2]);
       assert.equal(readFileSync(join(dir2, ".horizon", ".gitattributes"), "utf8"), "* -text\n");
-    } finally {
-      rmSync(dir2, { recursive: true, force: true });
-    }
+    });
     // JSONL reader: CRLF line endings and blank lines are tolerated.
     await runCli(["add", "crlf-gap", "CRLF gap", "--cwd", dir, "--session", "s1"]);
     await runCli(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
@@ -1144,13 +1132,10 @@ test("X6. init writes .horizon/.gitignore (sessions.jsonl, *.tmp.*); gaps.json n
     assert.match(body, /^sessions\.jsonl$/m, "sessions.jsonl entry missing");
     assert.match(body, /^\*\.tmp\.\*$/m, "*.tmp.* entry missing");
     // First add (store created by add, not init) also ships the .gitignore.
-    const dir2 = freshDir();
-    try {
+    await withDir(async (dir2) => {
       await runCli(["add", "ships-ignore", "Ships gitignore too", "--cwd", dir2]);
       assert.equal(readFileSync(join(dir2, ".horizon", ".gitignore"), "utf8"), body);
-    } finally {
-      rmSync(dir2, { recursive: true, force: true });
-    }
+    });
     // git itself honours the nested file: the JSONL files and the atomic-write
     // tmp names are ignored; gaps.json (the traveling horizon) is not.
     // core.excludesFile is blanked so the assertion cannot depend on the
@@ -1205,14 +1190,11 @@ test("about-2. bare about on an unset store and on no store: prints nothing, exi
     const r = await runCli(["about", "--cwd", dir]);
     assert.equal(r.code, 0);
     assert.equal(r.stdout, "");
-    const none = freshDir();
-    try {
+    await withDir(async (none) => {
       const r2 = await runCli(["about", "--cwd", none]);
       assert.equal(r2.code, 0);
       assert.equal(r2.stdout, "");
-    } finally {
-      rmSync(none, { recursive: true, force: true });
-    }
+    });
   });
 });
 
@@ -1230,16 +1212,13 @@ test("about-3. show prints the about header before gaps, alone when gapless; --j
     assert.equal(j.code, 0);
     assert.deepEqual(JSON.parse(j.stdout), gaps); // bare gaps array, no about
     // About set, no gaps: the header line alone.
-    const bare = freshDir();
-    try {
+    await withDir(async (bare) => {
       seed(bare, []);
       await runCli(["about", "Only an about", "--cwd", bare]);
       const b = await runCli(["show", "--cwd", bare]);
       assert.equal(b.code, 0);
       assert.equal(b.stdout, "about  Only an about\n");
-    } finally {
-      rmSync(bare, { recursive: true, force: true });
-    }
+    });
   });
 });
 
