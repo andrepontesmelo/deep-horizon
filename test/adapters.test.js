@@ -11,7 +11,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { copyFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seed } from "./seed.js";
+import { freshDir, seed } from "./harness.js";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const PI_ADAPTER = new URL("../src/adapters/pi.ts", import.meta.url).pathname;
@@ -19,9 +19,6 @@ const OPENCODE_ADAPTER = new URL("../src/adapters/opencode.ts", import.meta.url)
 const SUPPORT_ADAPTER = new URL("../src/adapters/support.ts", import.meta.url).pathname;
 const HERMES_PLUGIN_DIR = join(ROOT, "adapters", "hermes");
 
-function freshDir() {
-  return mkdtempSync(join(tmpdir(), "horizon-adapter-test-"));
-}
 
 function runPython(args, opts = {}) {
   const r = spawnSync("python3", args, { encoding: "utf8", ...opts });
@@ -61,7 +58,7 @@ test("51. the Hermes plugin manifest is valid, names deep-horizon, and the packa
 });
 
 test("52. the Hermes section callable spawns horizon-inject --harness hermes and returns its stdout; caps fail open", () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     seed(dir, ["Hermes section gap"]);
     const script = join(dir, "drive.py");
@@ -87,7 +84,7 @@ test("52. the Hermes section callable spawns horizon-inject --harness hermes and
 });
 
 test("53. the Hermes section returns empty text for subagent sessions (parent_session_id set) and renders under the 4000-char cap at the 5x512 worst case", () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     // Exactly 512 code points per title (510 + " " + one digit) — the real
     // worst case; the old hand-written seed wrote 514-point texts the CLI
@@ -116,7 +113,7 @@ test("53. the Hermes section returns empty text for subagent sessions (parent_se
 });
 
 test("54. the Hermes plugin register() wires the section, the finalize hook, and fails open when the bins are missing", () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     // PATH without the horizon bins: register() and the section must not raise.
     const script = join(dir, "drive.py");
@@ -168,7 +165,7 @@ test("54. the Hermes plugin register() wires the section, the finalize hook, and
 // --- pi adapter ---
 
 test("55. the pi adapter: session_start shells out and stashes only on fresh reasons, before_agent_start returns the message on the first prompt", async () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   const mod = await import(PI_ADAPTER);
   try {
     seed(dir, ["pi adapter gap"]);
@@ -201,7 +198,7 @@ test("55. the pi adapter: session_start shells out and stashes only on fresh rea
 });
 
 test("56. the pi adapter guards: resume/reload/fork reasons never stash; HORIZON_SUBAGENT fails open; nonzero spawn injects nothing", async () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   const mod = await import(PI_ADAPTER);
   try {
     seed(dir, ["pi guard gap"]);
@@ -311,7 +308,7 @@ test("pi-store-handoff. --store rides from the startup answer to session_shutdow
 });
 
 test("58. the pi adapter end-to-end: startup stash flows the real horizon-inject block into the first prompt", async () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     seed(dir, ["End-to-end pi gap"]);
     const mod = await import(PI_ADAPTER);
@@ -323,7 +320,7 @@ test("58. the pi adapter end-to-end: startup stash flows the real horizon-inject
     assert.ok(first.message.content.includes("`horizon detail <id>` prints it"), "the pi path must carry the core's detail pointer");
     assert.equal(first.message.customType, "deep-horizon");
     // The bootstrap-nudge twin: empty store still injects the nudge (composition, not gap-detection).
-    const empty = freshDir();
+    const empty = freshDir("horizon-adapter-test-");
     try {
       seed(empty, []);
       const registered2 = mod.apply({});
@@ -341,7 +338,7 @@ test("58. the pi adapter end-to-end: startup stash flows the real horizon-inject
 // --- opencode adapter (DEGRADED, D4) ---
 
 test("59. the opencode adapter prepends the block once per session on the heuristic and excludes subagents via parentID", async () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   const mod = await import(OPENCODE_ADAPTER);
   try {
     seed(dir, ["opencode gap"]);
@@ -433,7 +430,7 @@ test("62. the Hermes section falls back to the process cwd when the core hands a
   // resolve_context_cwd() — so the plugin is handed cwd="". Injecting nothing
   // there means a session launched from a project root silently loses its
   // horizon. The section falls back to the process working directory instead.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     seed(dir, ["Hermes cwd fallback gap"]);
     const script = join(dir, "drive.py");
@@ -461,7 +458,7 @@ test("63. the Hermes section suppresses injection for every subagent discriminat
   // conventions the core might adopt (parent_session_id, is_subagent,
   // delegation_depth, origin) AND an explicit env opt-out mirroring the pi
   // adapter, rather than depending on the single key that never arrives.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     seed(dir, ["Hermes subagent gap"]);
     const script = join(dir, "drive.py");
@@ -490,7 +487,7 @@ test("63. the Hermes section suppresses injection for every subagent discriminat
 });
 
 test("64. the Hermes section never raises with no store and an empty cwd — it returns the bootstrap nudge", () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const script = join(dir, "drive.py");
     writeFileSync(script, [
@@ -519,7 +516,7 @@ test("65. the Hermes plugin loads under the real directory-plugin contract: __in
   // "No __init__.py" and silently disables the whole Hermes adapter.
   assert.ok(existsSync(join(HERMES_PLUGIN_DIR, "__init__.py")),
     "the plugin directory must ship __init__.py or Hermes cannot register it");
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const script = join(dir, "drive.py");
     // Faithful reproduction of _load_directory_module: import __init__.py as
@@ -566,7 +563,7 @@ test("66. every hook the Hermes plugin registers is declared in plugin.yaml prov
   // manifest does not declare, and ERRORS when a declared hook name is not in
   // VALID_HOOKS. Declaring the close hook makes the manifest a truthful contract
   // rather than documentation.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const script = join(dir, "drive.py");
     writeFileSync(script, [
@@ -605,7 +602,7 @@ test("68. the Hermes pre_llm_call hook injects the block only for NEW tool-call 
   // call) for /home/andre/git/<repo> paths. Tool RESULTS and user text are
   // never scanned. No store -> silence (nudge never fires from params).
   // parent_session_id set -> skip. Same (session, repo) twice -> once.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const alpha = join(dir, "alpha");
     const beta = join(dir, "beta");
@@ -670,7 +667,7 @@ test("68. the Hermes pre_llm_call hook injects the block only for NEW tool-call 
 });
 
 test("69. the Hermes pre_llm_call hook ignores tool results, user text, unknown tools, and store-less repos", () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const repo = join(dir, "repo");
     seed(repo, ["repo gap"]);
@@ -741,7 +738,7 @@ test("70. the Hermes pre_llm_call hook survives a simulated gateway restart: the
   // persisted sidecar already restored (it then existed twice in context).
   // Skip-on-first-sight consumes that history silently instead; the cursor
   // still advances past it, so the next real touch keeps working.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const alpha = join(dir, "alpha");
     const beta = join(dir, "beta");
@@ -801,7 +798,7 @@ test("71. the Hermes pre_llm_call hook survives turn-start compaction: the shrin
   // treats a fire whose history holds fewer tool_calls than the cursor as a
   // rescan from zero; _seen keeps already-injected repos silent, so only the
   // post-compaction touch can land.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const alpha = join(dir, "alpha");
     const beta = join(dir, "beta");
@@ -858,7 +855,7 @@ test("72. the once-per-(session, repo) invariant holds across simulated gateway 
   // repo's block must appear EXACTLY ONCE in the whole stream — never
   // re-injected by a post-restart resume, never duplicated by a fresh
   // touch of an already-seen repo.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const alpha = join(dir, "alpha");
     const beta = join(dir, "beta");
@@ -923,7 +920,7 @@ test("67. the section renders for the read-only mapping the core actually passes
   // `isinstance(MappingProxyType({...}), dict)` is False, so a dict-only guard
   // returns "" in production while every plain-dict unit test keeps passing —
   // the section then renders into exactly zero real sessions.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const proj = join(dir, "proj");
     seed(proj, ["ship deep-horizon to npm"]);
@@ -958,7 +955,7 @@ test("73. the Hermes section distrusts a storeless session cwd: the launch dir's
   // with no store, which injected the nudge: the project's about line and gaps
   // never landed. The fix: a non-empty session cwd with no VISIBLE store is
   // distrusted, and the process cwd (the launch dir) wins when it has one.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -985,7 +982,7 @@ test("73. the Hermes section distrusts a storeless session cwd: the launch dir's
 });
 
 test("74. the Hermes section prefers the session cwd when it has a store, even if the launch dir also has one", () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -1015,7 +1012,7 @@ test("75. the Hermes section keeps the first candidate when neither cwd has a st
   // A genuinely storeless project dir must still get its nudge (that is
   // correct behavior), and the first candidate (the session cwd) stands —
   // the launch dir never hijacks a storeless session.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -1048,7 +1045,7 @@ test("76. the Hermes session-end spawn hands back the stashed injection store wi
   // and to any chdir since turn one. A session that never injected (no
   // stash) falls back to --cwd with the first candidate: payload cwd, else
   // the process cwd; session-end on a storeless cwd is a safe no-op.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -1125,7 +1122,7 @@ test("hermes-param-release. a failed or nonzero spawn releases the (session, rep
   // failure must not silence a repo for the rest of the session. A
   // storeless --json answer, by contrast, is a total answer: the claim
   // holds and the repo never re-spawns.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     const repo = join(dir, "repo");
     seed(repo, ["hermes release gap"]);
@@ -1253,7 +1250,7 @@ test("81. the ZCode session-start hook injects ONLY on fresh startups, through t
   // mapping (Oni) reads only camelCase "additionalContext" into the session
   // history. The schema is strict (any extra key marks the run failed), so
   // the envelope must carry exactly that one key.
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     seed(dir, ["ZCode startup gap"]);
     const r = runHook(join(ZCODE_DIR, "session-start"), {
@@ -1286,7 +1283,7 @@ test("81. the ZCode session-start hook injects ONLY on fresh startups, through t
 });
 
 test("82. the ZCode session-start hook fails open: malformed stdin, empty stdin, and a missing bin all exit 0 silently", () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   try {
     seed(dir, ["ZCode fail-open gap"]);
     for (const input of ["not json", "", "{}"]) {
@@ -1324,8 +1321,8 @@ test("83. the ZCode stop-steer hook fires once per session: decision-block steer
   // Probed zcode.cjs: a Stop hook's {"decision":"block","reason":...} (exit 0)
   // sets stopShouldContinue and pushes the reason into additionalContexts, so
   // the turn re-runs with the reason text injected (max 3 continuations).
-  const dir = freshDir();
-  const tmp = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
+  const tmp = freshDir("horizon-adapter-test-");
   try {
     seed(dir, ["ZCode steer gap"]);
     const hook = join(ZCODE_DIR, "stop-steer");
@@ -1349,7 +1346,7 @@ test("83. the ZCode stop-steer hook fires once per session: decision-block steer
     // A session whose record is already in the store: silent even with a
     // fresh marker dir — the record guard reads sessions.jsonl the way the
     // CLI resolves the store (walk up from cwd).
-    const tmp2 = freshDir();
+    const tmp2 = freshDir("horizon-adapter-test-");
     try {
       writeFileSync(
         join(dir, ".horizon", "sessions.jsonl"),
@@ -1367,7 +1364,7 @@ test("83. the ZCode stop-steer hook fires once per session: decision-block steer
       rmSync(tmp2, { recursive: true, force: true });
     }
     // Malformed stdin: silent, and no marker is written.
-    const tmp3 = freshDir();
+    const tmp3 = freshDir("horizon-adapter-test-");
     try {
       const r4 = runHook(hook, { input: "not json", cwd: dir, env: { TMPDIR: tmp3 } });
       assert.equal(r4.code, 0);
@@ -1379,7 +1376,7 @@ test("83. the ZCode stop-steer hook fires once per session: decision-block steer
     // A storeless working directory: silent, no marker — storeless
     // `horizon session-end` exits 0 without writing, so steering there
     // would spend the user's yes on a no-op.
-    const tmp4 = freshDir();
+    const tmp4 = freshDir("horizon-adapter-test-");
     try {
       const r5 = runHook(hook, {
         input: JSON.stringify({ hookEventName: "Stop", session_id: "sess_nowhere", cwd: tmp4 }),
@@ -1429,7 +1426,7 @@ test("84. the ZCode adapter ships its config and scripts: .zcode/config.json wir
 // killed at the timeout and reported as status -1, fast. The 50ms bound keeps
 // the pin cheap; the policy default is 15s (runBin's only caller-facing knob).
 test("support-timeout. runBin kills a hung bin at the timeout — status -1, and the PID is gone", async () => {
-  const dir = freshDir();
+  const dir = freshDir("horizon-adapter-test-");
   const fakeBin = join(dir, "fakebin");
   mkdirSync(fakeBin, { recursive: true });
   // exec so the kill lands on the sleep itself, not a shell wrapper; the

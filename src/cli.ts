@@ -23,12 +23,15 @@ function flagKey(name) {
   return name.slice(2);
 }
 
-function stdout(s) {
-  process.stdout.write(s);
-}
-
-function stderr(s) {
-  process.stderr.write(s);
+// The output sink: the two writers main() reports through, defaulting to the
+// process streams. The bins never pass one — byte-identical behavior — and
+// the test harness hands a capturing pair, so a suite round is a function
+// call instead of a process spawn. Bound at call time, never import time.
+function processSink() {
+  return {
+    stdout: (s) => process.stdout.write(s),
+    stderr: (s) => process.stderr.write(s),
+  };
 }
 
 // Shared with the composer: horizon-inject --version prints the same
@@ -128,18 +131,25 @@ function logTimestamp(ts) {
   return String(ts);
 }
 
-export async function main(argv) {
+export async function main(argv, sink = processSink()) {
   const globals = {};
   const globalExplicit = new Set();
   const p1 = parseFlags(argv, globals, globalExplicit);
   let json = !!globals.json;
+  // Exit codes, for the reader — docs only. The contract's one home is the
+  // test suite's bare literals; nothing here imports these numbers.
+  //   0 success · 2 usage (parse, unknown command or flag, bad --limit) ·
+  //   3 rejected text (gap text, about line, details) · 4 at capacity ·
+  //   5 unknown or invalid gap id · 6 rename retries exhausted ·
+  //   7 store malformed or unusable · 8 duplicate or retired gap id.
+  //   1 is nobody's: a crash crashes.
   const fail = (code, message) => {
     if (json) {
-      stdout(JSON.stringify({ error: { code, message } }) + "\n");
+      sink.stdout(JSON.stringify({ error: { code, message } }) + "\n");
     } else if (code === 2) {
-      stderr(`${message}\n${usage()}\n`);
+      sink.stderr(`${message}\n${usage()}\n`);
     } else {
-      stderr(`${message}\n`);
+      sink.stderr(`${message}\n`);
     }
     return code;
   };
@@ -148,11 +158,11 @@ export async function main(argv) {
   const command = p1.positionals[0];
   const rest = p1.positionals.slice(1);
   if (globals.help) {
-    stdout(helpText() + "\n");
+    sink.stdout(helpText() + "\n");
     return 0;
   }
   if (globals.version) {
-    stdout(`horizon ${cliVersion()}\n`);
+    sink.stdout(`horizon ${cliVersion()}\n`);
     return 0;
   }
   if (command === undefined) return fail(2, "horizon: no command given");
@@ -219,7 +229,7 @@ export async function main(argv) {
     case "show": {
       const r = resolveStore(cwd);
       if (!r) {
-        if (json) stdout("[]\n");
+        if (json) sink.stdout("[]\n");
         return 0;
       }
       if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
@@ -227,7 +237,7 @@ export async function main(argv) {
       const g = readGapsFile(storeDir);
       if (!g.ok) return fail(g.code, g.message);
       if (json) {
-        stdout(JSON.stringify(g.data.gaps) + "\n");
+        sink.stdout(JSON.stringify(g.data.gaps) + "\n");
       } else {
         // The about line prints as a header (`about` + two spaces + text,
         // the gap line format) ahead of the gap lines — and alone when the
@@ -236,7 +246,7 @@ export async function main(argv) {
         const lines = [];
         if (typeof g.data.about === "string") lines.push(`about  ${g.data.about}`);
         for (const gap of g.data.gaps) lines.push(gapLine(gap));
-        if (lines.length > 0) stdout(lines.join("\n") + "\n");
+        if (lines.length > 0) sink.stdout(lines.join("\n") + "\n");
       }
       return 0;
     }
@@ -252,7 +262,7 @@ export async function main(argv) {
         if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
         const g = readGapsFile(r.dir);
         if (!g.ok) return fail(g.code, g.message);
-        if (typeof g.data.about === "string") stdout(`${g.data.about}\n`);
+        if (typeof g.data.about === "string") sink.stdout(`${g.data.about}\n`);
         return 0;
       }
       // Write mode: set/replace, or clear. The store operation owns store
@@ -277,7 +287,7 @@ export async function main(argv) {
         origin,
       });
       if (w) return fail(w.code, w.message);
-      stdout(`${targetId}\n`);
+      sink.stdout(`${targetId}\n`);
       return 0;
     }
 
@@ -304,8 +314,8 @@ export async function main(argv) {
         // stated; the contract pins the wording).
         const g = readGap(cwd, targetId);
         if (!g.ok) return fail(g.code, g.message);
-        if (typeof g.data.details === "string") stdout(`${g.data.details}\n`);
-        else stdout(`no details for ${targetId}\n`);
+        if (typeof g.data.details === "string") sink.stdout(`${g.data.details}\n`);
+        else sink.stdout(`no details for ${targetId}\n`);
         return 0;
       }
       // Write mode: set/rewrite, or clear. Like amend (which appends
@@ -333,12 +343,12 @@ export async function main(argv) {
       if (!s.ok) return fail(s.code, s.message);
       for (const rec of s.records.slice(-limit).reverse()) {
         if (json) {
-          stdout(JSON.stringify(rec) + "\n");
+          sink.stdout(JSON.stringify(rec) + "\n");
         } else {
           const added = Array.isArray(rec.gaps_added) ? rec.gaps_added.length : 0;
           const closed = Array.isArray(rec.gaps_closed) ? rec.gaps_closed.length : 0;
           const summary = rec.summary ?? "(no summary)";
-          stdout(`${logTimestamp(rec.ts)}  ${rec.harness}  +${added} -${closed}  ${summary}\n`);
+          sink.stdout(`${logTimestamp(rec.ts)}  ${rec.harness}  +${added} -${closed}  ${summary}\n`);
         }
       }
       return 0;
@@ -366,7 +376,7 @@ export async function main(argv) {
     case "init": {
       const r = ensureStoreDir(cwd);
       if (r.code !== undefined) return fail(r.code, r.message);
-      if (r.created) stderr(`horizon: created ${r.dir}\n`);
+      if (r.created) sink.stderr(`horizon: created ${r.dir}\n`);
       return 0;
     }
 
