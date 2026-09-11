@@ -18,6 +18,9 @@ distilled paragraph), and it is not what to do this session.
 One human-authored line saying what this project **is** — as opposed to the
 horizon, which says where the work is heading.
 
+When the stored line and the human's words disagree, the human wins: the agent
+offers to rewrite the line with their words, after their yes.
+
 ## Gap
 
 One thing the human wants that does not exist yet, written as a capability, use
@@ -105,9 +108,18 @@ human from an agent.
 
 ## Nudge
 
-What is injected on a project with **no** open gaps: a single line saying the
-horizon is empty, and to offer adding a gap if the human voices a lasting want.
-It is not a gap and is never stored.
+One of two texts injected when a store has **no** open gaps — chosen by store
+state, never stored, never a gap.
+
+The **bootstrap nudge** lands when there is no about line either (store absent
+or empty): the agent may offer once, unprompted, to set the about line or add
+the first gap — with a draft, and only after the human's yes. A decline ends
+the offering for this session; being asked again in a later session is
+expected.
+
+The **warm nudge** lands when an about line is set but no gaps exist: offer to
+add a gap when the human voices a lasting want, and offer to update the about
+line when the human's own words no longer match it.
 
 ## Resolution
 

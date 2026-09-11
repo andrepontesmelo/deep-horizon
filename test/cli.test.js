@@ -634,9 +634,10 @@ test("34. exported texts equal the spec section 10 fence blocks byte-for-byte", 
     assert.ok(open > h && close > open, `unclosed fence after ${heading}`);
     return spec.slice(open + 1, close).join("\n");
   }
-  const { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT } = await import(SRC);
+  const { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT } = await import(SRC);
   assert.equal(HORIZON_BLOCK_TEMPLATE, fenceAfter("### 10.1"));
-  assert.equal(NUDGE_TEXT, fenceAfter("### 10.2"));
+  assert.equal(BOOTSTRAP_NUDGE_TEXT, fenceAfter("### 10.2"));
+  assert.equal(NUDGE_TEXT, fenceAfter("### 10.3"));
 });
 
 // --- Adversary regression gates (ADV-1..12, fix card t_76f202ea) ---

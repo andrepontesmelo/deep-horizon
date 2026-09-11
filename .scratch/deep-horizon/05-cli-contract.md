@@ -61,7 +61,7 @@ repo-root store unless they carry their own `.horizon/`.
   order). Never more than 5. A closed gap is *removed* from this array.
 - `about` — **optional** top-level string: the one human-authored line saying
   what this project *is*, distinct from the gaps, which say where the work is
-  heading (§10.3). Absent = unset; present but not a string is malformed
+  heading (§10.4). Absent = unset; present but not a string is malformed
   (exit 7). Version stays 1 — old stores remain valid.
 - `provenance.origin` — one of `human`, `agent-proposed`. Advisory only; the
   CLI cannot actually tell (§6).
@@ -104,8 +104,9 @@ One object per line, appended, never rewritten:
 
 ### 3.1 `horizon show`
 
-Prints the current open gaps. **The injection path** — its stdout is what a
-hook pipes into a session, so it must need zero parsing.
+Prints the current open gaps. Feeds the injection: `horizon-inject` (D6)
+composes this stdout verbatim into the §10 block's `{{GAPS}}` slot, so it must
+need zero parsing.
 
 Human form (no `--json`), gaps in insertion order:
 
@@ -117,7 +118,7 @@ g_77c1e004  Rentals can be compared across sites without re-entering filters.
 - Exactly one line per gap: id, two spaces, text.
 - When the store carries an `about` line, `show` prints it first as
   `about  <text>` — the token `about`, two spaces, the text — ahead of the
-  gap lines, and alone when there are no gaps. Unset, no such line (§10.3).
+  gap lines, and alone when there are no gaps. Unset, no such line (§10.4).
   `--json` output is unchanged: the bare gaps array.
 - Gaps print in **insertion order, oldest first** — the order they are stored
   in `gaps.json` (`added_at` ascending). Resolved in
@@ -128,8 +129,9 @@ g_77c1e004  Rentals can be compared across sites without re-entering filters.
   order: one order everywhere, no re-sorting at any layer.
 - **No header, no footer, no dates, no counts, no colour, no trailing blank
   line.** Dates and move counts are for `horizon log` (HL-03 r2).
-- No gaps → prints nothing, exit **0**. Emptiness is not an error; the *nudge*
-  is the adapter's job, not the CLI's.
+- No gaps → prints nothing, exit **0**. Emptiness is not an error; the nudge
+  (§10.2/§10.3) is `horizon-inject`'s job, not the CLI's — `show` itself stays
+  silent either way.
 - No store at all → prints nothing, exit **0**. A project without a horizon is
   the normal case and must stay silent and cheap (HL-03 r1/r2).
 
@@ -393,6 +395,20 @@ These strings live in the **core package**, not per-adapter. Five copies would
 diverge within a month, and the premise is that every harness sees the same
 horizon — which has to mean the same words about it.
 
+Selection is **state-sensitive** — exactly one variant per session, never two,
+never none:
+
+| Store state | Injected text |
+|---|---|
+| open gaps | the horizon block (§10.1), prefixed by the about line when set (§10.4) |
+| no gaps, `about` set | the warm nudge (§10.3), prefixed by the about line (§10.4) |
+| no gaps, no `about` — store absent or empty alike | the bootstrap nudge (§10.2), alone |
+
+The bootstrap exists so a horizon can start without the human typing
+commands: an agent that sees an empty world may offer to draft the first line
+itself, once, behind the user's yes. The warm nudge keeps that licence once
+*something* is set, narrowed to adding gaps and refreshing a stale about line.
+
 `{{GAPS}}` is `horizon show` stdout **substituted verbatim, never
 re-formatted**. If bullets or numbering are ever wanted, they belong in §3.1's
 output, not in five adapters that would drift apart. Injection order equals
@@ -419,10 +435,12 @@ What it is not: a backlog, a task list, or work assigned to this session. A gap
 may sit open for weeks across many sessions and that is the normal case. Do not
 plan around closing them, and do not report progress against them.
 
-Two things are yours to do. When the user wants something that outlives this
+Three things are yours to do. When the user wants something that outlives this
 session, offer `horizon add "<one line>"`. When something here looks done, offer
-`horizon close <id>`. Both need the user's yes — the horizon is theirs, you only
-hold the pen.
+`horizon close <id>`. If no about line heads this block and the work tells you
+what the project is about, offer `horizon about "<one line>"`; if the user says
+it themselves, offer to set or update it with their words. All need the user's
+yes — the horizon is theirs, you only hold the pen.
 ```
 
 Chosen over a terse variant and an explicit-contract variant. The reasoning:
@@ -437,30 +455,57 @@ not*. Its final clause, "and do not mention them again unless relevant", was
 **dropped deliberately**: a gap becoming relevant mid-session is a good
 outcome, and suppressing it would defeat the injection.
 
-### 10.2 The nudge
+The third duty was added when selection became state-sensitive: with no about
+line heading the block, the agent may offer to draft one (the §10.2 bootstrap
+nudge does the same work before any store exists).
 
-Injected when `horizon show` prints nothing (§3.1: empty store *and* absent
-store both print nothing and exit 0).
+### 10.2 The bootstrap nudge
+
+Injected when the store has neither an about line nor open gaps — an absent
+store and an empty store are the same state here. Composed alone: no about
+prefix, because none exists.
 
 ```
-Horizon: none set. `horizon add "<one line>"` if the user names a want that
-outlives this session.
+This project has no horizon yet — no about line, no gaps. If the work at hand
+tells you what the project is about, offer once to set it:
+`horizon about "<one line>"` with your draft, after the user's yes. If the
+user says it themselves, offer their words instead. When the user names a want
+that outlives this session, offer `horizon add "<one line>"` the same way.
+A decline ends the offering for this session.
 ```
 
-Two lines, because this appears in nearly every session of every project — the
-overwhelming majority have no horizon. A longer variant carrying "don't prompt
-them unasked" was rejected: it spends a line in every session on every project
-to prevent a behaviour the shorter text doesn't especially invite.
+The only text with licence to offer **unprompted**: without it, a horizon
+never starts unless the human already knows the commands. The licence is
+narrow — offer once, with a draft, after a yes. A decline ends the offering
+for this session; being asked again in a later session is the expected,
+normal case.
 
-### 10.3 The about line and the `about` command
+### 10.3 The warm nudge
+
+Injected when an about line is set but no gaps exist. Composed **after** the
+about prefix (§10.4), so "the line above" is the about line, literally.
+
+```
+No gaps yet. `horizon add "<one line>"` if the user names a want that
+outlives this session. If what the user says the project is about no longer
+matches the line above, offer to update it — `horizon about`, their words,
+after their yes.
+```
+
+Short, because it appears in every session of a described-but-gapless
+project. Two duties only: add when the user names a lasting want, and offer
+to update the about line when the user's own words have outgrown it — when
+they disagree, the user's words win.
+
+### 10.4 The about line and the `about` command
 
 When the store carries an `about` line (§1.1), the injected text opens with
-one line and a blank line ahead of the block or the nudge:
+one line and a blank line ahead of the block or the warm nudge:
 
 ```
 This project is about: <about text>
 
-<the horizon block from 10.1, or the nudge from 10.2 — byte-identical>
+<the horizon block from 10.1, or the warm nudge from 10.3 — byte-identical>
 ```
 
 The about line is the one human-authored sentence saying what this project
@@ -480,24 +525,28 @@ underneath it. It is written by the `about` command, not the add/close flow:
 `about`, two spaces, the text, the gap line format (§3.1). `--json` output is
 unchanged.
 
-Unset, the injected text is exactly §10.1/§10.2 — the about line adds a
-prefix and nothing else, so the locked strings never change to carry it. The
-prefix is composed by `horizon-inject` from the core package's `aboutPrefix`
-helper (D6: composition stays single-sourced there, never per-adapter).
+Unset, the injected text is exactly §10.1 (gaps present) or §10.2 (no gaps,
+no about) — the about line adds a prefix and nothing else, so the locked
+strings never change to carry it. The bootstrap nudge is definitionally the
+no-about case, so it never carries a prefix. The prefix is composed by
+`horizon-inject` from the core package's `aboutPrefix` helper (D6:
+composition stays single-sourced there, never per-adapter).
 
-### 10.4 Acceptance tests for the texts
+### 10.5 Acceptance tests for the texts
 
 34. The horizon block substitutes `{{GAPS}}` with `show` stdout byte-for-byte,
     with no added bullets, indentation, or trailing newline changes.
-35. The nudge is emitted when `show` is empty, and the block when it is not —
-    never both, never neither.
-36. Both strings are exported from the core package and imported by every
+35. Exactly one of the three variants is injected for any store state — the
+    block when gaps are open; the bootstrap nudge when neither about nor gaps
+    are set (store absent or empty alike); the warm nudge when about is set
+    and no gaps are. Never two, never none.
+36. All three strings are exported from the core package and imported by every
     adapter; no adapter contains a literal copy. (Enforced by a test that greps
     the adapter sources for a distinctive phrase from each string.)
 37. The about line, when set, is injected as `This project is about: <text>`
-    followed by a blank line ahead of the block (gaps present) or the nudge
-    (none); when unset, the injected text is byte-identical to §10.1/§10.2
-    alone.
+    followed by a blank line ahead of the block (gaps present) or the warm
+    nudge (none); the bootstrap nudge carries no prefix. When unset, the
+    injected text is byte-identical to §10.1/§10.2 alone.
 38. The about line survives every whole-file rewrite (`add`, `close`,
     `amend`, `about` itself) and is removed only by `about --clear`, which
     preserves the gaps. A non-string `about` in `gaps.json` is malformed

@@ -117,7 +117,7 @@ function parseFlags(tokens, opts, explicit) {
   return { positionals };
 }
 
-// One-line text validation shared by gap text and the about line (spec 10.3:
+// One-line text validation shared by gap text and the about line (spec 10.4:
 // the about line is validated identically in shape to gap text). `label`
 // names the field in the message so the failure is never mysterious.
 function validateOneLineText(text, label) {
@@ -139,7 +139,7 @@ function validateGapText(text) {
 
 // Every whole-file gaps.json rewrite goes through here. Rebuilding the store
 // as a bare {version, revision, gaps} would silently drop the about line
-// (spec 10.3), so it is carried forward — but only when the current store
+// (spec 10.4), so it is carried forward — but only when the current store
 // carries it: an unset store stays without the field.
 function nextStore(cur, gaps) {
   const next = { version: 1, revision: cur.revision + 1, gaps };
@@ -251,7 +251,7 @@ export async function main(argv) {
         // The about line prints as a header (`about` + two spaces + text,
         // the gap line format) ahead of the gap lines — and alone when the
         // store has an about but no gaps. --json output stays the bare gaps
-        // array, unchanged (spec 3.1, 10.3).
+        // array, unchanged (spec 3.1, 10.4).
         const lines = [];
         if (typeof g.data.about === "string") lines.push(`about  ${g.data.about}`);
         for (const gap of g.data.gaps) lines.push(`${gap.id}  ${gap.text}`);
@@ -280,7 +280,7 @@ export async function main(argv) {
       }
       // Write mode: set/replace, or clear. Both rewrite the whole file with
       // revision + 1, gaps preserved — clear writes the store WITHOUT the
-      // about field, so an unset store stays without it (spec 10.3).
+      // about field, so an unset store stays without it (spec 10.4).
       const found = resolveStore(cwd);
       let storeDir;
       if (!found) {

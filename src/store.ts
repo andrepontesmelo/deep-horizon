@@ -161,7 +161,7 @@ export function readGapsFile(storeDir) {
   // `about` (the human-authored one line saying what this project IS) is
   // optional: absent = unset, and version stays 1 either way. Present, it
   // must be a string — anything else is the same malformed-store exit as the
-  // checks above, never a silent drop (spec 1.1, 10.3).
+  // checks above, never a silent drop (spec 1.1, 10.4).
   if (data.about !== undefined && typeof data.about !== "string") {
     return { ok: false, code: 7, message: `horizon: ${path}: invalid store: about is not a string` };
   }

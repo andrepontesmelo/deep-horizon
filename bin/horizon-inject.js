@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // horizon-inject (D6): pure composition. Runs the `show` logic against the
-// resolved store, then prints the locked section-10 horizon block when gaps
-// exist, or the nudge when they do not. No store writes, no new commands.
+// resolved store, then prints exactly one locked section-10 variant by state:
+// the horizon block when gaps exist; with no gaps, the warm nudge when an
+// about line is set, the bootstrap nudge when neither is. No store writes,
+// no new commands.
 //
 // Flags mirror the CLI's global options so harness glue can forward them
 // (--cwd, --harness, --session, --origin); only --cwd changes behaviour.
@@ -9,7 +11,7 @@
 // callers. Unknown flags are a usage error (exit 2).
 import { existsSync, readFileSync } from "node:fs";
 import { resolveStore, readGapsFile } from "../dist/store.js";
-import { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT, aboutPrefix } from "../dist/texts.js";
+import { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT, aboutPrefix } from "../dist/texts.js";
 
 const GLOBAL_FLAGS = new Set(["--cwd", "--json", "--help", "--version", "--harness", "--session", "--origin"]);
 
@@ -50,8 +52,9 @@ function main() {
     process.stdout.write(
       "usage: horizon-inject [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>]\n" +
         "\n" +
-        "Prints the about line (when set) and a blank line, then the section-10 horizon block when\n" +
-        "the store has open gaps, the nudge when it does not.\n" +
+        "Prints the about line (when set) and a blank line, then the section-10 horizon\n" +
+        "block when the store has open gaps; with no gaps, the warm nudge when an about\n" +
+        "line is set, the bootstrap nudge when neither is.\n" +
         "Read-only: never writes the store. The composition twin of `horizon show` (spec D6).\n",
     );
     return;
@@ -93,12 +96,22 @@ function main() {
       }
     }
     if (exitCode === 0) {
-      const core =
-        stdoutText.length > 0 ? HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => stdoutText) : NUDGE_TEXT;
-      // aboutPrefix is empty when the store carries no about line, so an
-      // unset store composes to exactly the block/nudge, byte-identical to
-      // the pre-about output (spec 10.3).
-      text = aboutPrefix(about) + core;
+      // Three variants, exactly one per state (spec 10): gaps → the block;
+      // about but no gaps → the warm nudge; neither → the bootstrap nudge.
+      // aboutPrefix is empty with no about line, so the block and the warm
+      // nudge compose with their prefix and the bootstrap case carries none
+      // (spec 10.4).
+      const hasGaps = stdoutText.length > 0;
+      const hasAbout = typeof about === "string";
+      let core;
+      if (hasGaps) {
+        core = HORIZON_BLOCK_TEMPLATE.replace("{{GAPS}}", () => stdoutText);
+      } else if (hasAbout) {
+        core = NUDGE_TEXT;
+      } else {
+        core = BOOTSTRAP_NUDGE_TEXT;
+      }
+      text = hasGaps || hasAbout ? aboutPrefix(about) + core : core;
     }
   } catch {
     process.stderr.write("horizon-inject: store read failed\n");

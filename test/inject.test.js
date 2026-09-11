@@ -65,20 +65,20 @@ test("35. inject prints the horizon block, gaps substituted verbatim, byte-for-b
   }
 });
 
-test("36. inject prints the nudge, exactly, on an absent store; on an empty store; never both, never neither", async () => {
+test("36. inject prints the bootstrap nudge, exactly, on an absent store; on an empty store; never two variants, never none", async () => {
   const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
-  const nudge = specFence(spec, "### 10.2");
+  const bootstrap = specFence(spec, "### 10.2");
   const absent = freshDir();
   try {
     const r1 = await run(["--cwd", absent]);
     assert.equal(r1.code, 0);
-    assert.equal(r1.stdout, nudge);
+    assert.equal(r1.stdout, bootstrap);
     const empty = freshDir();
     try {
       seed(empty, []);
       const r2 = await run(["--cwd", empty]);
       assert.equal(r2.code, 0);
-      assert.equal(r2.stdout, nudge);
+      assert.equal(r2.stdout, bootstrap);
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
@@ -128,7 +128,7 @@ test("38. inject makes no store writes: read-only dirs and read-only files still
       const beforeEmpty = readdirSync(emptyStore).sort().join(",");
       const r2 = await run(["--cwd", empty]);
       assert.equal(r2.code, 0);
-      assert.ok(r2.stdout.startsWith("Horizon: none set"));
+      assert.ok(r2.stdout.startsWith("This project has no horizon yet"));
       assert.equal(readdirSync(emptyStore).sort().join(","), beforeEmpty, "store directory listing changed");
     } finally {
       rmSync(empty, { recursive: true, force: true });
@@ -271,9 +271,9 @@ test("44. horizon-inject nonzero exit: nothing injected", async () => {
   assert.deepEqual(calls, []);
 });
 
-test("45. no adapter contains a literal of either section-10 text (spec acceptance 36, made real)", async () => {
+test("45. no adapter contains a literal of any section-10 text (spec acceptance 36, made real)", async () => {
   const { readdirSync, statSync } = await import("node:fs");
-  const { HORIZON_BLOCK_TEMPLATE, NUDGE_TEXT } = await import(new URL("../src/index.ts", import.meta.url).pathname);
+  const { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT } = await import(new URL("../src/index.ts", import.meta.url).pathname);
   function phrases(text) {
     // Distinctive 6+ word fragments from each text.
     const words = text.split(/\s+/);
@@ -281,7 +281,7 @@ test("45. no adapter contains a literal of either section-10 text (spec acceptan
     for (let i = 0; i + 5 < words.length; i += 4) out.push(words.slice(i, i + 6).join(" "));
     return out;
   }
-  const needles = [...phrases(HORIZON_BLOCK_TEMPLATE), ...phrases(NUDGE_TEXT)];
+  const needles = [...phrases(HORIZON_BLOCK_TEMPLATE), ...phrases(BOOTSTRAP_NUDGE_TEXT), ...phrases(NUDGE_TEXT)];
   assert.ok(needles.length >= 20);
   const roots = ["src/adapters", "adapters/hermes"];
   for (const root of roots) {
@@ -357,7 +357,8 @@ test("48. end-to-end: apply() with no overrides injects the composed block throu
     const text = injected[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
     assert.ok(text.includes("g_00000001  End-to-end gap"));
-    // The empty-store twin: the real nudge comes back through the same chain.
+    // The empty-store twin: the real bootstrap nudge comes back through the
+    // same chain.
     const empty = freshDir();
     try {
       seed(empty, []);
@@ -370,7 +371,7 @@ test("48. end-to-end: apply() with no overrides injects the composed block throu
         source: "startup",
       });
       assert.equal(injected2.length, 1);
-      assert.ok(injected2[0].content[0].text.startsWith("Horizon: none set"));
+      assert.ok(injected2[0].content[0].text.startsWith("This project has no horizon yet"));
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
@@ -437,7 +438,7 @@ test("about-inject-1. about + gaps: the about line, a blank line, then the byte-
   }
 });
 
-test("about-inject-2. about + no gaps: the about line, a blank line, then the nudge", async () => {
+test("about-inject-2. about + no gaps: the about line, a blank line, then the warm nudge", async () => {
   const dir = freshDir();
   try {
     seed(dir, []);
@@ -446,7 +447,7 @@ test("about-inject-2. about + no gaps: the about line, a blank line, then the nu
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const expected =
-      "This project is about: AI plugin to help agents with long term goals\n\n" + specFence(spec, "### 10.2");
+      "This project is about: AI plugin to help agents with long term goals\n\n" + specFence(spec, "### 10.3");
     assert.equal(r.stdout, expected);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -465,5 +466,46 @@ test("about-inject-3. without an about line: output is byte-identical to the pre
     assert.ok(!r.stdout.startsWith("This project is about"), "about prefix leaked into an unset store");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("inject-matrix. the five store states each produce exactly one variant — never two, never none (spec 10, acceptance 35)", async () => {
+  const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+  const block = specFence(spec, "### 10.1");
+  const bootstrap = specFence(spec, "### 10.2");
+  const warm = specFence(spec, "### 10.3");
+  const ABOUT = "AI plugin to help agents with long term goals";
+  const prefix = `This project is about: ${ABOUT}\n\n`;
+  const GAP = "A person can hand a photo to the app and get the plant named.";
+  const show = `g_00000001  ${GAP}\n`;
+  // Openings chosen so no one is a substring of another variant's text.
+  const openings = {
+    block: "This project has a horizon — a short list",
+    bootstrap: "This project has no horizon yet — no about line",
+    warm: "No gaps yet. `horizon add",
+  };
+  const dirs = [];
+  const cases = [];
+  const noStore = freshDir(); dirs.push(noStore);
+  cases.push(["no store", noStore, bootstrap, "bootstrap"]);
+  const emptyStore = freshDir(); dirs.push(emptyStore); seed(emptyStore, []);
+  cases.push(["store, nothing set", emptyStore, bootstrap, "bootstrap"]);
+  const aboutOnly = freshDir(); dirs.push(aboutOnly); seed(aboutOnly, []); setAbout(aboutOnly, ABOUT);
+  cases.push(["about only", aboutOnly, prefix + warm, "warm"]);
+  const gapsOnly = freshDir(); dirs.push(gapsOnly); seed(gapsOnly, [GAP]);
+  cases.push(["gaps only", gapsOnly, block.replace("{{GAPS}}", show), "block"]);
+  const aboutGaps = freshDir(); dirs.push(aboutGaps); seed(aboutGaps, [GAP]); setAbout(aboutGaps, ABOUT);
+  cases.push(["about+gaps", aboutGaps, prefix + block.replace("{{GAPS}}", show), "block"]);
+  try {
+    for (const [label, dir, expected, variant] of cases) {
+      const r = await run(["--cwd", dir]);
+      assert.equal(r.code, 0, `${label}: ${r.stderr}`);
+      assert.equal(r.stdout, expected, `${label}: wrong variant composed`);
+      const present = Object.entries(openings).filter(([, opening]) => r.stdout.includes(opening));
+      assert.equal(present.length, 1, `${label}: expected exactly one variant, saw ${present.map(([k]) => k).join("+") || "none"}`);
+      assert.equal(present[0][0], variant, `${label}: wrong variant present`);
+    }
+  } finally {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
   }
 });

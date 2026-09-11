@@ -272,14 +272,14 @@ test("58. the pi adapter end-to-end: startup stash flows the real horizon-inject
     assert.ok(first.message.content.startsWith("This project has a horizon"));
     assert.ok(first.message.content.includes("g_00000001  End-to-end pi gap"));
     assert.equal(first.message.customType, "deep-horizon");
-    // The nudge twin: empty store still injects the nudge (composition, not gap-detection).
+    // The bootstrap-nudge twin: empty store still injects the nudge (composition, not gap-detection).
     const empty = freshDir();
     try {
       seed(empty, []);
       const registered2 = mod.apply({});
       await registered2["session_start"]({ reason: "startup" }, { cwd: empty });
       const out = await registered2["before_agent_start"]({ prompt: "go" }, {});
-      assert.ok(out.message.content.startsWith("Horizon: none set"));
+      assert.ok(out.message.content.startsWith("This project has no horizon yet"));
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
@@ -439,7 +439,7 @@ test("63. the Hermes section suppresses injection for every subagent discriminat
   }
 });
 
-test("64. the Hermes section never raises with no store and an empty cwd — it returns the nudge", () => {
+test("64. the Hermes section never raises with no store and an empty cwd — it returns the bootstrap nudge", () => {
   const dir = freshDir();
   try {
     const script = join(dir, "drive.py");
@@ -453,7 +453,7 @@ test("64. the Hermes section never raises with no store and an empty cwd — it 
     ].join("\n"));
     const r = runPython([script], { cwd: dir });
     assert.equal(r.code, 0, `python failed: ${r.stderr}`);
-    assert.ok(r.stdout.includes("Horizon: none set"),
+    assert.ok(r.stdout.includes("This project has no horizon yet"),
       `no store must yield the nudge, not silence: ${JSON.stringify(r.stdout.slice(0, 80))}`);
     assert.ok(r.stdout.length < 4000, "the nudge must fit the cap");
   } finally {
@@ -961,7 +961,7 @@ test("74. the Hermes section prefers the session cwd when it has a store, even i
   }
 });
 
-test("75. the Hermes section keeps the first candidate when neither cwd has a store — the nudge for the session cwd, not silence", () => {
+test("75. the Hermes section keeps the first candidate when neither cwd has a store — the bootstrap nudge for the session cwd, not silence", () => {
   // A genuinely storeless project dir must still get its nudge (that is
   // correct behavior), and the first candidate (the session cwd) stands —
   // the launch dir never hijacks a storeless session.
@@ -983,7 +983,7 @@ test("75. the Hermes section keeps the first candidate when neither cwd has a st
     ].join("\n"));
     const r = runPython([script], { cwd: launch });
     assert.equal(r.code, 0, `python failed: ${r.stderr}`);
-    assert.ok(r.stdout.includes("Horizon: none set"),
+    assert.ok(r.stdout.includes("This project has no horizon yet"),
       `both storeless must yield the nudge, got: ${JSON.stringify(r.stdout.slice(0, 80))}`);
     assert.ok(r.stdout.length < 4000, "the nudge must fit the cap");
   } finally {
