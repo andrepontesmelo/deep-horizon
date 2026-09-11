@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "SessionStart": [
+        {
+          "matcher": "startup",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/session-start\""
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/stop-steer\""
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
