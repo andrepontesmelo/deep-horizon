@@ -403,8 +403,13 @@ test("47. package.json shape per D1: two bins, three adapter exports, no native 
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.deepEqual(Object.keys(pkg.bin).sort(), ["horizon", "horizon-inject"]);
   assert.deepEqual(Object.keys(pkg.exports).sort(), [".", "./dsh", "./opencode", "./pi", "./texts"]);
-  assert.ok(pkg.exports["./dsh"].includes("dsh"), "the dsh export points at the dsh adapter");
-  for (const key of ["./dsh", "./opencode", "./pi"]) assert.ok(pkg.exports[key].endsWith(".ts"), "exports resolve to source files");
+  // C3 live-probe finding (2026-09-10): Node refuses to type-strip files under
+  // node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING), so an installed
+  // dsh profile could never load a .ts runtime target. The dsh export's runtime
+  // (default) target must be the built JS; types stay at the source.
+  assert.equal(pkg.exports["./dsh"].default, "./dist/adapters/dsh.js", "the dsh export's runtime target is the built adapter JS");
+  assert.equal(pkg.exports["./dsh"].types, "./src/adapters/dsh.ts", "the dsh export keeps types at the source");
+  for (const key of ["./opencode", "./pi"]) assert.ok(pkg.exports[key].endsWith(".ts"), "host-loaded exports resolve to source files");
   const deps = { ...(pkg.dependencies ?? {}), ...(pkg.optionalDependencies ?? {}), ...(pkg.peerDependencies ?? {}) };
   for (const banned of ["os-lock", "fs-ext", "@deepseek-ai/dsh-agent", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-tools", "@deepseek-ai/cordis"]) {
     assert.equal(deps[banned], undefined, `dependency ${banned} must not be present (glue spawns bins, never imports DSH)`);

@@ -32,7 +32,7 @@
   "bin": { "horizon": "bin/horizon.js", "horizon-inject": "bin/horizon-inject.js" },
   "exports": {
     ".": "./src/index.ts",
-    "./dsh": "./src/adapters/dsh.ts",
+    "./dsh": { "types": "./src/adapters/dsh.ts", "default": "./dist/adapters/dsh.js" },
     "./opencode": "./src/adapters/opencode.ts",
     "./pi": "./src/adapters/pi.ts",
     "./texts": "./src/texts.ts"
