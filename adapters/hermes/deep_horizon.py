@@ -94,7 +94,6 @@ def _git_root() -> str:
 # so the tokenizer itself stays dumb (a token alone never triggers anything).
 _CANDIDATE_RE = re.compile(r"~/[^\s\"'`]*|/[^\s\"'`]*")
 
-
 def _spawn_bin(bin_name: str, args: list[str]) -> tuple[int, str, str]:
     """Run a horizon bin, returning (status, stdout, stderr).
 
@@ -239,6 +238,13 @@ def _section_text(session_info) -> str:
         cwd = _resolve_horizon_cwd(session_info.get("cwd"))
         if not cwd:
             return ""
+        # Remember where THIS session's horizon was composed from, so the
+        # close hook can land the record in the same store even though the
+        # finalize payload arrives with no cwd and the process may have
+        # chdir'd by then (_session_cwd above).
+        sid = session_info.get("session_id")
+        if isinstance(sid, str) and sid:
+            _session_cwd[sid] = cwd
         try:
             status, stdout, _stderr = _spawn_bin("horizon-inject", ["--harness", HARNESS, "--cwd", cwd])
         except (FileNotFoundError, subprocess.SubprocessError, OSError):
@@ -265,11 +271,13 @@ def _on_session_finalize(payload=None, **_ignored) -> None:
         if not isinstance(session_id, str) or not session_id:
             return
         # Same cwd trust rule as the section (_resolve_horizon_cwd): the
-        # record must land in the store the session actually injected from —
-        # the launch dir's store when the payload's session cwd has none (the
-        # placeholder home fallback). Without --cwd the bin would walk up from
-        # the gateway's own WorkingDirectory instead.
-        cwd = _resolve_horizon_cwd(info.get("cwd"))
+        # record must land in the store the session actually injected from.
+        # Preferred source is the cwd the SECTION froze for this session
+        # (_session_cwd) — the finalize payload carries no cwd key and the
+        # process may have chdir'd since turn one; then the payload cwd
+        # (if a future core adds it), then the process cwd. Without --cwd
+        # the bin would walk up from the gateway's own WorkingDirectory.
+        cwd = _session_cwd.pop(session_id, "") or _resolve_horizon_cwd(info.get("cwd"))
         args = ["session-end", "--harness", HARNESS, "--session", session_id]
         if cwd:
             args += ["--cwd", cwd]
@@ -310,6 +318,17 @@ _seen: dict[tuple[str, str], int] = {}
 # than the stored cursor resets the cursor to zero and rescans (the shrink
 # guard); see _pre_llm_call.
 _scanned: dict[str, int] = {}
+
+# Per-session cwd memory for the close hook. The finalize payload carries no
+# cwd key (verified live, 2026-09-10), and by exit time the process cwd may
+# have moved (the -z runner chdirs mid-session), so the store a record belongs
+# in is the one the SECTION resolved at freeze time — when the launch dir was
+# still the process cwd. _section_text stashes session_id -> resolved cwd;
+# _on_session_finalize prefers that, then the payload cwd, then the process
+# cwd. Entries pop on use; a session whose finalize never fires (a harness
+# gap) leaves at most one short string behind — the same growth shape as
+# _seen above.
+_session_cwd: dict[str, str] = {}
 
 # Allowlist: which tools' params are scanned, and which string params per
 # tool count as path-bearing. terminal's command string is where ``git -C`` /
