@@ -3,5 +3,13 @@ node_modules/
 lib/
 *.tgz
 dist/
-.horizon/
+# 09-open-items-resolved §B: gaps.json is committed; the nested
+# .horizon/.gitignore (written by init) keeps sessions.jsonl and *.tmp.*
+# ignored. A directory-level .horizon/ would make the nested file inert and
+# gap re-includes impossible, so ignore by contents and re-include the
+# tracked artifacts.
+.horizon/*
+!.horizon/gaps.json
+!.horizon/.gitignore
+!.horizon/.gitattributes
 .dex/
