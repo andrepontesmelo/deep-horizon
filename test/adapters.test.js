@@ -175,7 +175,7 @@ test("55. the pi adapter: session_start shells out and stashes only on fresh rea
     const registered = mod.apply({}, {
       spawnBin: (bin, args) => {
         calls.push({ bin, args });
-        return { status: 0, stdout: "PI-MOCK-BLOCK", stderr: "" };
+        return { status: 0, stdout: JSON.stringify({ text: "PI-MOCK-BLOCK", store: join(dir, ".horizon") }), stderr: "" };
       },
     });
     assert.ok(registered["session_start"]);
@@ -261,6 +261,52 @@ test("57. the pi adapter session_shutdown closes the session with horizon sessio
   // Fail-open: a throwing spawn must not reject.
   const registered2 = mod.apply({}, { spawnBin: () => { throw new Error("ENOENT"); } });
   await assert.doesNotReject(registered2["session_shutdown"]({ reason: "quit" }, { sessionManager: { getSessionId: () => "s" } }));
+});
+
+// The close hook hands back the store the startup --json answer resolved:
+// teardown never re-discovers (the harness process may have chdir'd since).
+test("pi-store-handoff. --store rides from the startup answer to session_shutdown, delivered or not; storeless closes keep the plain form", async () => {
+  const mod = await import(PI_ADAPTER);
+  const calls = [];
+  const registered = mod.apply({}, {
+    spawnBin: (bin, args) => {
+      calls.push({ bin, args });
+      return { status: 0, stdout: JSON.stringify({ text: "PI-JSON-BLOCK", store: "/pi-store" }), stderr: "" };
+    },
+  });
+  await registered["session_start"]({ reason: "startup" }, { cwd: "/proj", sessionManager: { getSessionId: () => "pi-s-1" } });
+  const first = await registered["before_agent_start"]({ prompt: "go" }, {});
+  assert.equal(first.message.content, "PI-JSON-BLOCK");
+  // The text stash is consumed by the first prompt, but the store survives
+  // it and reaches the close hook.
+  await registered["session_shutdown"]({ reason: "quit" }, { sessionManager: { getSessionId: () => "pi-s-1" } });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args, ["session-end", "--harness", "pi", "--session", "pi-s-1", "--store", "/pi-store"]);
+  // Storeless startup: nothing to hand back, the close keeps its
+  // cwd-discovery form.
+  const calls2 = [];
+  const registered2 = mod.apply({}, {
+    spawnBin: (bin, args) => {
+      calls2.push({ bin, args });
+      return { status: 0, stdout: JSON.stringify({ text: "NUDGE", store: null }), stderr: "" };
+    },
+  });
+  await registered2["session_start"]({ reason: "startup" }, { cwd: "/proj", sessionManager: { getSessionId: () => "pi-s-2" } });
+  await registered2["before_agent_start"]({ prompt: "go" }, {});
+  await registered2["session_shutdown"]({ reason: "quit" }, { sessionManager: { getSessionId: () => "pi-s-2" } });
+  assert.deepEqual(calls2[1].args, ["session-end", "--harness", "pi", "--session", "pi-s-2"], "a storeless answer closes without --store");
+  // Undelivered stash (shutdown before the first prompt) still closes with
+  // the store.
+  const calls3 = [];
+  const registered3 = mod.apply({}, {
+    spawnBin: (bin, args) => {
+      calls3.push({ bin, args });
+      return { status: 0, stdout: JSON.stringify({ text: "NEVER-DELIVERED", store: "/undelivered-store" }), stderr: "" };
+    },
+  });
+  await registered3["session_start"]({ reason: "startup" }, { cwd: "/proj", sessionManager: { getSessionId: () => "pi-s-3" } });
+  await registered3["session_shutdown"]({ reason: "quit" }, {});
+  assert.deepEqual(calls3[1].args, ["session-end", "--harness", "pi", "--session", "pi-s-3", "--store", "/undelivered-store"]);
 });
 
 test("58. the pi adapter end-to-end: startup stash flows the real horizon-inject block into the first prompt", async () => {
