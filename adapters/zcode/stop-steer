@@ -1,0 +1,73 @@
+#!/bin/sh
+# adapters/zcode/stop-steer — ZCode Stop hook (deep-horizon adapter).
+# POSIX sh + jq. ZCode has no session-close hook (probed the harness bundle:
+# Stop fires at the end of EVERY assistant turn, not at session close), so
+# the session-end record is best-effort the same way the DSH adapter's is: on
+# the first turn stop of a session, steer the agent once to close it out
+# mid-session, with the user's say-so. Fail-open everywhere: exit 0, no
+# output, on any error — a Stop hook must never trap a session.
+#
+# Continuation schema, PROVEN against
+# /home/andre/.npm-global/lib/node_modules/zcode-app-cli/vendor/zcode.cjs
+# (ZCode 3.11.2-22): a Stop hook that exits 0 with the Claude-Code shape
+# {"decision": "block", "reason": "<text>"} sets stopShouldContinue and pushes
+# the reason text into the hook's additionalContexts; the turn machine then
+# re-runs the turn with that text injected (shouldContinueAfterStopHooks
+# requires stopShouldContinue && additionalContexts.length > 0, at most 3
+# continuations). decision "block" is in the schema's enum alongside
+# "approve"; exit code 2 would also block, but the JSON shape keeps the
+# reason as injectable model text.
+#
+# Fires only where a horizon store exists somewhere above the session cwd:
+# storeless, `horizon session-end` exits 0 without writing anything, so a
+# steer there would spend the user's yes on a silent no-op. A store created
+# mid-session (bootstrap offer accepted) is still caught — this check runs
+# at Stop time, after the store exists.
+#
+# Once-guards (either one skips the steer):
+#   1. .horizon/sessions.jsonl — found by walking up from the hook process
+#      cwd (the session's working directory) exactly the way the CLI's
+#      resolveStore walks up — already holds a record for this session id.
+#   2. $TMPDIR/horizon-zcode-steer-<session_id> marker exists.
+# The marker is written BEFORE steering, so a declined close never re-steers.
+set -u
+
+payload=$(cat 2>/dev/null) || exit 0
+[ -n "$payload" ] || exit 0
+
+sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
+# sess_<uuid> ids are letters, digits, hyphens, underscores; anything else is
+# not a session id we can name a marker after or embed in a command.
+case "$sid" in
+  '' | *[!A-Za-z0-9_-]*) exit 0 ;;
+esac
+
+# Guard 0: a store must exist somewhere above (something to record into);
+# guard 1: a record already in the store (walk up from cwd, like the CLI
+# resolves its store).
+dir=$(pwd)
+store_seen=
+while :; do
+  if [ -d "$dir/.horizon" ]; then
+    store_seen=1
+    if grep -qF "\"session_id\":\"$sid\"" "$dir/.horizon/sessions.jsonl" 2>/dev/null; then
+      exit 0
+    fi
+  fi
+  [ "$dir" = "/" ] && break
+  dir=$(dirname "$dir")
+done
+[ -n "$store_seen" ] || exit 0
+
+# Guard 2: the marker from an earlier steer of this session.
+marker=${TMPDIR:-/tmp}/horizon-zcode-steer-$sid
+[ -e "$marker" ] && exit 0
+
+: > "$marker" 2>/dev/null || true
+
+reason="This ZCode session has no horizon session record yet. Ask the user whether to close it into the horizon. If they agree, run:
+horizon session-end --harness zcode --session $sid --summary \"<one line on what this session did>\"
+The --summary is optional: run the command without it if the user does not offer one — the record then carries summary: null (a summary is never fabricated). If the user declines, do nothing and end the session."
+
+jq -cn --arg reason "$reason" '{decision: "block", reason: $reason}' 2>/dev/null || exit 0
+exit 0

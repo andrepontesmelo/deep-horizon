@@ -1,0 +1,68 @@
+#!/bin/sh
+# adapters/zcode/session-start — ZCode SessionStart hook (deep-horizon adapter).
+# POSIX sh + jq. Reads the hook's stdin JSON and, for fresh startups of a
+# project with a horizon store, emits the composed block in the envelope ZCode
+# injects into the session. Fail-open everywhere: any error, missing tool, or
+# missing bin exits 0 with no output — a hook must never block a session.
+#
+# Output path, PROVEN against the harness bundle
+# (/home/andre/.npm-global/lib/node_modules/zcode-app-cli/vendor/zcode.cjs,
+# ZCode 3.11.2-22): plain stdout is ignored — parseHookStdout (jni) returns
+# nothing for output that does not start with "{" — so the
+# {"additionalContext": "..."} JSON envelope is REQUIRED. The key must be
+# camelCase: the schema also accepts "additional_context", but the output
+# mapping (Oni) only reads "additionalContext" into the history entries. The
+# schema is strict (any extra key marks the run failed), so exactly one key
+# is emitted. Non-zero exits other than 2 have their output discarded, which
+# is what makes fail-open free here.
+#
+# Subagents: the SessionStart stdin payload carries NO subagent discriminator
+# (probed the bundle: payload is agentName/cwd/hookEventName/mode/model/
+# sessionId/source/timestamp/traceId/turnId; no parent_session_id, no
+# task_type). agentName is ambiguous — top-level workflow/expert sessions
+# also carry zcode-* names — so a guard on it would misfire, and none is
+# built. Whether subagent child sessions run SessionStart hooks at all is
+# UNPROVEN in the bundle; if they do, they receive the horizon like a
+# top-level session would (noise, not harm — the pi adapter's trade).
+#
+# cwd: the hook process runs in the session's working directory (probed:
+# executionPort.run({cwd: payload.cwd || getWorkingDirectory()})), and
+# ZCODE_PROJECT_DIR env carries the same path, so the store resolves the way
+# `horizon` resolves it. The stdin cwd wins, then ZCODE_PROJECT_DIR, then the
+# process cwd.
+set -u
+
+payload=$(cat 2>/dev/null) || exit 0
+[ -n "$payload" ] || exit 0
+
+# Fresh startups only ("startup" is the first turn of a session-manager
+# instance; "resume" fires after --resume, and a resumed session replays the
+# original injection from its persisted history — re-injecting would
+# duplicate it). The docs' "clear"/"compact" sources never appear in this
+# build's call sites, so the negative match covers them for free.
+source=$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null) || exit 0
+[ "$source" = "startup" ] || exit 0
+
+cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || exit 0
+[ -n "$cwd" ] || cwd=${ZCODE_PROJECT_DIR:-}
+[ -n "$cwd" ] || cwd=$(pwd)
+
+# Bin resolution (hermes pattern): an installed package uses the global bin
+# on PATH; a repo checkout runs bin/horizon-inject.js with node, because the
+# bare bins are not linked yet — the bin is a shim onto the built dist, so
+# the checkout needs its build step (npm install / npm run build) first; a
+# missing build fails open with no text below.
+here=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
+if command -v horizon-inject >/dev/null 2>&1; then
+  text=$(horizon-inject --harness zcode --cwd "$cwd" 2>/dev/null)
+elif command -v node >/dev/null 2>&1 && [ -f "$here/../../bin/horizon-inject.js" ]; then
+  text=$(node "$here/../../bin/horizon-inject.js" --harness zcode --cwd "$cwd" 2>/dev/null)
+else
+  exit 0
+fi
+
+# Empty composition = nothing to inject (a storeless $HOME stays silent).
+[ -n "$text" ] || exit 0
+
+jq -cn --arg text "$text" '{additionalContext: $text}' 2>/dev/null || exit 0
+exit 0
