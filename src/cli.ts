@@ -35,7 +35,10 @@ function stderr(s) {
   process.stderr.write(s);
 }
 
-function cliVersion() {
+// Shared with the composer: horizon-inject --version prints the same
+// package version under the bin's own name (src/inject.ts imports this —
+// one reader of package.json, one fallback).
+export function cliVersion() {
   try {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     return typeof pkg.version === "string" ? pkg.version : "0.0.0";
