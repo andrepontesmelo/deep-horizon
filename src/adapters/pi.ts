@@ -32,80 +32,19 @@
 // DEFAULT export as `default(pi)` — the factory registers the three handlers
 // on the ExtensionAPI. `apply(overrides)` is the testable core the default
 // export delegates to; tests drive handlers without a live harness.
-import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+// The spawn/parse plumbing (runBin, parseInjectAnswer, truthy) is the shared
+// policy in ./support.ts — one timeout, one PATH fallback for every TS
+// adapter.
+import { parseInjectAnswer, runBin, truthy } from "./support.ts";
 
 const HARNESS = "pi";
-
-// Resolve and run a horizon bin. A repo checkout (this file still sitting in
-// src/adapters/) runs bin/<name>.js with the current node; an installed
-// package relies on the global bin on PATH (D2). Throws when the binary
-// cannot be spawned at all (ENOENT) — callers treat that as fail-open. A
-// timeout is set so a hung horizon-inject can never stall a session-start
-// (spawnSync's no-timeout default would otherwise block the session forever —
-// the DSH reference adapter's DEF-ADV-14-1 finding, fixed here at the shared
-// pattern's root).
-function defaultSpawnBin(binName, args) {
-  const local = new URL(`../../bin/${binName}.js`, import.meta.url);
-  let res;
-  if (existsSync(local)) {
-    res = spawnSync(process.execPath, [local.pathname, ...args], { encoding: "utf8", timeout: 15_000 });
-  } else {
-    res = spawnSync(binName, args, { encoding: "utf8", timeout: 15_000 });
-  }
-  if (res.error) throw res.error;
-  // The installed package ships TS source; Node < 23.6 refuses to strip
-  // types for files under node_modules, so the sibling bin dies with a
-  // module-error exit before printing anything. Fall back to the PATH bin
-  // (the global install from the same package has the same shape, but a
-  // user-side compiled install, a wrapper, or a newer Node provides a
-  // working one). Any nonzero sibling result falls through to PATH once.
-  if (existsSync(local) && res.status !== 0) {
-    const pathRes = spawnSync(binName, args, { encoding: "utf8", timeout: 15_000 });
-    if (!pathRes.error) return { status: pathRes.status ?? -1, stdout: pathRes.stdout ?? "", stderr: pathRes.stderr ?? "" };
-  }
-  return res;
-}
-
-function message(text) {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "deep-horizon", form: "instructions" },
-  };
-}
-
-function truthy(v) {
-  return ["1", "true", "yes"].includes(String(v ?? "").toLowerCase());
-}
-
-// Plain-record guard for the parsed --json payload. Local by design: adapters
-// are glue and never import the core's store module.
-function isRecord(x) {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
-// The horizon-inject --json answer: {"text": string, "store": string|null}.
-// Anything off-shape is a failed spawn answer (null), never an injection.
-function parseAnswer(stdout) {
-  if (typeof stdout !== "string" || stdout.length === 0) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed) || typeof parsed.text !== "string") return null;
-  if (parsed.store !== null && typeof parsed.store !== "string") return null;
-  return { text: parsed.text, store: parsed.store };
-}
 
 // Plugin entry point. `ctx` is unused (pi passes the extension API, the
 // handlers need nothing from it); `overrides` exists only for tests
 // (spawnBin, now). Handlers are async (await-able, never sync-throwing) and
 // returned so tests can drive them without a live harness.
 export function apply(ctx, overrides = {}) {
-  const spawnBin = overrides.spawnBin ?? defaultSpawnBin;
+  const spawnBin = overrides.spawnBin ?? runBin;
   // Stash for the startup answer ({text, store, sessionId, cwd}); also
   // remembers the session id for the close hook. WeakMap on ctx is not
   // possible (ctx may be a plain object), so one instance per apply() call —
@@ -129,12 +68,12 @@ export function apply(ctx, overrides = {}) {
       const sessionId = pictx?.sessionManager?.getSessionId?.() ?? null;
       let result;
       try {
-        result = spawnBin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", cwd]);
+        result = await spawnBin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", cwd]);
       } catch {
         return; // fail open (D2): unresolvable bin injects nothing
       }
       if (!result || result.status !== 0) return;
-      const answer = parseAnswer(result.stdout);
+      const answer = parseInjectAnswer(result.stdout);
       if (!answer || answer.text.length === 0) return;
       stashed = { text: answer.text, store: answer.store, sessionId, cwd };
     } catch {
@@ -167,7 +106,7 @@ export function apply(ctx, overrides = {}) {
       try {
         const args = ["session-end", "--harness", HARNESS, "--session", sessionId];
         if (store !== null) args.push("--store", store);
-        spawnBin("horizon", args);
+        await spawnBin("horizon", args);
       } catch {
         // fail open (D2)
       }

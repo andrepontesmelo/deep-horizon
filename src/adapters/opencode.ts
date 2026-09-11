@@ -25,42 +25,19 @@
 //
 // Hooks fail open (D2): an unresolvable bin or an unreachable client injects
 // nothing and the session proceeds.
-import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+// The spawn plumbing (runBin) and the subagent-env guard (truthy) are the
+// shared policy in ./support.ts — one timeout, one PATH fallback for every
+// TS adapter.
+import { runBin, truthy } from "./support.ts";
 
 const HARNESS = "opencode";
 const FRESH_WINDOW_MS = 60_000;
-
-function defaultSpawnBin(binName, args) {
-  const local = new URL(`../../bin/${binName}.js`, import.meta.url);
-  let res;
-  if (existsSync(local)) {
-    res = spawnSync(process.execPath, [local.pathname, ...args], { encoding: "utf8", timeout: 15_000 });
-  } else {
-    res = spawnSync(binName, args, { encoding: "utf8", timeout: 15_000 });
-  }
-  if (res.error) throw res.error;
-  // The installed package ships TS source; Node < 23.6 refuses to strip
-  // types for files under node_modules, so the sibling bin can die with a
-  // module-error exit before printing anything. Fall back to the PATH bin
-  // once on any nonzero sibling result (a wrapper, a compiled install, or a
-  // newer Node provides a working one).
-  if (existsSync(local) && res.status !== 0) {
-    const pathRes = spawnSync(binName, args, { encoding: "utf8", timeout: 15_000 });
-    if (!pathRes.error) return { status: pathRes.status ?? -1, stdout: pathRes.stdout ?? "", stderr: pathRes.stderr ?? "" };
-  }
-  return res;
-}
-
-function truthy(v) {
-  return ["1", "true", "yes"].includes(String(v ?? "").toLowerCase());
-}
 
 // Plugin entry point. `input` carries the opencode plugin context ({ client,
 // directory, ... }); `overrides` exists only for tests (spawnBin, now).
 // Returns the Hooks object.
 export async function apply(input, overrides = {}) {
-  const spawnBin = overrides.spawnBin ?? defaultSpawnBin;
+  const spawnBin = overrides.spawnBin ?? runBin;
   const now = overrides.now ?? (() => Date.now());
   const client = input?.client;
   // One injection per plugin instance. opencode instantiates the plugin once
@@ -106,7 +83,7 @@ export async function apply(input, overrides = {}) {
       if (count > 0) return;
       let result;
       try {
-        result = spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", input?.directory ?? process.cwd()]);
+        result = await spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", input?.directory ?? process.cwd()]);
       } catch {
         return; // fail open (D2)
       }
