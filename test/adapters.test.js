@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seed } from "./seed.js";
@@ -16,6 +16,7 @@ import { seed } from "./seed.js";
 const ROOT = new URL("..", import.meta.url).pathname;
 const PI_ADAPTER = new URL("../src/adapters/pi.ts", import.meta.url).pathname;
 const OPENCODE_ADAPTER = new URL("../src/adapters/opencode.ts", import.meta.url).pathname;
+const SUPPORT_ADAPTER = new URL("../src/adapters/support.ts", import.meta.url).pathname;
 const HERMES_PLUGIN_DIR = join(ROOT, "adapters", "hermes");
 
 function freshDir() {
@@ -1419,5 +1420,133 @@ test("84. the ZCode adapter ships its config and scripts: .zcode/config.json wir
     assert.ok((statSync(script).mode & 0o111) !== 0, `adapters/zcode/${name} must be executable`);
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     assert.ok(pkg.files.includes(`adapters/zcode/${name}`), `package.json files must ship adapters/zcode/${name}`);
+  }
+});
+
+// --- support.ts: the one spawn policy (runBin, parseInjectAnswer, truthy) ---
+
+// DEF-ADV-14-1, pinned at its one remaining home: a bin that never exits is
+// killed at the timeout and reported as status -1, fast. The 50ms bound keeps
+// the pin cheap; the policy default is 15s (runBin's only caller-facing knob).
+test("support-timeout. runBin kills a hung bin at the timeout and reports status -1", async () => {
+  const dir = freshDir();
+  const fakeBin = join(dir, "fakebin");
+  mkdirSync(fakeBin, { recursive: true });
+  // exec so the kill lands on the sleep itself, not a shell wrapper.
+  writeFileSync(join(fakeBin, "horizon-support-sleepy"), "#!/bin/sh\nexec sleep 30\n");
+  chmodSync(join(fakeBin, "horizon-support-sleepy"), 0o755);
+  const prev = process.env.PATH;
+  process.env.PATH = `${fakeBin}:${prev}`;
+  const started = Date.now();
+  try {
+    const mod = await import(SUPPORT_ADAPTER);
+    const r = await mod.runBin("horizon-support-sleepy", [], { timeoutMs: 50 });
+    assert.equal(r.status, -1, `a killed bin must report -1, got: ${r.status}`);
+    assert.ok(Date.now() - started < 5000, `the kill must be timely, took: ${Date.now() - started}ms`);
+  } finally {
+    process.env.PATH = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The sibling-fails→PATH fallback needs a sibling, and runBin resolves the
+// sibling relative to its own file — so the pin builds a fake checkout shape
+// (bin/<name>.js beside a copy of support.ts) and lets the real resolution
+// order do the work: the nonzero sibling (the installed package's Node < 23.6
+// module-error shape) falls through to the PATH bin exactly once; a working
+// sibling is never second-guessed.
+test("support-fallback. a sibling that exits nonzero is retried on PATH; a working sibling is never second-guessed", async () => {
+  const pkg = mkdtempSync(join(tmpdir(), "horizon-support-pkg-"));
+  const pathBin = mkdtempSync(join(tmpdir(), "horizon-support-path-"));
+  try {
+    mkdirSync(join(pkg, "src", "adapters"), { recursive: true });
+    mkdirSync(join(pkg, "bin"), { recursive: true });
+    copyFileSync(SUPPORT_ADAPTER, join(pkg, "src", "adapters", "support.ts"));
+    // The sibling: runs, prints nothing, exits nonzero.
+    writeFileSync(join(pkg, "bin", "horizon-support-fake.js"), "process.exit(7);\n");
+    // The PATH bin: the working one.
+    writeFileSync(join(pathBin, "horizon-support-fake"), "#!/bin/sh\necho PATH-WINS\n");
+    chmodSync(join(pathBin, "horizon-support-fake"), 0o755);
+    const prev = process.env.PATH;
+    process.env.PATH = `${pathBin}:${prev}`;
+    try {
+      const mod = await import(join(pkg, "src", "adapters", "support.ts"));
+      const r = await mod.runBin("horizon-support-fake", []);
+      assert.equal(r.status, 0, `the PATH retry must win, got: ${r.status} ${r.stderr}`);
+      assert.equal(r.stdout, "PATH-WINS\n", "the nonzero sibling must fall through to the PATH bin");
+      // A sibling that succeeds stands, even with a PATH bin offering itself.
+      writeFileSync(join(pkg, "bin", "horizon-support-fine.js"), 'process.stdout.write("SIBLING-WINS\\n");\n');
+      const fine = await mod.runBin("horizon-support-fine", []);
+      assert.equal(fine.status, 0);
+      assert.equal(fine.stdout, "SIBLING-WINS\n", "a working sibling must not be second-guessed");
+    } finally {
+      process.env.PATH = prev;
+    }
+  } finally {
+    rmSync(pkg, { recursive: true, force: true });
+    rmSync(pathBin, { recursive: true, force: true });
+  }
+});
+
+// The fail-open contract every adapter catches: a bin resolvable nowhere (no
+// sibling, no PATH entry) rejects — injecting nothing, breaking nothing.
+test("support-unresolvable. a bin resolvable nowhere rejects; the adapters treat that as fail-open", async () => {
+  const mod = await import(SUPPORT_ADAPTER);
+  const prev = process.env.PATH;
+  process.env.PATH = "/horizon-support-nowhere";
+  try {
+    await assert.rejects(mod.runBin("horizon-support-missing", []), { code: "ENOENT" });
+  } finally {
+    process.env.PATH = prev;
+  }
+});
+
+// The real sibling through the real resolution: support.ts sitting in
+// src/adapters/ runs bin/<name>.js with the current node, no PATH involved.
+test("support-real. runBin drives the real repo bin through the sibling resolution", async () => {
+  const mod = await import(SUPPORT_ADAPTER);
+  const r = await mod.runBin("horizon", ["--help"]);
+  assert.equal(r.status, 0);
+  assert.ok(r.stdout.startsWith("usage: horizon"), `got: ${r.stdout.slice(0, 40)}`);
+});
+
+test("support-parse. parseInjectAnswer accepts exactly the total --json answer shape and rejects everything else", async () => {
+  const mod = await import(SUPPORT_ADAPTER);
+  const parse = mod.parseInjectAnswer;
+  assert.deepEqual(parse('{"text":"T","store":"/s"}'), { text: "T", store: "/s" });
+  assert.deepEqual(parse('{"text":"NUDGE","store":null}'), { text: "NUDGE", store: null });
+  // The bin terminates its stdout with a newline; JSON.parse tolerates it.
+  assert.deepEqual(parse('{"text":"T","store":null}\n'), { text: "T", store: null });
+  // Fields beyond the contract ride along, unparsed and untrusted.
+  assert.deepEqual(parse('{"text":"T","store":null,"x":1}'), { text: "T", store: null });
+  for (const bad of [
+    "",                    // empty stdout: a failed answer, never an injection
+    "not json",
+    '"a json string"',     // valid JSON, not a record
+    "[]",
+    "42",
+    "null",
+    '{"store":"/s"}',      // no text
+    '{"text":"T"}',        // no store field at all
+    '{"text":5,"store":null}',
+    '{"text":"T","store":5}',
+  ]) {
+    assert.equal(parse(bad), null, `must reject: ${JSON.stringify(bad)}`);
+  }
+  // Non-string stdout (a caller bug) is a failed answer, not a throw.
+  assert.equal(parse(42), null);
+  assert.equal(parse(undefined), null);
+  assert.equal(parse(null), null);
+});
+
+test("support-truthy. the README-documented HORIZON_SUBAGENT set: 1/true/yes, case-insensitive, nothing else", async () => {
+  const mod = await import(SUPPORT_ADAPTER);
+  for (const v of ["1", "true", "yes", "YES", "True", 1, true]) {
+    assert.equal(mod.truthy(v), true, `truthy: ${String(v)}`);
+  }
+  // "on" is hermes' Python twin's extension, not this set's; no trimming, no
+  // numeric coercion beyond String().
+  for (const v of ["0", "false", "no", "on", "", " 1", "yes ", undefined, null, 0, false]) {
+    assert.equal(mod.truthy(v), false, `not truthy: ${String(v)}`);
   }
 });
