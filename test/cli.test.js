@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seed } from "./seed.js";
 
 const BIN = new URL("../bin/horizon.js", import.meta.url).pathname;
 
@@ -21,20 +22,6 @@ function run(args, opts = {}) {
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), "horizon-test-"));
-}
-
-// Seed a store directly (init-equivalent).
-function seed(dir, texts) {
-  const store = join(dir, ".horizon");
-  mkdirSync(store, { recursive: true });
-  const gaps = texts.map((text, i) => ({
-    id: `gap-${i + 1}`,
-    text,
-    added_at: `2026-09-08T15:0${i}:11Z`,
-    provenance: { harness: "test", session_id: "seed", tty: false, origin: "human" },
-  }));
-  writeFileSync(join(store, "gaps.json"), JSON.stringify({ version: 1, revision: gaps.length, gaps }, null, 2) + "\n");
-  return gaps;
 }
 
 function readGaps(dir) {
