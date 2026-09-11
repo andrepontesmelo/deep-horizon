@@ -4,6 +4,9 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seed } from "./seed.js";
+import { setAbout as storeSetAbout, setDetail } from "../src/store.ts";
+import { compose, resolveInjection } from "../src/inject.ts";
 
 const INJECT_BIN = new URL("../bin/horizon-inject.js", import.meta.url).pathname;
 const ADAPTER = new URL("../src/adapters/dsh.ts", import.meta.url).pathname;
@@ -22,20 +25,6 @@ function run(args, opts = {}) {
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), "horizon-inject-test-"));
-}
-
-// Seed a store directly (init-equivalent), mirroring test/cli.test.js seed().
-function seed(dir, texts) {
-  const store = join(dir, ".horizon");
-  mkdirSync(store, { recursive: true });
-  const gaps = texts.map((text, i) => ({
-    id: `gap-${i + 1}`,
-    text,
-    added_at: `2026-09-08T15:0${i}:11Z`,
-    provenance: { harness: "test", session_id: "seed", tty: false, origin: "human" },
-  }));
-  writeFileSync(join(store, "gaps.json"), JSON.stringify({ version: 1, revision: gaps.length, gaps }, null, 2) + "\n");
-  return gaps;
 }
 
 // Extract the inside of a fenced block that follows `heading` in the spec.
@@ -122,7 +111,7 @@ test("home-suppress-2. end-to-end: the bin silences a storeless $HOME (exit 0, e
   }
 });
 
-test("37. inject has a --json mode: {\"text\":<string>} on stdout, nothing else", async () => {
+test("37. inject has a --json mode: {\"text\",\"store\"} on stdout, nothing else", async () => {
   const dir = freshDir();
   try {
     seed(dir, ["Only one gap"]);
@@ -132,8 +121,37 @@ test("37. inject has a --json mode: {\"text\":<string>} on stdout, nothing else"
     assert.equal(typeof parsed.text, "string");
     assert.ok(parsed.text.startsWith("This project has a horizon"));
     assert.ok(parsed.text.includes("gap-1  Only one gap"));
-    assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text }));
+    // The total answer: the resolved store dir rides along with the text.
+    assert.equal(parsed.store, join(dir, ".horizon"));
+    assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text, store: join(dir, ".horizon") }));
     assert.ok(!r.stderr, "stderr must stay empty on success");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The storeless twin of 37: no store anywhere above the cwd, so store is
+// null — the nudge text still composes (the storeless-nudge case), and the
+// home-silence case is the total answer {"",""} twin: empty text, null store.
+test("inject-json-storeless. --json answers store:null when no store resolves; plain stdout stays byte-identical", async () => {
+  const dir = freshDir();
+  try {
+    const j = await run(["--cwd", dir, "--json"]);
+    assert.equal(j.code, 0);
+    const parsed = JSON.parse(j.stdout);
+    assert.equal(parsed.store, null, "a storeless cwd must answer store:null");
+    assert.ok(parsed.text.startsWith("This project has no horizon yet"), "the storeless nudge still composes");
+    assert.equal(JSON.stringify(parsed), JSON.stringify({ text: parsed.text, store: null }));
+    // Plain mode: the same text, no JSON wrapper (the non-json contract).
+    const plain = await run(["--cwd", dir]);
+    assert.equal(plain.code, 0);
+    assert.equal(plain.stdout, parsed.text);
+    // Home silence: empty text, null store — nothing to hand back. (os.homedir()
+    // honours $HOME on POSIX; the mechanism is pinned by home-suppress-2.)
+    const env = { ...process.env, HOME: dir };
+    const silent = await run(["--cwd", dir, "--json"], { env });
+    assert.equal(silent.code, 0);
+    assert.deepEqual(JSON.parse(silent.stdout), { text: "", store: null });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -224,7 +242,7 @@ test("41. the DSH adapter registers agent/session-start and spawns the bins (no 
   }, {
     spawnBin: (bin, args) => {
       calls.push({ kind: "spawn", bin, args });
-      if (bin === "horizon-inject") return { status: 0, stdout: "MOCK-INJECTED-TEXT", stderr: "" };
+      if (bin === "horizon-inject") return { status: 0, stdout: JSON.stringify({ text: "MOCK-INJECTED-TEXT", store: "/mock-store" }), stderr: "" };
       return { status: 0, stdout: "", stderr: "" };
     },
   });
@@ -320,7 +338,7 @@ test("dsh-seed-once. a re-fired agent/session-start for the same agent injects o
   };
   let spawns = 0;
   const registered = mod.apply({}, {
-    spawnBin: () => { spawns += 1; return { status: 0, stdout: "MOCK-SEED", stderr: "" }; },
+    spawnBin: () => { spawns += 1; return { status: 0, stdout: JSON.stringify({ text: "MOCK-SEED", store: "/seed-store" }), stderr: "" }; },
   });
   await registered["agent/session-start"]({ agent, source: "startup" });
   await registered["agent/session-start"]({ agent, source: "startup" });
@@ -336,7 +354,9 @@ test("dsh-seed-once. a re-fired agent/session-start for the same agent injects o
   const retry = { session: { header }, inject() { calls.push("inject-3"); }, steer() {} };
   const registered2 = mod.apply({}, {
     spawnBin: () => {
-      const r = fail ? { status: 7, stdout: "", stderr: "boom" } : { status: 0, stdout: "Y", stderr: "" };
+      const r = fail
+        ? { status: 7, stdout: "", stderr: "boom" }
+        : { status: 0, stdout: JSON.stringify({ text: "Y", store: "/retry-store" }), stderr: "" };
       fail = false;
       return r;
     },
@@ -349,8 +369,9 @@ test("dsh-seed-once. a re-fired agent/session-start for the same agent injects o
 // --- The DSH param trigger (tools/pre-execute, HL-23) ---
 
 // Shared fixture: a top-level agent plus an apply() whose spawnBin records
-// and returns fixed text, so composition never leaves the test.
-function paramFixture(spawnStdout, header = { cwd: "/launched-elsewhere", delegationDepth: 0, origin: "user" }) {
+// and returns a fixed horizon-inject --json answer ({text, store}, or a
+// function of the spawn args), so composition never leaves the test.
+function paramFixture(answer, header = { cwd: "/launched-elsewhere", delegationDepth: 0, origin: "user" }) {
   const calls = [];
   const spawned = [];
   const agent = {
@@ -364,9 +385,15 @@ function paramFixture(spawnStdout, header = { cwd: "/launched-elsewhere", delega
     spawned,
     spawnBin: (bin, args) => {
       spawned.push({ bin, args });
-      return { status: 0, stdout: typeof spawnStdout === "function" ? spawnStdout(args) : spawnStdout, stderr: "" };
+      const a = typeof answer === "function" ? answer(args) : answer;
+      return { status: 0, stdout: JSON.stringify(a), stderr: "" };
     },
   };
+}
+
+// The --cwd value of a recorded spawn (the probes are keyed on the touched dir).
+function cwdOf(spawn) {
+  return spawn.args[spawn.args.indexOf("--cwd") + 1];
 }
 
 // The harness hands the adapter deep-frozen parsed arguments; mirror that.
@@ -386,7 +413,7 @@ test("dsh-param-1. a bash touch of a stored repo queues its horizon once, and th
   try {
     seed(repo, ["Param trigger gap"]);
     const mod = await import(ADAPTER);
-    const fx = paramFixture("MOCK-PARAM-HORIZON");
+    const fx = paramFixture({ text: "MOCK-PARAM-HORIZON", store: repo });
     const registered = mod.apply({}, fx);
     let nextCalls = 0;
     const gate = await registered["tools/pre-execute"](
@@ -395,16 +422,20 @@ test("dsh-param-1. a bash touch of a stored repo queues its horizon once, and th
     );
     assert.deepEqual(gate, { kind: "allow" }, "the handler must return next()'s result, never a veto");
     assert.equal(nextCalls, 1, "next() must be called exactly once");
-    assert.deepEqual(fx.spawned, [{ bin: "horizon-inject", args: ["--harness", "dsh", "--cwd", repo] }]);
-    assert.equal(fx.calls.length, 1, "exactly one inject");
+    // The trigger asks the bin per newly-seen candidate dir (the command's
+    // two tokens name the repo and a file inside it — both probe), and the
+    // bin's returned store is what the dedup keys on: one inject.
+    assert.deepEqual(fx.spawned.map(cwdOf), [repo, join(repo, "README.md")]);
+    for (const s of fx.spawned) assert.deepEqual(s.args, ["--harness", "dsh", "--json", "--cwd", cwdOf(s)]);
+    assert.equal(fx.calls.length, 1, "exactly one inject — once per store per session");
     assert.equal(fx.calls[0].message.content[0].text, "MOCK-PARAM-HORIZON");
     assert.equal(fx.calls[0].message.role, "user");
-    // The same tool call again: once per store per session, never twice.
+    // The same tool call again: both dirs are answered, the store is served.
     await registered["tools/pre-execute"](
       { name: "bash", arguments: frozen({ command: `git -C ${repo} log --oneline` }), agent: fx.agent },
       () => ({ kind: "allow" }),
     );
-    assert.equal(fx.spawned.length, 1, "the same store must not spawn twice");
+    assert.equal(fx.spawned.length, 2, "answered dirs must not spawn again");
     assert.equal(fx.calls.length, 1, "the same store must not inject twice");
   } finally {
     rmSync(repo, { recursive: true, force: true });
@@ -419,19 +450,23 @@ test("dsh-param-2. a different stored repo touched mid-session gets its own hori
     seed(repoB, ["Repo B gap"]);
     mkdirSync(join(repoB, "sub"), { recursive: true });
     const mod = await import(ADAPTER);
-    const fx = paramFixture((args) => `MOCK:${args[args.indexOf("--cwd") + 1]}`);
+    const fx = paramFixture((args) => {
+      const dir = args[args.indexOf("--cwd") + 1];
+      return { text: `MOCK:${dir}`, store: dir };
+    });
     const registered = mod.apply({}, fx);
     await registered["tools/pre-execute"](
       { name: "bash", arguments: frozen({ command: `git -C ${repoA} status` }), agent: fx.agent },
       () => ({ kind: "allow" }),
     );
     // A file_path whose directory has no store still resolves the nearest
-    // ancestor store, exactly like the bin resolves --cwd.
+    // ancestor store — the bin resolves --cwd, and its answer's store key
+    // keeps the two repos apart.
     await registered["tools/pre-execute"](
       { name: "str_replace_editor", arguments: frozen({ file_path: join(repoB, "sub", "file.txt") }), agent: fx.agent },
       () => ({ kind: "allow" }),
     );
-    assert.deepEqual(fx.spawned.map((s) => s.args[3]), [repoA, join(repoB, "sub")], "each touch spawns once; --cwd is the touched dir and the bin resolves the store itself");
+    assert.deepEqual(fx.spawned.map(cwdOf), [repoA, join(repoB, "sub")], "each touch probes once; --cwd is the touched dir and the bin resolves the store itself");
     assert.deepEqual(fx.calls.map((c) => c.message.content[0].text), [`MOCK:${repoA}`, `MOCK:${join(repoB, "sub")}`]);
   } finally {
     rmSync(repoA, { recursive: true, force: true });
@@ -439,19 +474,29 @@ test("dsh-param-2. a different stored repo touched mid-session gets its own hori
   }
 });
 
-test("dsh-param-3. a storeless target never fires — no spawn, no inject, no bootstrap", async () => {
+test("dsh-param-3. a storeless target never fires — one probe per dir, no inject, no bootstrap, and the storeless answer is remembered", async () => {
   const bare = freshDir();
   try {
     const mod = await import(ADAPTER);
-    const fx = paramFixture("MOCK-SHOULD-NOT-APPEAR");
+    const fx = paramFixture({ text: "MOCK-SHOULD-NOT-APPEAR", store: null });
     const registered = mod.apply({}, fx);
     const gate = await registered["tools/pre-execute"](
       { name: "bash", arguments: frozen({ command: `ls ${bare} && cd ${bare}/deeper`, workdir: bare }), agent: fx.agent },
       () => ({ kind: "allow" }),
     );
     assert.deepEqual(gate, { kind: "allow" });
-    assert.deepEqual(fx.spawned, [], "a storeless target must not spawn");
+    // The bin is asked (it owns the store-existence rule now): its
+    // store:null answer silences every candidate dir — the nudge never
+    // fires from a param probe.
+    assert.deepEqual(fx.spawned.map(cwdOf), [bare, join(bare, "deeper")], "each unseen dir probes once");
     assert.deepEqual(fx.calls, [], "a storeless target must not inject");
+    // And the storeless answers are remembered: no re-probe on the next touch.
+    await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `ls ${bare}` }), agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.equal(fx.spawned.length, 2, "a storeless dir must not re-spawn");
+    assert.deepEqual(fx.calls, []);
   } finally {
     rmSync(bare, { recursive: true, force: true });
   }
@@ -467,7 +512,7 @@ test("dsh-param-4. subagent sessions never fire the param trigger", async () => 
       { cwd: "/x", delegationDepth: 1, origin: "user" },
       { cwd: "/x", delegationDepth: 3, origin: "subagent" },
     ]) {
-      const fx = paramFixture("MOCK-SUBAGENT");
+      const fx = paramFixture({ text: "MOCK-SUBAGENT", store: "/x-store" });
       const registered = mod.apply({}, fx);
       let nextCalls = 0;
       const gate = await registered["tools/pre-execute"](
@@ -489,7 +534,7 @@ test("dsh-param-5. malformed or empty arguments: no throw, no inject, gate still
     seed(repo, ["Malformed gap"]);
     const mod = await import(ADAPTER);
     for (const args of [undefined, "not json at all", {}, [], frozen({ command: 42 }), frozen({ path: null })]) {
-      const fx = paramFixture("MOCK-MALFORMED");
+      const fx = paramFixture({ text: "MOCK-MALFORMED", store: "/m-store" });
       const registered = mod.apply({}, fx);
       await assert.doesNotReject(registered["tools/pre-execute"](
         { name: "bash", arguments: args, agent: fx.agent },
@@ -500,7 +545,7 @@ test("dsh-param-5. malformed or empty arguments: no throw, no inject, gate still
     }
     // An unparseable-JSON call must still be able to touch a store through
     // another field, but a broken command string alone must not throw.
-    const fx = paramFixture("MOCK-OK");
+    const fx = paramFixture({ text: "MOCK-OK", store: "/ok-store" });
     const registered = mod.apply({}, fx);
     const gate = await registered["tools/pre-execute"](
       { name: "bash", arguments: "git -C TOTAL-GARBAGE", agent: fx.agent },
@@ -518,7 +563,7 @@ test("dsh-param-6. the store the startup injection served is not re-injected by 
   try {
     seed(repo, ["Startup gap"]);
     const mod = await import(ADAPTER);
-    const fx = paramFixture("MOCK-STARTUP", { cwd: repo, delegationDepth: 0, origin: "user" });
+    const fx = paramFixture((args) => ({ text: "MOCK-STARTUP", store: args[args.indexOf("--cwd") + 1] }), { cwd: repo, delegationDepth: 0, origin: "user" });
     const registered = mod.apply({}, fx);
     await registered["agent/session-start"]({ agent: fx.agent, source: "startup" });
     assert.equal(fx.calls.length, 1, "startup injects once");
@@ -581,7 +626,7 @@ test("dsh-param-8. no agent, or inject not a function: the gate still allows, no
       { label: "inject not a function", exec: { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }), agent: { session: { header }, inject: "not-a-function" } } },
     ];
     for (const { label, exec } of cases) {
-      const fx = paramFixture("MOCK-DEGENERATE");
+      const fx = paramFixture({ text: "MOCK-DEGENERATE", store: "/deg-store" });
       const registered = mod.apply({}, fx);
       let nextCalls = 0;
       const gate = await registered["tools/pre-execute"](exec, () => { nextCalls += 1; return { kind: "allow" }; });
@@ -605,7 +650,7 @@ test("dsh-param-9. a throwing inject releases the store's claim; the next call d
   try {
     seed(repo, ["Retry gap"]);
     const mod = await import(ADAPTER);
-    const fx = paramFixture("MOCK-RETRY");
+    const fx = paramFixture({ text: "MOCK-RETRY", store: repo });
     let throwing = true;
     fx.agent.inject = (message) => {
       if (throwing) throw new Error("inject rejected");
@@ -632,6 +677,55 @@ test("dsh-param-9. a throwing inject releases the store's claim; the next call d
     await call();
     assert.equal(fx.spawned.length, 2, "after a delivered inject the once-per-session claim holds");
     assert.equal(fx.calls.length, 1);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// A call naming several unseen dirs must not pay serial node startups inside
+// the awaited waterfall: the fresh probes issue together, and the
+// once-per-store claim still collapses N dirs on one store to one inject.
+test("dsh-param-10. fresh dirs in one call probe concurrently — every probe issues before the first delivery, and two dirs on one store inject once", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Concurrency gap"]);
+    const mod = await import(ADAPTER);
+    const events = [];
+    const agent = {
+      session: { header: { cwd: "/launched-elsewhere", delegationDepth: 0, origin: "user" } },
+      inject() { events.push("inject"); },
+      steer() {},
+    };
+    const registered = mod.apply({}, {
+      spawnBin: (bin, args) => {
+        events.push(`spawn:${args[args.indexOf("--cwd") + 1]}`);
+        return { status: 0, stdout: JSON.stringify({ text: "MOCK-CONCURRENT", store: repo }), stderr: "" };
+      },
+    });
+    // Two fresh dirs on ONE store, named in one call: both probed, one
+    // inject. Normalized keys, so the token spellings dedupe first.
+    const gate = await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `cp ${repo}/a.txt ${repo}/b.txt` }), agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.deepEqual(gate, { kind: "allow" });
+    assert.equal(events.filter((e) => e.startsWith("spawn")).length, 2, "both fresh dirs probe");
+    assert.equal(events.filter((e) => e === "inject").length, 1, "N dirs on one store inject once");
+    // Concurrency shape: every probe issues before any delivery. A
+    // sequential await-loop would deliver the first store's inject before
+    // the second dir's spawn was even issued.
+    const spawnsAt = events.map((e) => e.startsWith("spawn"));
+    const lastSpawn = spawnsAt.lastIndexOf(true);
+    const firstInject = events.indexOf("inject");
+    assert.ok(firstInject === -1 || firstInject > lastSpawn, `all probes must issue before the first delivery: ${events}`);
+    // Normalization: token variants of one path are one probe key — the
+    // double-slash spelling of the same dir must not re-probe.
+    events.length = 0;
+    await registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `cat ${repo}//a.txt` }), agent },
+      () => ({ kind: "allow" }),
+    );
+    assert.equal(events.length, 0, `a normalized duplicate must not re-probe: ${events}`);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -782,12 +876,11 @@ test("49. inject embeds show stdout byte-for-byte even when gap texts carry $-re
 
 // --- about-line composition (spec 10.3) ---
 
-// Write an about line into a seeded store, the way `horizon about` would.
+// Write an about line into a seeded store through the store interface, the
+// way `horizon about "<text>"` would.
 function setAbout(dir, about) {
-  const p = join(dir, ".horizon", "gaps.json");
-  const state = JSON.parse(readFileSync(p, "utf8"));
-  state.about = about;
-  writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+  const r = storeSetAbout(dir, { text: about });
+  if (r) throw new Error(r.message);
 }
 
 test("about-inject-1. about + gaps: the about line, a blank line, then the byte-identical horizon block", async () => {
@@ -924,14 +1017,153 @@ test("pointer-2. details content never reaches injected text", async () => {
   const dir = freshDir();
   try {
     seed(dir, ["Watchful gap"]);
-    const store = join(dir, ".horizon");
-    const state = JSON.parse(readFileSync(join(store, "gaps.json"), "utf8"));
-    state.gaps[0].details = "SECRET-DETAIL-CONTEXT\nmore secret context";
-    writeFileSync(join(store, "gaps.json"), JSON.stringify(state, null, 2) + "\n");
+    // Details go in through the store's own writer, never a hand-written file.
+    const r0 = setDetail(dir, "gap-1", { text: "SECRET-DETAIL-CONTEXT\nmore secret context" });
+    assert.equal(r0, null, `seeding details failed: ${r0 && r0.message}`);
     const r = await run(["--cwd", dir]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("gap-1  Watchful gap"), "the title line must survive");
     assert.ok(!r.stdout.includes("SECRET-DETAIL-CONTEXT"), "details content must never be injected");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- the composer, in-process (src/inject.ts) ---
+
+// The variant state machine used to live inline in the bin's main(), reachable
+// only through a subprocess spawn. The composer's src home makes it importable:
+// compose() is the pure selection, resolveInjection() the read-only cwd round.
+
+test("inject-unit-1. selection in-process: exactly one variant per state, byte-equal to the spec fences", () => {
+  const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+  const block = specFence(spec, "### 10.1");
+  const bootstrap = specFence(spec, "### 10.2");
+  const warm = specFence(spec, "### 10.3");
+  const ABOUT = "AI plugin to help agents with long term goals";
+  const prefix = `This project is about: ${ABOUT}\n\n`;
+  const GAP = { id: "gap-1", text: "A person can hand a photo to the app and get the plant named." };
+  const show = "gap-1  A person can hand a photo to the app and get the plant named.\n";
+  const cases = [
+    ["gaps, no about", compose({ gaps: [GAP], about: undefined, silence: false }), block.replace("{{GAPS}}", show)],
+    ["gaps + about", compose({ gaps: [GAP], about: ABOUT, silence: false }), prefix + block.replace("{{GAPS}}", show)],
+    ["about only", compose({ gaps: [], about: ABOUT, silence: false }), prefix + warm],
+    ["neither", compose({ gaps: [], about: undefined, silence: false }), bootstrap],
+    ["neither, home silence", compose({ gaps: [], about: undefined, silence: true }), ""],
+  ];
+  // Openings chosen so no one is a substring of another variant's text.
+  const openings = {
+    block: "This project has a horizon — a short list",
+    bootstrap: "This project has no horizon yet — no about line",
+    warm: "No gaps yet. `horizon add",
+  };
+  for (const [label, text, expected] of cases) {
+    assert.equal(text, expected, `${label}: wrong variant composed`);
+    // The silence case composes empty — no variant present is its point.
+    if (text === "") continue;
+    const present = Object.entries(openings).filter(([, opening]) => text.includes(opening));
+    assert.equal(present.length, 1, `${label}: expected exactly one variant, saw ${present.map(([k]) => k).join("+") || "none"}`);
+  }
+});
+
+// DEF-1's guard has its caller at last: the substitution goes through
+// texts.ts's horizonBlock() (a function replacement), so $-patterns in
+// user-authored gap text ride into the block verbatim — pinned here without
+// a subprocess, next to the selection it guards.
+test("inject-unit-2. the $-pattern guard: $&, $`, $', $$, $1 substitute byte-for-byte, no expansion, no placeholder leak", () => {
+  const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+  const gaps = [
+    { id: "pay", text: "pay $& now" },
+    { id: "cost", text: "cost $$5" },
+    { id: "tick", text: "use $`tick" },
+    { id: "tail", text: "tail $'mark" },
+    { id: "plain", text: "plain $1 end" },
+  ];
+  const show = gaps.map((g) => `${g.id}  ${g.text}`).join("\n") + "\n";
+  // Function replacement in the fixture too: a string replacement would
+  // expand the $-patterns in `show` while building the expectation — the
+  // very DEF-1 bug this test exists to pin.
+  const text = compose({ gaps, about: undefined, silence: false });
+  assert.equal(text, specFence(spec, "### 10.1").replace("{{GAPS}}", () => show));
+  assert.ok(!text.includes("{{GAPS}}"), "the {{GAPS}} placeholder must never leak into the output");
+});
+
+// The --json envelope's content, in-process: resolveInjection is the total
+// answer for a cwd — the composed text plus the store the resolution already
+// paid for, null when none was found. `home` is injectable, so the silence
+// case never touches the real $HOME. A malformed store stays an unwrapped
+// error: { code, message }, stdout untouched (main() prints nothing under
+// --json on the error path).
+test("inject-unit-3. resolveInjection: the {text, store} answer — store rides along, storeless is null, home silence is empty", () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Envelope gap"]);
+    const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+    const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "gap-1  Envelope gap\n");
+    assert.deepEqual(resolveInjection(dir, { home: "/home/fake-user" }), { text: expected, store: join(dir, ".horizon") });
+    const storeless = freshDir();
+    try {
+      const s = resolveInjection(storeless, { home: "/home/fake-user" });
+      assert.equal(s.store, null, "a storeless cwd must answer store:null");
+      assert.ok(s.text.startsWith("This project has no horizon yet"), "the storeless nudge still composes");
+      // The silence twin: a storeless cwd that IS the (fake) home — empty
+      // text, null store, nothing to hand back.
+      assert.deepEqual(resolveInjection(storeless, { home: storeless }), { text: "", store: null });
+    } finally {
+      rmSync(storeless, { recursive: true, force: true });
+    }
+    const bad = freshDir();
+    try {
+      mkdirSync(join(bad, ".horizon"), { recursive: true });
+      writeFileSync(join(bad, ".horizon", "gaps.json"), '{"version":1,"revision":1,"gaps":[null]}');
+      const e = resolveInjection(bad, { home: "/home/fake-user" });
+      assert.equal(e.error.code, 7);
+      assert.match(e.error.message, /gaps\.json/);
+      assert.equal(e.text, undefined);
+    } finally {
+      rmSync(bad, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The deliberate wire change the extraction carried: --flag=value. The CLI's
+// parser always took --cwd=<path>; the bin's own loop answered "unknown
+// option" (exit 2) — a divergence nothing pinned. The extracted parser
+// mirrors the CLI's = handling; the seam (the shim's argv handoff) stays a
+// subprocess test, the unit tests above cannot see it.
+test("inject-eq-flag. --cwd=<path> composes like the separate-arg form, plain and --json; unknown flags still exit 2", async () => {
+  const dir = freshDir();
+  try {
+    seed(dir, ["Equals form gap"]);
+    const r = await run([`--cwd=${dir}`]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes("gap-1  Equals form gap"));
+    const j = await run([`--cwd=${dir}`, "--json"]);
+    assert.equal(j.code, 0);
+    const parsed = JSON.parse(j.stdout);
+    assert.equal(parsed.store, join(dir, ".horizon"));
+    assert.ok(parsed.text.includes("gap-1  Equals form gap"));
+    // Bool flags reject the = form the way the CLI's parser does — all three
+    // of them, short-circuits included: --help=x is a usage error, never a
+    // help answer — while the bare forms still answer (and test 40 pins the
+    // bare forms' exit 0 through the same bin).
+    for (const flag of ["--json", "--help", "--version"]) {
+      const boolEq = await run([`--cwd=${dir}`, `${flag}=x`]);
+      assert.equal(boolEq.code, 2, `${flag}=x must be a usage error`);
+      assert.ok(boolEq.stderr.startsWith(`horizon-inject: ${flag} takes no value`), `${flag}=x: ${boolEq.stderr}`);
+      assert.equal(boolEq.stdout, "", `${flag}=x must print nothing on stdout`);
+      const bare = await run([flag]);
+      assert.equal(bare.code, 0, `bare ${flag} must still answer`);
+      assert.notEqual(bare.stdout, "", `bare ${flag} must print`);
+    }
+    // A genuinely unknown option still names the token and exits 2 with
+    // empty stdout.
+    const bad = await run([`--bogus=${dir}`]);
+    assert.equal(bad.code, 2);
+    assert.equal(bad.stdout, "");
+    assert.ok(bad.stderr.startsWith(`horizon-inject: unknown option: --bogus=${dir}`));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

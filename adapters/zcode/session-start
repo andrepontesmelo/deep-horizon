@@ -49,7 +49,9 @@ cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || exit 0
 
 # Bin resolution (hermes pattern): an installed package uses the global bin
 # on PATH; a repo checkout runs bin/horizon-inject.js with node, because the
-# bare bins are not linked yet.
+# bare bins are not linked yet — the bin is a shim onto the built dist, so
+# the checkout needs its build step (npm install / npm run build) first; a
+# missing build fails open with no text below.
 here=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
 if command -v horizon-inject >/dev/null 2>&1; then
   text=$(horizon-inject --harness zcode --cwd "$cwd" 2>/dev/null)
