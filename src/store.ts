@@ -137,6 +137,20 @@ export function resolveStore(startDir, { readonly = false } = {}) {
   }
 }
 
+// An explicit store dir (--store, the close hooks' round-trip) is trusted,
+// not discovered, and what counts as a store is the same test the walk above
+// applies to a candidate: an existing directory. Absent or not a directory
+// returns null — the storeless twin — and an existing path resolves
+// lexically so reads and appends land in the handed-back dir.
+function explicitStoreDir(path) {
+  let st = null;
+  try {
+    st = statSync(path);
+  } catch { /* absent: the storeless twin */ }
+  if (!st || !st.isDirectory()) return null;
+  return resolve(path);
+}
+
 // True when the bootstrap nudge must be silenced: a session whose cwd IS the
 // user's home with no store found anywhere above it is not a project, and
 // offering to horizon-ize $HOME is a misfire. A store found at all — even at
@@ -510,10 +524,12 @@ function loadOpenGap(cwd, id) {
 
 // closeGap removes an open gap and retires its id in the same write
 // (closed_ids grows), never creating a store: a storeless cwd means the id
-// cannot exist (exit 5). The close record lands first (ADV-3): closes.jsonl
-// is appended before gaps.json shrinks, so an append failure leaves the gap
-// open and the store unchanged. `sessionId` names the closing session on the
-// record.
+// cannot exist (exit 5). Record first (ADV-3) — the invariant every record
+// append in this module follows: the jsonl record lands before the durable
+// state moves (here, closes.jsonl before gaps.json shrinks; at session-end,
+// recordSession's append is the verb's only write), so a failed append is
+// exit 7 and the store is unchanged. `sessionId` names the closing session
+// on the record.
 export function closeGap(cwd, id, sessionId) {
   const loaded = loadOpenGap(cwd, id);
   if (loaded.error) return loaded.error;
@@ -530,6 +546,61 @@ export function closeGap(cwd, id, sessionId) {
   });
   if (a) return a;
   return writeGapsFile(loaded.dir, next);
+}
+
+// recordSession appends the one session record (CONTEXT: Session record).
+// The join lives here, beside the schemas it reads: gaps.json and
+// closes.jsonl are this module's writes (the close records are closeGap's),
+// so the verb never re-learns their shapes. `store` is the close hooks'
+// round-trip — the dir horizon-inject --json already resolved, handed back
+// so teardown does not re-discover it (the harness process may have chdir'd
+// since the injection). A store path absent or not a directory, like a cwd
+// with no store anywhere above it, is the storeless twin: a silent no-op,
+// the store-vanished-mid-session case at teardown — nothing created,
+// nothing recorded. A store that exists is read by the normal paths, so a
+// malformed one still exits 7.
+// Added gaps are inferred from the store, never carried in: an open gap
+// whose provenance names this session was added by it. The orphan filter
+// counts a close record only when its gap is actually gone — a record
+// stranded by a crash between the append and the rename is a no-op, not a
+// phantom close. The union closes the one hole the inference cannot see: a
+// gap added and closed by the same session is no longer open, so its close
+// record is what carries the id into gaps_added as well.
+export function recordSession(cwd, { harness, sessionId, summary = null, store = null }) {
+  let storeDir = null;
+  if (store !== null) {
+    storeDir = explicitStoreDir(store);
+    if (storeDir === null) return null;
+  } else {
+    const r = resolveStore(cwd);
+    if (!r) return null;
+    if (r.open.code !== undefined) return r.open;
+    storeDir = r.dir;
+  }
+  const g = readGapsFile(storeDir);
+  if (!g.ok) return { code: g.code, message: g.message };
+  const c = readCloses(storeDir, sessionId);
+  if (!c.ok) return { code: c.code, message: c.message };
+  const added = [];
+  for (const gap of g.data.gaps) {
+    if (gap.provenance && gap.provenance.session_id === sessionId && !added.includes(gap.id)) added.push(gap.id);
+  }
+  const openIds = new Set(g.data.gaps.map((gap) => gap.id));
+  const closedIds = [];
+  for (const rec of c.records) {
+    if (!openIds.has(rec.gap_id) && !closedIds.includes(rec.gap_id)) closedIds.push(rec.gap_id);
+  }
+  for (const gapId of closedIds) {
+    if (!added.includes(gapId)) added.push(gapId);
+  }
+  return appendLine(storeDir, SESSIONS_FILE, {
+    ts: utcNow(),
+    harness,
+    session_id: sessionId,
+    summary,
+    gaps_added: added,
+    gaps_closed: closedIds,
+  });
 }
 
 // amendGap rewrites one gap's text in place — the wording was wrong, not the
