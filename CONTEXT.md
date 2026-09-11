@@ -43,6 +43,14 @@ character limit.
 A gap is *open* until the human closes it. Nothing about a gap implies a plan,
 an owner, an estimate, or an order.
 
+**Details** are a gap's optional extended context — the what, why, and origin
+that must not crowd the title (the one line). Multi-line, at most **2048
+Unicode code points**, written with `horizon detail` or `add --detail`, never
+auto-truncated. Details are never injected: the injected block carries the
+title alone, plus one pointer line that `horizon detail <id>` retrieves the
+rest on demand. The title keeps its one-line, 512-code-point discipline —
+details widen what a gap holds, not what the horizon shows.
+
 **Only open gaps are stored in `gaps.json`.** Closing a gap removes it from
 that file; the close is recorded in the session log. So the file holds at most
 5 entries for the life of the project, the injection path reads it whole with

@@ -29,20 +29,30 @@ Run `horizon` inside a project; the store lives in `.horizon/` (found upward,
 like git finds `.git`). `horizon init` creates it.
 
 ```
-usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|log|session-end|init> [...]
+usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init> [...]
 
 commands:
   show                      print open gaps (id + two spaces + text)
   about                     print the about line
   about "<text>"            set or replace the about line (what this project is)
   about --clear             unset the about line
-  add <id> "<text>"         append a gap under a caller-chosen slug id; prints the id
+  add <id> "<text>"         append a gap under a caller-chosen slug id; prints the id (--detail "<text>" attaches details)
   close <id>                remove a gap; frees a slot
   amend <id> "<text>"       rewrite a gap's text in place
+  detail <id>               print a gap's details
+  detail <id> "<text>"      set or rewrite a gap's details (2048 code points max)
+  detail <id> --clear       remove a gap's details
   log [--limit N]           print session records, newest first
   session-end --harness <name> --session <id> [--summary "<text>"]
   init                      create .horizon/ in --cwd
 ```
+
+A gap's title is one line; it may also carry optional **details** — the
+extended context (what, why, where it came from) that must not crowd the
+line. Details may be multi-line, at most 2048 Unicode code points, set at
+creation with `add --detail "<text>"` or later with `horizon detail`. They
+are never injected: the injected horizon carries the one line only, plus a
+pointer that `horizon detail <id>` retrieves the rest on demand.
 
 Only the human closes a gap. The agent proposes — `horizon add` / `horizon
 close` run only after the human says yes. Gap ids are chosen, not minted:
