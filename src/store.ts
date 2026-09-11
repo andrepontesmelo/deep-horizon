@@ -8,17 +8,17 @@ export const MAX_TEXT_POINTS = 512;
 // Per-gap details (optional extended context): multi-line allowed, so the only
 // shape rule is the cap. Rejected at write time, never truncated.
 export const MAX_DETAIL_POINTS = 2048;
-export const HORIZON_DIR = ".horizon";
-export const GAPS_FILE = "gaps.json";
+const HORIZON_DIR = ".horizon";
+const GAPS_FILE = "gaps.json";
 export const SESSIONS_FILE = "sessions.jsonl";
-export const CLOSES_FILE = "closes.jsonl";
-export const GITIGNORE_BODY = "sessions.jsonl\n*.tmp.*\n";
+const CLOSES_FILE = "closes.jsonl";
+const GITIGNORE_BODY = "sessions.jsonl\n*.tmp.*\n";
 
 export function usage() {
   return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init> [...]";
 }
 
-export function codePoints(s) {
+function codePoints(s) {
   return [...s].length;
 }
 
@@ -32,7 +32,7 @@ export function utcNow() {
 // it for the life of the project. There is no compatibility with the old
 // minted `g_<8 hex>` shape: a store carrying one is malformed (exit 7), and a
 // caller supplying one gets a usage error.
-export function validId(id) {
+function validId(id) {
   return typeof id === "string" && id.length >= 3 && id.length <= 40 && /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(id);
 }
 
@@ -43,8 +43,8 @@ export function validId(id) {
 // no longer be renamed by anyone; a fresh temp belongs to an in-flight
 // writer and is never touched. Runs on store open, before any read or write,
 // so one later CLI run clears whatever the kill left behind. No lockfiles.
-export const TMP_PREFIX = ".gaps.json.tmp.";
-export const TMP_SWEEP_MS = 60_000;
+const TMP_PREFIX = ".gaps.json.tmp.";
+const TMP_SWEEP_MS = 60_000;
 
 // Every value that crosses a store-file boundary must be a plain record
 // (spec 7: anything else is malformed -> exit 7, never a TypeError).
@@ -55,7 +55,7 @@ export function isRecord(x) {
 // Failure shape shared by every store error: { code, message } with code
 // from the spec 7 table (7 for unreadable/malformed/unusable, 6 for rename
 // retries exhausted). Success is null, matching writeGapsFile.
-export function sweepStaleTmps(storeDir) {
+function sweepStaleTmps(storeDir) {
   if (!existsSync(storeDir)) return null;
   let names;
   try {
@@ -86,7 +86,7 @@ export function sweepStaleTmps(storeDir) {
 // `materialize: false` is the read-only mode used by horizon-inject (D6:
 // pure composition, no store writes) — it skips both the materializing
 // writes and the tmp sweep (an unlink is a write too).
-export function openStore(storeDir, { materialize = true } = {}) {
+function openStore(storeDir, { materialize = true } = {}) {
   if (materialize) {
     try {
       materializeStoreDir(storeDir);
@@ -216,7 +216,7 @@ export function readGapsFile(storeDir) {
   return { ok: true, data };
 }
 
-export function emptyStore() {
+function emptyStore() {
   return { version: STORE_VERSION, revision: 0, gaps: [], closed_ids: [] };
 }
 
@@ -251,7 +251,7 @@ function sleepSync(ms) {
 // sets either.
 const RENAME_RETRY_DELAYS_MS = [10, 50, 200];
 
-export function writeGapsFile(storeDir, next) {
+function writeGapsFile(storeDir, next) {
   const path = join(storeDir, GAPS_FILE);
   const tmp = join(storeDir, `${TMP_PREFIX}${process.pid}.${(tmpSeq += 1)}.${randomBytes(6).toString("hex")}`);
   try {
@@ -599,11 +599,6 @@ export function readGap(cwd, id) {
   return { ok: true, data: gap };
 }
 
-export function listTmpFiles(storeDir) {
-  if (!existsSync(storeDir)) return [];
-  return readdirSync(storeDir).filter((name) => name.startsWith(TMP_PREFIX));
-}
-
 // .gitattributes pins the store files to byte-exact form (spec 4.1): git
 // honours .gitattributes in subdirectories, so a Windows checkout with
 // core.autocrlf=true cannot rewrite sessions.jsonl into CRLF. An existing
@@ -620,7 +615,7 @@ export function listTmpFiles(storeDir) {
 // anything, or { code: 7, message } naming the path when the store cannot
 // be created (the path exists as a file, or the parent refuses
 // mkdir/writes).
-export function materializeStoreDir(dir) {
+function materializeStoreDir(dir) {
   let st = null;
   try {
     st = statSync(dir);
