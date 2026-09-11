@@ -469,10 +469,13 @@ test("dsh-param-4. subagent sessions never fire the param trigger", async () => 
     ]) {
       const fx = paramFixture("MOCK-SUBAGENT");
       const registered = mod.apply({}, fx);
-      await registered["tools/pre-execute"](
+      let nextCalls = 0;
+      const gate = await registered["tools/pre-execute"](
         { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }), agent: { session: { header }, inject() {} } },
-        () => ({ kind: "allow" }),
+        () => { nextCalls += 1; return { kind: "allow" }; },
       );
+      assert.deepEqual(gate, { kind: "allow" }, `the subagent skip must still return next()'s allow gate for ${JSON.stringify(header)}`);
+      assert.equal(nextCalls, 1, `next() must run exactly once on the subagent path for ${JSON.stringify(header)}`);
       assert.deepEqual(fx.spawned, [], `subagent must not spawn for ${JSON.stringify(header)}`);
     }
   } finally {
@@ -559,6 +562,76 @@ test("dsh-param-7. end-to-end: the param trigger composes through the real bins"
     const text = injected[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
     assert.ok(text.includes("g_00000001  Param e2e gap"));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// Degenerate exec shapes sit on the same veto trap as subagents: a listener
+// that returns without next() denies the tool call outright, so the missing
+// and non-injectable agent cases must pass the gate through too.
+test("dsh-param-8. no agent, or inject not a function: the gate still allows, nothing spawns", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Degenerate agent gap"]);
+    const mod = await import(ADAPTER);
+    const header = { cwd: "/x", delegationDepth: 0, origin: "user" };
+    const cases = [
+      { label: "agent missing entirely", exec: { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }) } },
+      { label: "inject not a function", exec: { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }), agent: { session: { header }, inject: "not-a-function" } } },
+    ];
+    for (const { label, exec } of cases) {
+      const fx = paramFixture("MOCK-DEGENERATE");
+      const registered = mod.apply({}, fx);
+      let nextCalls = 0;
+      const gate = await registered["tools/pre-execute"](exec, () => { nextCalls += 1; return { kind: "allow" }; });
+      assert.deepEqual(gate, { kind: "allow" }, `${label}: the returned gate must be next()'s allow, never a veto`);
+      assert.equal(nextCalls, 1, `${label}: next() must run exactly once`);
+      assert.deepEqual(fx.spawned, [], `${label}: nothing spawns`);
+      assert.deepEqual(fx.calls, [], `${label}: nothing injects`);
+    }
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// A rejecting inject must release the store's once-per-session claim so a
+// later identical call can retry — the param-path mirror of dsh-seed-once.
+// The handler calls inject() synchronously inside its try/catch (it does not
+// await it), so a synchronous throw is the failure mode it treats as failed
+// delivery, and the one pinned here.
+test("dsh-param-9. a throwing inject releases the store's claim; the next call delivers", async () => {
+  const repo = freshDir();
+  try {
+    seed(repo, ["Retry gap"]);
+    const mod = await import(ADAPTER);
+    const fx = paramFixture("MOCK-RETRY");
+    let throwing = true;
+    fx.agent.inject = (message) => {
+      if (throwing) throw new Error("inject rejected");
+      fx.calls.push({ kind: "inject", message });
+    };
+    const registered = mod.apply({}, fx);
+    const call = () => registered["tools/pre-execute"](
+      { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }), agent: fx.agent },
+      () => ({ kind: "allow" }),
+    );
+    // First call: the inject throws — fail open, store claim released.
+    const gate1 = await call();
+    assert.deepEqual(gate1, { kind: "allow" }, "a throwing inject must still let the tool call through");
+    assert.equal(fx.spawned.length, 1);
+    assert.deepEqual(fx.calls, [], "the throwing inject delivered nothing");
+    // Second identical call: the released claim must allow a full retry.
+    throwing = false;
+    const gate2 = await call();
+    assert.deepEqual(gate2, { kind: "allow" });
+    assert.equal(fx.spawned.length, 2, "the failed delivery must spawn again");
+    assert.equal(fx.calls.length, 1, "the retried delivery lands");
+    assert.equal(fx.calls[0].message.content[0].text, "MOCK-RETRY");
+    // A third call is the ordinary once-per-store: nothing more.
+    await call();
+    assert.equal(fx.spawned.length, 2, "after a delivered inject the once-per-session claim holds");
+    assert.equal(fx.calls.length, 1);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

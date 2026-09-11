@@ -186,26 +186,26 @@ export function apply(ctx, overrides = {}) {
   async function onPreExecute(exec, next) {
     try {
       const agent = exec?.agent;
-      if (!agent || typeof agent.inject !== "function") return;
-      if (subagentHeader(agent?.session?.header)) return;
-      for (const dir of candidateDirs(exec.arguments)) {
-        const found = resolveStore(dir, { readonly: true });
-        if (!found || found.open.code !== undefined) continue;
-        const seen = servedFor(agent);
-        if (seen.has(found.dir)) continue;
-        seen.add(found.dir);
-        let delivered = false;
-        try {
-          const result = spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", dir]);
-          if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout.length > 0) {
-            agent.inject(message(result.stdout));
-            delivered = true;
+      if (agent && typeof agent.inject === "function" && !subagentHeader(agent?.session?.header)) {
+        for (const dir of candidateDirs(exec.arguments)) {
+          const found = resolveStore(dir, { readonly: true });
+          if (!found || found.open.code !== undefined) continue;
+          const seen = servedFor(agent);
+          if (seen.has(found.dir)) continue;
+          seen.add(found.dir);
+          let delivered = false;
+          try {
+            const result = spawnBin("horizon-inject", ["--harness", HARNESS, "--cwd", dir]);
+            if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout.length > 0) {
+              agent.inject(message(result.stdout));
+              delivered = true;
+            }
+          } catch {
+            // Fail open (D2): an unresolvable bin or a rejecting inject
+            // leaves the session untouched.
           }
-        } catch {
-          // Fail open (D2): an unresolvable bin or a rejecting inject
-          // leaves the session untouched.
+          if (!delivered) seen.delete(found.dir);
         }
-        if (!delivered) seen.delete(found.dir);
       }
     } catch {
       // A trigger error must never reach the tool call.

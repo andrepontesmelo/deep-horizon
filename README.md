@@ -98,8 +98,9 @@ directories of `file_path`/`path` arguments, and absolute paths in `command`
 strings (which covers `git -C <dir>` targets). When a touched directory
 resolves to a repo with a horizon store, that repo's horizon is queued for the
 next step — once per repo per session, the launch repo's own horizon never
-re-fired, subagents excluded, and never for a storeless target (the bootstrap
-nudge does not fire here; that is the startup path's job). Like everything
+re-fired, subagents excluded, and never for a storeless target (no store is
+created or offered for one; an existing but empty store still composes the
+bootstrap nudge, as on the startup path). Like everything
 else in the adapter it fails open: malformed arguments, a failed spawn, or an
 error queue nothing and never block the tool call.
 
