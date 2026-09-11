@@ -1,21 +1,17 @@
-import { readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import {
-  SESSIONS_FILE,
   addGap,
   amendGap,
-  appendLine,
   closeGap,
   ensureStoreDir,
-  readCloses,
   readGap,
   readGapsFile,
   readSessions,
+  recordSession,
   resolveStore,
   setAbout,
   setDetail,
   usage,
-  utcNow,
 } from "./store.ts";
 import { gapLine } from "./texts.ts";
 
@@ -349,62 +345,21 @@ export async function main(argv) {
     }
 
     case "session-end": {
+      // The two ids are pinned to explicit flags (a close hook must never
+      // record an unknown session); the summary is optional prose, never
+      // fabricated. Store resolution, the read-join, and the append are
+      // recordSession's.
       if (!explicit.has("harness") || !explicit.has("session")) {
         return fail(2, "horizon: session-end requires --harness and --session");
       }
       const summary = explicit.has("summary") ? opts.summary : null;
-      // --store is the close hooks' round-trip: the dir horizon-inject --json
-      // already resolved, handed back so teardown does not re-discover (the
-      // harness process may have chdir'd since the injection). A path that is
-      // not an existing directory mirrors the storeless-cwd semantics — a
-      // silent no-op, the store-vanished-mid-session case at teardown — while
-      // anything that exists is read by the normal paths, so a malformed
-      // store still exits 7.
-      let storeDir = null;
-      if (explicit.has("store")) {
-        let st = null;
-        try {
-          st = statSync(opts.store);
-        } catch { /* absent: the storeless twin */ }
-        if (!st || !st.isDirectory()) return 0;
-        storeDir = resolve(opts.store);
-      } else {
-        const r = resolveStore(cwd);
-        if (!r) return 0;
-        if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
-        storeDir = r.dir;
-      }
-      const g = readGapsFile(storeDir);
-      if (!g.ok) return fail(g.code, g.message);
-      const sid = opts.session;
-      const c = readCloses(storeDir, sid);
-      if (!c.ok) return fail(c.code, c.message);
-      const added = [];
-      for (const gap of g.data.gaps) {
-        if (gap.provenance && gap.provenance.session_id === sid && !added.includes(gap.id)) added.push(gap.id);
-      }
-      // Count close records only for gaps that are actually gone (ADV-3):
-      // an orphaned record from a crash between append and rename is a no-op,
-      // not a phantom close.
-      const openIds = new Set(g.data.gaps.map((gap) => gap.id));
-      const closedIds = [];
-      for (const rec of c.records) {
-        if (!openIds.has(rec.gap_id) && !closedIds.includes(rec.gap_id)) closedIds.push(rec.gap_id);
-      }
-      for (const gapId of closedIds) {
-        if (!added.includes(gapId)) added.push(gapId);
-      }
-      // Record first (ADV-3): append the session record before any other
-      // store mutation; a failed append is exit 7 and nothing is written.
-      const a = appendLine(storeDir, SESSIONS_FILE, {
-        ts: utcNow(),
-        harness: opts.harness,
-        session_id: sid,
+      const w = recordSession(cwd, {
+        harness,
+        sessionId: session,
         summary,
-        gaps_added: added,
-        gaps_closed: closedIds,
+        store: explicit.has("store") ? opts.store : null,
       });
-      if (a) return fail(a.code, a.message);
+      if (w) return fail(w.code, w.message);
       return 0;
     }
 

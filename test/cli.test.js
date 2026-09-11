@@ -1019,6 +1019,42 @@ test("ADV-3d. orphan close record while gap still open: that session's gaps_clos
   }
 });
 
+// The third join shape, after ADV-3c/3d: the closing session is also the
+// adding session. The gap is gone from gaps.json, so the provenance scan
+// cannot see the add — only the union with the session's own close records
+// carries the id into gaps_added, and both arrays hold it.
+test("ADV-3e. added and closed by the same session: both arrays carry the id", async () => {
+  const dir = freshDir();
+  try {
+    // A bystander open gap (added by the seeder's own session) proves the
+    // inference is provenance-scoped, not "everything open".
+    seed(dir, ["Bystander gap"]);
+    const a = await run(["add", "one-breath", "Added and closed in one breath", "--cwd", dir, "--session", "sX"]);
+    assert.equal(a.code, 0, `stderr: ${a.stderr}`);
+    const c = await run(["close", "one-breath", "--cwd", dir, "--session", "sX"]);
+    assert.equal(c.code, 0, `stderr: ${c.stderr}`);
+    const se = await run(["session-end", "--harness", "t", "--session", "sX", "--cwd", dir]);
+    assert.equal(se.code, 0, `stderr: ${se.stderr}`);
+    assert.equal(se.stdout, "");
+    // The record shape, bytes included: field order is
+    // ts, harness, session_id, summary, gaps_added, gaps_closed.
+    const raw = readFileSync(join(dir, ".horizon", "sessions.jsonl"), "utf8").trim();
+    const rec = JSON.parse(raw);
+    assert.deepEqual(rec.gaps_added, ["one-breath"]);
+    assert.deepEqual(rec.gaps_closed, ["one-breath"]);
+    assert.equal(rec.harness, "t");
+    assert.equal(rec.session_id, "sX");
+    assert.equal(rec.summary, null);
+    assert.match(rec.ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    assert.match(
+      raw,
+      /^\{"ts":"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z","harness":"t","session_id":"sX","summary":null,"gaps_added":\["one-breath"\],"gaps_closed":\["one-breath"\]\}$/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ADV-4: `.horizon` existing as a REGULAR FILE used to crash init/add with a
 // raw ENOTDIR stack, exit 1. Spec 7: unusable store path -> exit 7 naming it.
 test("ADV-4. .horizon as a regular file: init and add exit 7 naming the path", async () => {
