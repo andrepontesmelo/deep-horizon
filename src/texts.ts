@@ -70,3 +70,11 @@ export function horizonBlock(gapsStdout) {
 export function aboutPrefix(about) {
   return typeof about === "string" ? `This project is about: ${about}\n\n` : "";
 }
+
+// The gap line (spec 3.1) — id, two spaces, text, one line per gap. Three
+// renderers share it: `show` prints it per gap, the at-cap error lists the
+// open gaps in it, and the injection composes the block's {{GAPS}} slot from
+// it. One home so the two-spaces rule cannot drift apart between them.
+export function gapLine(gap) {
+  return `${gap.id}  ${gap.text}`;
+}

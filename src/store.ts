@@ -1,6 +1,7 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { gapLine } from "./texts.ts";
 
 export const STORE_VERSION = 1;
 export const MAX_GAPS = 5;
@@ -423,7 +424,7 @@ function validateDetailText(text) {
 }
 
 function capMessage(gaps) {
-  const lines = gaps.map((g) => `${g.id}  ${g.text}`);
+  const lines = gaps.map(gapLine);
   return `horizon: at capacity: ${gaps.length} gaps already open; close one first.\n${lines.join("\n")}`;
 }
 
