@@ -257,17 +257,25 @@ def _section_text(session_info) -> str:
         return ""
 
 
-def _on_session_finalize(payload=None, **_ignored) -> None:
+def _on_session_finalize(payload=None, **kwargs) -> None:
     """Close hook: append a session record with summary omitted (null).
     Swallows everything — finalize is teardown; nothing here may break it.
 
     Sync by contract: hermes' invoke_hook dispatches callbacks synchronously
     and never awaits a coroutine (verified live, 2026-09-10) — an async def
     here returns a coroutine nobody runs and the hook body silently never
-    executes. Keep this a plain def; there is nothing to await anyway."""
+    executes. Keep this a plain def; there is nothing to await anyway.
+
+    The dispatcher calls hooks with FLAT kwargs — session_id=…, platform=…,
+    reason=… (plugins_dispatch.py:159) — not a single payload dict, so a
+    payload-only signature never binds and the hook no-ops (verified live,
+    2026-09-11). Accept both shapes: read session_id/cwd from the kwargs
+    first, then from a positional payload dict."""
     try:
-        info = payload if isinstance(payload, dict) else {}
-        session_id = info.get("session_id")
+        session_id = kwargs.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            info = payload if isinstance(payload, dict) else {}
+            session_id = info.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return
         # Same cwd trust rule as the section (_resolve_horizon_cwd): the
@@ -277,7 +285,10 @@ def _on_session_finalize(payload=None, **_ignored) -> None:
         # process may have chdir'd since turn one; then the payload cwd
         # (if a future core adds it), then the process cwd. Without --cwd
         # the bin would walk up from the gateway's own WorkingDirectory.
-        cwd = _session_cwd.pop(session_id, "") or _resolve_horizon_cwd(info.get("cwd"))
+        info = payload if isinstance(payload, dict) else {}
+        cwd = _session_cwd.pop(session_id, "") or _resolve_horizon_cwd(
+            kwargs.get("cwd") if isinstance(kwargs.get("cwd"), str) and kwargs.get("cwd") else info.get("cwd")
+        )
         args = ["session-end", "--harness", HARNESS, "--session", session_id]
         if cwd:
             args += ["--cwd", cwd]
