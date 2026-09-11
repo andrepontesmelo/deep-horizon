@@ -11,6 +11,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seed } from "./seed.js";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const PI_ADAPTER = new URL("../src/adapters/pi.ts", import.meta.url).pathname;
@@ -19,19 +20,6 @@ const HERMES_PLUGIN_DIR = join(ROOT, "adapters", "hermes");
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), "horizon-adapter-test-"));
-}
-
-function seed(dir, texts) {
-  const store = join(dir, ".horizon");
-  mkdirSync(store, { recursive: true });
-  const gaps = texts.map((text, i) => ({
-    id: `gap-${i + 1}`,
-    text,
-    added_at: `2026-09-08T15:0${i}:11Z`,
-    provenance: { harness: "test", session_id: "seed", tty: false, origin: "human" },
-  }));
-  writeFileSync(join(store, "gaps.json"), JSON.stringify({ version: 1, revision: gaps.length, gaps }, null, 2) + "\n");
-  return gaps;
 }
 
 function runPython(args, opts = {}) {
@@ -100,7 +88,10 @@ test("52. the Hermes section callable spawns horizon-inject --harness hermes and
 test("53. the Hermes section returns empty text for subagent sessions (parent_session_id set) and renders under the 4000-char cap at the 5x512 worst case", () => {
   const dir = freshDir();
   try {
-    seed(dir, Array.from({ length: 5 }, (_, i) => "g".repeat(512) + " " + i));
+    // Exactly 512 code points per title (510 + " " + one digit) — the real
+    // worst case; the old hand-written seed wrote 514-point texts the CLI
+    // itself would have rejected.
+    seed(dir, Array.from({ length: 5 }, (_, i) => "g".repeat(510) + " " + i));
     const script = join(dir, "drive.py");
     writeFileSync(script, [
       "import sys",

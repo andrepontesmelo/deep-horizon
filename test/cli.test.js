@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seed } from "./seed.js";
 
 const BIN = new URL("../bin/horizon.js", import.meta.url).pathname;
 
@@ -21,20 +22,6 @@ function run(args, opts = {}) {
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), "horizon-test-"));
-}
-
-// Seed a store directly (init-equivalent).
-function seed(dir, texts) {
-  const store = join(dir, ".horizon");
-  mkdirSync(store, { recursive: true });
-  const gaps = texts.map((text, i) => ({
-    id: `gap-${i + 1}`,
-    text,
-    added_at: `2026-09-08T15:0${i}:11Z`,
-    provenance: { harness: "test", session_id: "seed", tty: false, origin: "human" },
-  }));
-  writeFileSync(join(store, "gaps.json"), JSON.stringify({ version: 1, revision: gaps.length, gaps }, null, 2) + "\n");
-  return gaps;
 }
 
 function readGaps(dir) {
@@ -838,8 +825,9 @@ test("ADV-1b. gap with non-string text: exit 7 (no crash, store untouched)", asy
 test("ADV-2. null line in sessions.jsonl: log exits 7; --json never emits a null record", async () => {
   const dir = freshDir();
   try {
-    mkdirSync(join(dir, ".horizon"), { recursive: true });
-    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    // A valid (empty) store seeded through the interface; the hand-written
+    // part is the hostile JSONL sibling below.
+    seed(dir, []);
     const good = JSON.stringify({ ts: "2026-09-08T15:00:00Z", harness: "t", session_id: "s0", summary: null, gaps_added: [], gaps_closed: [] });
     writeFileSync(join(dir, ".horizon", "sessions.jsonl"), good + "\nnull\n");
     const r = await run(["log", "--cwd", dir]);
@@ -856,8 +844,9 @@ test("ADV-2. null line in sessions.jsonl: log exits 7; --json never emits a null
 test("ADV-2b. null line in closes.jsonl: session-end exits 7 naming closes.jsonl", async () => {
   const dir = freshDir();
   try {
-    mkdirSync(join(dir, ".horizon"), { recursive: true });
-    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    // A valid (empty) store seeded through the interface; the hand-written
+    // part is the hostile JSONL sibling below.
+    seed(dir, []);
     writeFileSync(join(dir, ".horizon", "closes.jsonl"), "null\n");
     const r = await run(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
     assert.equal(r.code, 7);
@@ -870,8 +859,9 @@ test("ADV-2b. null line in closes.jsonl: session-end exits 7 naming closes.jsonl
 test("ADV-2c. syntactically invalid JSONL line: exit 7 (same contract as a null line)", async () => {
   const dir = freshDir();
   try {
-    mkdirSync(join(dir, ".horizon"), { recursive: true });
-    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    // A valid (empty) store seeded through the interface; the hand-written
+    // part is the hostile JSONL sibling below.
+    seed(dir, []);
     writeFileSync(join(dir, ".horizon", "sessions.jsonl"), "{not json}\n");
     const r = await run(["log", "--cwd", dir]);
     assert.equal(r.code, 7);
@@ -1060,8 +1050,9 @@ test("ADV-5. store dir chmod 000: exit 7, no crash", async () => {
 test("ADV-5b. sessions.jsonl as a directory: log exits 7 naming it", async () => {
   const dir = freshDir();
   try {
-    mkdirSync(join(dir, ".horizon"), { recursive: true });
-    writeFileSync(join(dir, ".horizon", "gaps.json"), JSON.stringify(emptyStore()) + "\n");
+    // A valid (empty) store seeded through the interface; the hand-written
+    // part is the hostile JSONL sibling below.
+    seed(dir, []);
     mkdirSync(join(dir, ".horizon", "sessions.jsonl"));
     const r = await run(["log", "--cwd", dir]);
     assert.equal(r.code, 7);
@@ -1119,10 +1110,6 @@ function assertValidLimit(value) {
 
 test("ADV-10. --limit past Number.MAX_SAFE_INTEGER rejected, exit 2", assertValidLimit("99999999999999999999"));
 test("ADV-11. --limit leading zeros rejected, exit 2", assertValidLimit("007"));
-
-function emptyStore() {
-  return { version: 1, revision: 0, gaps: [] };
-}
 
 // --- Cross-platform gates (X1-X5, spec section 9 as amended by 297dc95) ---
 

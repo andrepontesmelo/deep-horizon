@@ -4,6 +4,8 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seed } from "./seed.js";
+import { setAbout as storeSetAbout, setDetail } from "../src/store.ts";
 
 const INJECT_BIN = new URL("../bin/horizon-inject.js", import.meta.url).pathname;
 const ADAPTER = new URL("../src/adapters/dsh.ts", import.meta.url).pathname;
@@ -22,20 +24,6 @@ function run(args, opts = {}) {
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), "horizon-inject-test-"));
-}
-
-// Seed a store directly (init-equivalent), mirroring test/cli.test.js seed().
-function seed(dir, texts) {
-  const store = join(dir, ".horizon");
-  mkdirSync(store, { recursive: true });
-  const gaps = texts.map((text, i) => ({
-    id: `gap-${i + 1}`,
-    text,
-    added_at: `2026-09-08T15:0${i}:11Z`,
-    provenance: { harness: "test", session_id: "seed", tty: false, origin: "human" },
-  }));
-  writeFileSync(join(store, "gaps.json"), JSON.stringify({ version: 1, revision: gaps.length, gaps }, null, 2) + "\n");
-  return gaps;
 }
 
 // Extract the inside of a fenced block that follows `heading` in the spec.
@@ -782,12 +770,11 @@ test("49. inject embeds show stdout byte-for-byte even when gap texts carry $-re
 
 // --- about-line composition (spec 10.3) ---
 
-// Write an about line into a seeded store, the way `horizon about` would.
+// Write an about line into a seeded store through the store interface, the
+// way `horizon about "<text>"` would.
 function setAbout(dir, about) {
-  const p = join(dir, ".horizon", "gaps.json");
-  const state = JSON.parse(readFileSync(p, "utf8"));
-  state.about = about;
-  writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+  const r = storeSetAbout(dir, { text: about });
+  if (r) throw new Error(r.message);
 }
 
 test("about-inject-1. about + gaps: the about line, a blank line, then the byte-identical horizon block", async () => {
@@ -924,10 +911,9 @@ test("pointer-2. details content never reaches injected text", async () => {
   const dir = freshDir();
   try {
     seed(dir, ["Watchful gap"]);
-    const store = join(dir, ".horizon");
-    const state = JSON.parse(readFileSync(join(store, "gaps.json"), "utf8"));
-    state.gaps[0].details = "SECRET-DETAIL-CONTEXT\nmore secret context";
-    writeFileSync(join(store, "gaps.json"), JSON.stringify(state, null, 2) + "\n");
+    // Details go in through the store's own writer, never a hand-written file.
+    const r0 = setDetail(dir, "gap-1", { text: "SECRET-DETAIL-CONTEXT\nmore secret context" });
+    assert.equal(r0, null, `seeding details failed: ${r0 && r0.message}`);
     const r = await run(["--cwd", dir]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("gap-1  Watchful gap"), "the title line must survive");

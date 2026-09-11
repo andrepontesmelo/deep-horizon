@@ -1,24 +1,20 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
-  CLOSES_FILE,
-  HORIZON_DIR,
-  MAX_DETAIL_POINTS,
-  MAX_GAPS,
-  MAX_TEXT_POINTS,
   SESSIONS_FILE,
+  addGap,
+  amendGap,
   appendLine,
-  codePoints,
+  closeGap,
   ensureStoreDir,
-  isRecord,
   readCloses,
+  readGap,
   readGapsFile,
   readSessions,
   resolveStore,
+  setAbout,
+  setDetail,
   usage,
   utcNow,
-  validId,
-  writeGapsFile,
 } from "./store.ts";
 
 const COMMANDS = ["show", "about", "add", "close", "amend", "detail", "log", "session-end", "init"];
@@ -121,54 +117,10 @@ function parseFlags(tokens, opts, explicit) {
   return { positionals };
 }
 
-// One-line text validation shared by gap text and the about line (spec 10.4:
-// the about line is validated identically in shape to gap text). `label`
-// names the field in the message so the failure is never mysterious.
-function validateOneLineText(text, label) {
-  if (text.length === 0) return `horizon: ${label} is empty; not saved.`;
-  if (text.trim().length === 0) return `horizon: ${label} is blank; not saved.`;
-  if (text.includes("\n") || text.includes("\r")) {
-    return `horizon: ${label} contains a newline; not saved.`;
-  }
-  const n = codePoints(text);
-  if (n > MAX_TEXT_POINTS) {
-    return `horizon: ${label} is ${n} code points; the limit is ${MAX_TEXT_POINTS}. Not saved.`;
-  }
-  return null;
-}
-
-function validateGapText(text) {
-  return validateOneLineText(text, "gap text");
-}
-
-// Details (optional extended context behind a gap's one line) relax the shape:
-// multi-line is allowed, so only emptiness and the cap are enforced. Same
-// rejection discipline as the title: state the actual count, never truncate.
-function validateDetailText(text) {
-  if (text.length === 0) return "horizon: gap details are empty; not saved.";
-  if (text.trim().length === 0) return "horizon: gap details are blank; not saved.";
-  const n = codePoints(text);
-  if (n > MAX_DETAIL_POINTS) {
-    return `horizon: gap details are ${n} code points; the limit is ${MAX_DETAIL_POINTS}. Not saved.`;
-  }
-  return null;
-}
-
-// Every whole-file gaps.json rewrite goes through here. Rebuilding the store
-// as a bare {version, revision, gaps} would silently drop the about line
-// (spec 10.4) and the closed ids (spec 3.2), so both are carried forward:
-// about only when the current store carries it (an unset store stays without
-// the field), closed_ids always — readGapsFile defaults it to [].
-function nextStore(cur, gaps) {
-  const next = { version: 1, revision: cur.revision + 1, gaps, closed_ids: cur.closed_ids ?? [] };
-  if (cur.about !== undefined) next.about = cur.about;
-  return next;
-}
-
-function capMessage(gaps) {
-  const lines = gaps.map((g) => `${g.id}  ${g.text}`);
-  return `horizon: at capacity: ${gaps.length} gaps already open; close one first.\n${lines.join("\n")}`;
-}
+// Text-shape validation (one-line cap, details cap) and every gaps.json
+// mutation live in the store module: the verbs below hand it semantic inputs
+// and report whatever { code, message } comes back, so the write invariant —
+// revision bump, closed_ids, about preservation — is enforced in one place.
 
 function logTimestamp(ts) {
   if (typeof ts === "string" && ts.length >= 16) return `${ts.slice(0, 10)} ${ts.slice(11, 16)}`;
@@ -302,146 +254,42 @@ export async function main(argv) {
         if (typeof g.data.about === "string") stdout(`${g.data.about}\n`);
         return 0;
       }
-      if (!clear) {
-        const bad = validateOneLineText(text, "about text");
-        if (bad) return fail(3, bad);
-      }
-      // Write mode: set/replace, or clear. Both rewrite the whole file with
-      // revision + 1, gaps preserved — clear writes the store WITHOUT the
-      // about field, so an unset store stays without it (spec 10.4).
-      const found = resolveStore(cwd);
-      let storeDir;
-      if (!found) {
-        if (clear) return 0; // nothing to unset, and no store to create
-        const m = ensureStoreDir(cwd);
-        if (m.code !== undefined) return fail(m.code, m.message);
-        storeDir = m.dir;
-        if (m.created) stderr(`horizon: created ${storeDir}\n`);
-      } else {
-        if (found.open.code !== undefined) return fail(found.open.code, found.open.message);
-        storeDir = found.dir;
-      }
-      const cur = readGapsFile(storeDir);
-      if (!cur.ok) return fail(cur.code, cur.message);
-      const next = nextStore(cur.data, cur.data.gaps);
-      if (clear) delete next.about;
-      else next.about = text;
-      const w = writeGapsFile(storeDir, next);
+      // Write mode: set/replace, or clear. The store operation owns store
+      // creation (set may bootstrap one, clear never does), the revision
+      // bump, and the unset-store-stays-without-the-field rule.
+      const w = setAbout(cwd, clear ? { clear: true } : { text });
       if (w) return fail(w.code, w.message);
       return 0;
     }
 
     case "add": {
-      // The id is caller-supplied and first: it must match the slug grammar
-      // (spec 3.2). There is no minting and no old-shape compatibility — an
-      // id that fails the grammar is a usage error naming the id.
-      if (!validId(targetId)) {
-        return fail(2, `horizon: invalid gap id: ${targetId}; ids are 3-40 chars of a-z, 0-9, and hyphens, starting with a letter`);
-      }
-      const bad = validateGapText(text);
-      if (bad) return fail(3, bad);
-      // Details are set in the same command as the title, optionally: a bad
-      // detail rejects the whole add, so no half-written gap lands.
-      let details = null;
-      if (opts.detail !== undefined) {
-        const badDetail = validateDetailText(opts.detail);
-        if (badDetail) return fail(3, badDetail);
-        details = opts.detail;
-      }
-      const found = resolveStore(cwd);
-      let storeDir;
-      let created = null;
-      if (!found) {
-        const m = ensureStoreDir(cwd);
-        if (m.code !== undefined) return fail(m.code, m.message);
-        storeDir = m.dir;
-        if (m.created) created = `horizon: created ${storeDir}`;
-      } else {
-        if (found.open.code !== undefined) return fail(found.open.code, found.open.message);
-        storeDir = found.dir;
-      }
-      if (created) stderr(`${created}\n`);
-      const cur = readGapsFile(storeDir);
-      if (!cur.ok) return fail(cur.code, cur.message);
-      if (cur.data.gaps.length >= MAX_GAPS) return fail(4, capMessage(cur.data.gaps));
-      // Ids are never reused for the life of the project: a collision with an
-      // open gap or with closed_ids is a hard reject (exit 8), not a remint.
-      if (cur.data.gaps.some((g) => g.id === targetId)) {
-        return fail(8, `horizon: duplicate gap id: ${targetId} is already open. Choose another id.`);
-      }
-      if (cur.data.closed_ids.includes(targetId)) {
-        return fail(8, `horizon: duplicate gap id: ${targetId} was closed and ids are never reused. Choose another id.`);
-      }
-      const gap = {
+      // The id is caller-supplied and first (spec 3.2); the store operation
+      // enforces grammar, title, and details in that order, then caps and
+      // never-reuse. It prints nothing: the id on stdout is the verb's.
+      const w = addGap(cwd, {
         id: targetId,
         text,
-        added_at: utcNow(),
-        provenance: {
-          harness,
-          session_id: session,
-          tty: process.stdin.isTTY === true,
-          origin,
-        },
-      };
-      if (details !== null) gap.details = details;
-      const next = nextStore(cur.data, [...cur.data.gaps, gap]);
-      const w = writeGapsFile(storeDir, next);
+        details: opts.detail,
+        harness,
+        sessionId: session,
+        tty: process.stdin.isTTY === true,
+        origin,
+      });
       if (w) return fail(w.code, w.message);
       stdout(`${targetId}\n`);
       return 0;
     }
 
     case "close": {
-      // An id off the slug grammar can never exist in a store (read
-      // validation rejects such stores), so it is rejected here: exit 5,
-      // same family as an unknown id, but named as invalid.
-      if (!validId(targetId)) return fail(5, `horizon: invalid gap id: ${targetId}`);
-      const r = resolveStore(cwd);
-      if (!r) return fail(5, `horizon: unknown gap id: ${targetId}`);
-      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
-      const storeDir = r.dir;
-      const cur = readGapsFile(storeDir);
-      if (!cur.ok) return fail(cur.code, cur.message);
-      const gap = cur.data.gaps.find((g) => g.id === targetId);
-      if (!gap) return fail(5, `horizon: unknown gap id: ${targetId}`);
-      // The closed id is retired in the same write: add can never reuse it.
-      const next = nextStore(
-        cur.data,
-        cur.data.gaps.filter((g) => g.id !== targetId),
-      );
-      next.closed_ids = [...cur.data.closed_ids, targetId];
-      // Record first (ADV-3): the close record lands in closes.jsonl before
-      // gaps.json shrinks, so an append failure leaves the gap open and the
-      // store unchanged. A close record whose gap is still open (crash
-      // between the append and the rename) is a no-op for session-end/log:
-      // only records for gaps actually gone are counted.
-      const a = appendLine(storeDir, CLOSES_FILE, {
-        ts: utcNow(),
-        session_id: session,
-        gap_id: targetId,
-        added_session_id:
-          gap.provenance && typeof gap.provenance.session_id === "string" ? gap.provenance.session_id : "unknown",
-      });
-      if (a) return fail(a.code, a.message);
-      const w = writeGapsFile(storeDir, next);
+      // The store operation retires the id and records the close (record
+      // first, ADV-3); a storeless cwd is an unknown id (exit 5).
+      const w = closeGap(cwd, targetId, session);
       if (w) return fail(w.code, w.message);
       return 0;
     }
 
     case "amend": {
-      if (!validId(targetId)) return fail(5, `horizon: invalid gap id: ${targetId}`);
-      const r = resolveStore(cwd);
-      if (!r) return fail(5, `horizon: unknown gap id: ${targetId}`);
-      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
-      const storeDir = r.dir;
-      const cur = readGapsFile(storeDir);
-      if (!cur.ok) return fail(cur.code, cur.message);
-      const idx = cur.data.gaps.findIndex((g) => g.id === targetId);
-      if (idx === -1) return fail(5, `horizon: unknown gap id: ${targetId}`);
-      const bad = validateGapText(text);
-      if (bad) return fail(3, bad);
-      const gaps = cur.data.gaps.map((g) => (g.id === targetId ? { ...g, text } : g));
-      const w = writeGapsFile(storeDir, nextStore(cur.data, gaps));
+      const w = amendGap(cwd, targetId, text);
       if (w) return fail(w.code, w.message);
       return 0;
     }
@@ -449,45 +297,20 @@ export async function main(argv) {
     case "detail": {
       const clear = !!opts.clear;
       if (clear && text !== null) return fail(2, "horizon: detail --clear takes no text");
-      // An id off the slug grammar can never exist in a store (read
-      // validation rejects such stores), so it is rejected here: exit 5,
-      // same family as an unknown id, but named as invalid — the same split
-      // close and amend apply.
-      if (!validId(targetId)) return fail(5, `horizon: invalid gap id: ${targetId}`);
-      const r = resolveStore(cwd);
-      if (!r) return fail(5, `horizon: unknown gap id: ${targetId}`);
-      if (r.open.code !== undefined) return fail(r.open.code, r.open.message);
-      const storeDir = r.dir;
-      const cur = readGapsFile(storeDir);
-      if (!cur.ok) return fail(cur.code, cur.message);
-      const gap = cur.data.gaps.find((g) => g.id === targetId);
-      if (!gap) return fail(5, `horizon: unknown gap id: ${targetId}`);
       if (!clear && text === null) {
         // Print mode: the stored details verbatim, or the explicit no-details
         // line — never silence (emptiness is not an error here, but it is
         // stated; the contract pins the wording).
-        if (typeof gap.details === "string") stdout(`${gap.details}\n`);
+        const g = readGap(cwd, targetId);
+        if (!g.ok) return fail(g.code, g.message);
+        if (typeof g.data.details === "string") stdout(`${g.data.details}\n`);
         else stdout(`no details for ${targetId}\n`);
         return 0;
       }
-      if (!clear) {
-        const bad = validateDetailText(text);
-        if (bad) return fail(3, bad);
-      }
-      // Write mode: set/rewrite, or clear. Same protocol as amend — a
-      // whole-file rewrite through writeGapsFile with revision + 1; clear
-      // drops the field entirely so an unset gap stays without it. Like
-      // amend (which appends nothing), detail changes log nothing: they are
-      // visible through the revision counter only.
-      const gaps = cur.data.gaps.map((g) => {
-        if (g.id !== targetId) return g;
-        if (clear) {
-          const { details: _dropped, ...rest } = g;
-          return rest;
-        }
-        return { ...g, details: text };
-      });
-      const w = writeGapsFile(storeDir, nextStore(cur.data, gaps));
+      // Write mode: set/rewrite, or clear. Like amend (which appends
+      // nothing), detail changes log nothing: they are visible through the
+      // revision counter only.
+      const w = setDetail(cwd, targetId, clear ? { clear: true } : { text });
       if (w) return fail(w.code, w.message);
       return 0;
     }
