@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "revision": 16,
+  "revision": 17,
   "gaps": [
     {
       "id": "zcode-param-trigger",
@@ -25,6 +25,18 @@
         "origin": "agent-proposed"
       },
       "details": "Evidence: README — 'no true close hook: a session interrupted with SIGINT/SIGTERM — or a terminal closed — writes no record, because Stop only steers at a turn boundary and nothing fires at process exit.' So session-end records miss exactly the aborted sessions worth knowing about. Done = a session killed by signal or a closed terminal leaves a record (summary: null is honest and fine) for every adapter that can host such a hook."
+    },
+    {
+      "id": "registry-release",
+      "text": "deep-horizon is installable from the npm registry",
+      "added_at": "2026-09-13T16:57:05Z",
+      "provenance": {
+        "harness": "unknown",
+        "session_id": "unknown",
+        "tty": false,
+        "origin": "human"
+      },
+      "details": "Re-tracks the want the Sep-11 npm-release close dropped while registry.npmjs.org still 404s. A registry tarball ships dist/ as packed and never runs prepare on the user's machine, so this also erases the npm-12 install-scripts friction documented in Install. Done = npm install -g deep-horizon works from the registry."
     }
   ],
   "closed_ids": [

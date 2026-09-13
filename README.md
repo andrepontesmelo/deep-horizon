@@ -16,7 +16,7 @@ between sessions and between tools.
 is configured; hooks fail open (they inject nothing) when the bin is missing.
 
 There is **no npm release yet** — `npm install -g deep-horizon` 404s on
-registry.npmjs.org (this repo's open gap `npm-release`). Install from a
+registry.npmjs.org (this repo's open gap `registry-release`). Install from a
 checkout, and build before installing: on npm >= 12 the install-scripts
 protection blocks this package's `prepare` (the build) on path installs, and
 the `--allow-scripts` remedies npm's own warning suggests still block for
