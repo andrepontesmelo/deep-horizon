@@ -375,7 +375,7 @@ the user config `~/.zcode/cli/config.json`):
       ],
       "PreToolUse": [
         {
-          "matcher": "Bash|Read|Edit|Write",
+          "matcher": "Bash|Read|Edit|Write|NotebookEdit",
           "hooks": [
             {
               "type": "command",
@@ -396,9 +396,10 @@ default. The `$(npm root -g)` expansion happens in the shell ZCode runs
 global prefix (pnpm, bun), point the command at the real location. The
 `timeout` is seconds; leave it modest — hooks run inline before the tool
 call. The PreToolUse matcher is a case-sensitive regex on the tool name;
-`Bash|Read|Edit|Write` is pinned because those are the calls whose
-arguments carry absolute targets (a command string, a `file_path`), and
-the matcher keeps the hook's cost off calls that can never carry one.
+`Bash|Read|Edit|Write|NotebookEdit` is pinned because those are the calls
+whose arguments carry absolute targets (a command string, a `file_path`,
+a `notebook_path`), and the matcher keeps the hook's cost off calls that
+can never carry one.
 Omitting the matcher entirely would match every tool and work too — the
 script scans fields, not tool names — it would just fire more often for
 nothing.

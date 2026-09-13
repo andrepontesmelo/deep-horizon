@@ -53,8 +53,13 @@
 # resolving one against the harness process would guess (the hermes trigger
 # drops them for the same reason). Spellings are lexically normalized
 # (path.resolve — no filesystem access) so one dir probes once per call.
-# tool_name is read off the payload but deliberately unused for the scan:
-# the fields are the contract. cwd is used only to seed the marker (below).
+# A candidate carrying a newline is dropped: the marker format is
+# line-based and cannot remember one (dsh tolerates newline dirs in
+# memory; this glue cannot, and a fragmenting re-probe every fire is the
+# alternative). tool_name is read off the payload but deliberately unused
+# for the scan: the fields are the contract. cwd is not used at all: the
+# candidates must already be absolute, and the launch dir's seed is
+# session-start's duty (below).
 #
 # Speed: the hook runs inline before every matching call (the bundle has no
 # async escape — `async` hooks run inline — and the timeout default is
@@ -64,7 +69,17 @@
 # node startup per fire. Blocks run ~1-2KB, so even a multi-repo fire fits
 # the 32KB stdout cap with room to spare — no truncation logic, and `jq -c`
 # keeps the envelope single-line.
-set -u
+#
+# Shell mode: globbing is off (set -f) and `set -u` is deliberately NOT
+# set. Globbing off because a command's `*` token must reach the bin as
+# the literal the model wrote, probed once — pathname expansion would ask
+# per matched dir and inject every block in one fire, which is neither
+# dsh's behavior nor once-per-anything. No set -u because an unbound
+# expansion under it exits 2, and exit 2 DENIES the tool call — fail-open
+# (an unbound var expands empty, the same as any other error here) beats
+# undefined-variable safety in a hook that must never deny. Nothing in
+# this script relied on either mode; audit that stays true on every edit.
+set -f
 
 payload=$(cat 2>/dev/null) || exit 0
 [ -n "$payload" ] || exit 0
@@ -89,10 +104,11 @@ sid=$(printf '%s' "$payload" | jq -r '.session_id // .sessionId // empty' 2>/dev
 safe=$(printf '%s' "$sid" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null) || safe=""
 [ -n "$safe" ] || exit 0
 
-# The session's working directory (the hook process runs there — probed:
-# the executor passes payload.cwd as the spawn cwd). Only used to seed a
-# fresh marker.
-cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || exit 0
+# The session's working directory is deliberately not read: candidates
+# must already be absolute, and the launch dir's seed is session-start's
+# duty — this fire runs before any injection is known to have happened,
+# and pre-seeding `d <cwd>` here would silence the launch dir for a whole
+# session whose session-start never ran or failed.
 
 # The candidate scan: one node run per fire, the payload on stdin, dsh's
 # candidateDirs semantics (see the header). No single quotes inside the -e
@@ -108,6 +124,7 @@ if(p&&typeof p=="object"&&!Array.isArray(p)){
 }
 function push(v){
   if(typeof v!="string"||v.length===0)return;
+  if(v.indexOf("\n")!==-1)return;
   if(v.slice(0,2)=="~/")v=path.join(os.homedir(),v.slice(2));
   if(v.charAt(0)!="/")return;
   v=path.resolve(v);
@@ -128,16 +145,13 @@ process.stdout.write(out.length?out.join("\n")+"\n":"");
 ' 2>/dev/null) || exit 0
 [ -n "$dirs" ] || exit 0
 
-# The marker: materialize it, seeding the launch dir as known — its horizon
-# rode the startup injection (or its replay, on a resume whose session-start
-# never ran), so the first touch of the launch dir must not probe at all.
-# Then require it writable: an unwritable marker means no memory, and no
+# The marker: materialize it empty. The launch dir is NOT seeded here —
+# only session-start seeds (its fire knows an injection happened); an
+# unseeded launch dir is probed honestly like any other dir. Then require
+# the marker writable: an unwritable marker means no memory, and no
 # memory means silence (see the header).
 marker=${TMPDIR:-/tmp}/horizon-zcode-$safe
-if [ ! -f "$marker" ]; then
-  [ -n "$cwd" ] && printf 'd %s\n' "$cwd" >>"$marker" 2>/dev/null
-  [ -f "$marker" ] || : >"$marker" 2>/dev/null
-fi
+[ -f "$marker" ] || : >"$marker" 2>/dev/null
 { [ -f "$marker" ] && [ -w "$marker" ]; } || exit 0
 
 known() { grep -Fxq -- "$1" "$marker" 2>/dev/null; }
@@ -165,9 +179,11 @@ for dir in $dirs; do
   answer=$(ask "$dir") || continue
   # The bin's total answer is the one store-existence rule (the DSH
   # adapter's parseInjectAnswer contract): {"text": string, "store":
-  # string|null}. Anything off-shape is a failed probe — the dir stays
+  # string|null} — the store KEY must exist (has("store")), because a
+  # missing key is an off-shape answer, not a storeless one; the bin always
+  # emits the key. Anything off-shape is a failed probe — the dir stays
   # unrecorded so the next call retries, exactly like dsh's unprobed dir.
-  ok=$(printf '%s' "$answer" | jq -r 'if type=="object" and (.text|type=="string") and ((.store|type=="string") or .store==null) then "1" else empty end' 2>/dev/null) || continue
+  ok=$(printf '%s' "$answer" | jq -r 'if type=="object" and (.text|type=="string") and has("store") and ((.store|type=="string") or (.store|type=="null")) then "1" else empty end' 2>/dev/null) || continue
   [ -n "$ok" ] || continue
   text=$(printf '%s' "$answer" | jq -r '.text' 2>/dev/null) || continue
   store=$(printf '%s' "$answer" | jq -r '.store // empty' 2>/dev/null) || continue

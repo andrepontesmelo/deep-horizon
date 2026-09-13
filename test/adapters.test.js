@@ -1449,6 +1449,23 @@ test("zcode-param-2. the bin is asked exactly once per fresh dir: storeless sile
     r = run({ command: "cd some/relative/dir && ls" });
     assert.equal(r.stdout, "");
     assert.equal(r.count, 5, "relative paths must be dropped");
+    // Globbing stays off in the hook shell (set -f): a glob token reaches
+    // the bin as the literal the model wrote, probed once — pathname
+    // expansion would ask per matched dir and inject every block in one
+    // fire, which is neither dsh's behavior nor once-per-anything.
+    const g = join(dir, "globs");
+    mkdirSync(join(g, "m1"), { recursive: true });
+    mkdirSync(join(g, "m2"), { recursive: true });
+    r = run({ command: `ls ${g}/*` });
+    assert.equal(r.stdout, "");
+    assert.equal(r.count, 6, `a glob token must be one literal probe, got: ${r.spawns.join(" | ")}`);
+    assert.ok(r.spawns.at(-1).endsWith(`--cwd ${g}/*`),
+      `the literal token must reach the bin unexpanded, got: ${r.spawns.at(-1)}`);
+    // A candidate carrying a newline is dropped: the marker format is
+    // line-based and cannot remember one, so it never candidates at all.
+    r = run({ workdir: `${dir}/new\nline` });
+    assert.equal(r.stdout, "");
+    assert.equal(r.count, 6, "a newline dir must be dropped, not probed");
   }, "horizon-zcode-param-");
 });
 
@@ -1582,6 +1599,50 @@ test("zcode-param-6. several fresh stores touched by one call concatenate into t
     assert.equal(second.stdout, "", "the replayed fire must inject nothing");
     assert.equal(readFileSync(join(dir, "spawns.log"), "utf8").split("\n").filter((l) => l.length > 0).length, 2,
       "the replayed fire must not re-spawn for either dir");
+  }, "horizon-zcode-param-");
+});
+
+test("zcode-param-7. an unseeded launch dir is probed honestly: with session-start never run, the launch dir's own horizon IS delivered mid-session, once", async () => {
+  // Only session-start seeds the marker (its fire knows an injection
+  // happened). Pre-execute materializes the marker empty, so a session
+  // whose session-start never ran or failed gets its launch dir probed and
+  // served like any other dir — under-silencing beats pre-silencing.
+  await withDir(async (dir) => {
+    seed(dir, ["unseeded launch gap"]);
+    const sid = "sess_unseeded";
+    const run = shimRunner(dir, { log: join(dir, "spawns.log"), delegate: join(ROOT, "bin", "horizon-inject.js") });
+    let r = run({ command: `git -C ${dir} status` }, { sid });
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    assert.ok(r.stdout.includes("unseeded launch gap"),
+      "no session-start seed: the launch dir must be probed and served like any other dir");
+    assert.equal(r.count, 1, "exactly one probe");
+    const marker = readFileSync(join(dir, `horizon-zcode-${sid}`), "utf8");
+    assert.ok(marker.includes(`s ${join(dir, ".horizon")}\n`), `the store must be claimed, got: ${marker}`);
+    r = run({ command: `git -C ${dir} status` }, { sid });
+    assert.equal(r.stdout, "", "the second touch stays silent");
+    assert.equal(r.count, 1, "and does not re-spawn");
+  }, "horizon-zcode-param-");
+});
+
+test("zcode-param-8. an off-shape --json answer — a missing store key — is never remembered: silence, and the next call re-probes", async () => {
+  // The bin always emits the store key (null when storeless), so a missing
+  // key is an off-shape answer, not a storeless one — the dsh
+  // parseInjectAnswer trade: failed answers leave the dir unrecorded so
+  // the next call retries.
+  await withDir(async (dir) => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo, { recursive: true });
+    seed(repo, ["off-shape gap"]);
+    const run = shimRunner(dir, { log: join(dir, "spawns.log"), answer: { text: "TEXT WITHOUT STORE" } });
+    let r = run({ command: `git -C ${repo} status` });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, "", "an off-shape answer injects nothing");
+    assert.equal(r.count, 1);
+    assert.ok(!readFileSync(join(dir, "horizon-zcode-sess_shim1"), "utf8").includes(`d ${repo}\n`),
+      "an off-shape answer must not record the dir");
+    r = run({ command: `git -C ${repo} status` });
+    assert.equal(r.stdout, "");
+    assert.equal(r.count, 2, "the unrecorded dir re-probes on the next call");
   }, "horizon-zcode-param-");
 });
 
