@@ -17,12 +17,21 @@ is configured; hooks fail open (they inject nothing) when the bin is missing.
 
 There is **no npm release yet** — `npm install -g deep-horizon` 404s on
 registry.npmjs.org (this repo's open gap `npm-release`). Install from a
-checkout:
+checkout, and build before installing: on npm >= 12 the install-scripts
+protection blocks this package's `prepare` (the build) on path installs, and
+the `--allow-scripts` remedies npm's own warning suggests still block for
+path installs — the installed bins then crash with `ERR_MODULE_NOT_FOUND`
+for `dist/cli.js`. (`npm pack` is unaffected; `prepare` still runs there.)
 
 ```bash
 git clone https://github.com/andrepontesmelo/deep-horizon
-npm install -g ./deep-horizon    # `prepare` runs the build, so dist/ ships
+cd deep-horizon
+npm install && npm run build
+npm install -g .
 ```
+
+A folder install is symlinked, so the global bins run this checkout's
+`dist/` — build in the clone and the install is whole.
 
 Publishing is the intended route, not a user step today: once `npm publish`
 runs, the block above becomes `npm install -g deep-horizon` again.
@@ -94,8 +103,10 @@ Install from a built checkout, CLI first:
 
 ```bash
 git clone https://github.com/andrepontesmelo/deep-horizon
-npm install -g ./deep-horizon   # the CLI, from this clone — see Install
-cd deep-horizon && npm pack     # prepare runs the build, so the tgz is never stale
+cd deep-horizon
+npm install && npm run build    # build in the clone first — see Install
+npm install -g .                # the CLI, from this clone
+npm pack                        # the plugin tgz, from the built checkout
 dsh --profile <profile> --from-default-profile sdk-minimal --dump-config
 dsh plugin --profile <profile> add file:/abs/path/deep-horizon-<version>.tgz
 ```
@@ -121,10 +132,17 @@ Mount in the profile's `cordis.patch.yml`:
 
 then verify the wiring with `dsh --profile <profile> --dump-config`.
 
-At session start (`agent/session-start`) the adapter composes one block via
-`horizon-inject` and seeds it once per agent — fresh, top-level startups only
+At session start (`agent/session-start`) the adapter arms one
+`horizon-inject` resolve — the moment the event fires, before the spawn has
+finished — and delivers the block at the session's first model step: the
+awaited `agent/pre-step` waterfall holds step 1 until the answer lands, so
+the first request already carries the block ahead of the launch prompt
+(session-start itself is fire-and-forget; an injection fired there, rather
+than armed for the first step, lands in the second step's request). A resolve
+that fails or times out (the 15s bin bound) leaves step 1 clean and the miss
+retryable. Seeded once per agent — fresh, top-level startups only
 (`source === "startup"`; resumed or compacted sessions replay their original
-injection, subagents never get one, and a fail-open miss stays retryable).
+injection, subagents never get one).
 The block is one of the composer's three variants: the bootstrap nudge on a
 project with no store or an empty one, the warm nudge when an about line is
 set but no gaps are, the horizon block when gaps are open (the about line
