@@ -639,6 +639,7 @@ test("session-end-once. first call records; a repeat is a byte-level no-op even 
       const r = await runCli(["session-end", "--harness", "t", "--session", "s1", "--summary", summary, "--cwd", dir]);
       assert.equal(r.code, 0);
       assert.equal(r.stdout, "");
+      assert.equal(r.stderr, "");
       assert.equal(readFileSync(sessionsPath, "utf8"), bytes, `a repeat appended (summary: ${summary})`);
     }
     assert.ok(!existsSync(join(dir, ".horizon", "closes.jsonl")), "a repeat must not touch closes.jsonl");
@@ -821,6 +822,28 @@ test("ADV-2c. syntactically invalid JSONL line: exit 7 (same contract as a null 
     const r = await runCli(["log", "--cwd", dir]);
     assert.equal(r.code, 7);
     assert.match(r.stderr, /sessions\.jsonl/);
+  });
+});
+
+// session-end reads sessions.jsonl for the once-per-pair dedupe, so a
+// malformed log fails closed the way every other store read does — exit 7
+// naming the file, never an unchecked append — in both resolution forms.
+test("ADV-2d. malformed sessions.jsonl at session-end: exit 7, cwd and --store forms alike", async () => {
+  await withDir(async (dir) => {
+    // A valid (empty) store seeded through the interface; the hand-written
+    // part is the hostile JSONL sibling below.
+    seed(dir, []);
+    const store = join(dir, ".horizon");
+    writeFileSync(join(store, "sessions.jsonl"), "{not json}\n");
+    const r = await runCli(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /sessions\.jsonl/);
+    await withDir(async (elsewhere) => {
+      const rs = await runCli(["session-end", "--harness", "t", "--session", "s2", "--store", store, "--cwd", elsewhere]);
+      assert.equal(rs.code, 7);
+      assert.match(rs.stderr, /sessions\.jsonl/);
+    });
+    assert.ok(!readFileSync(join(store, "sessions.jsonl"), "utf8").includes("s2"), "appended past the malformed log");
   });
 });
 

@@ -89,7 +89,9 @@ horizon moved is always visible.
 
 One entry per agent session that touched this project: when it happened, which
 harness ran it, that harness's own session id, a short summary of what the
-session did, and the gaps it added and closed.
+session did, and the gaps it added and closed. The entry is keyed by harness
+and session id — the first record for a pair stands, and later session-ends
+for it are dropped.
 
 The gap deltas are the load-bearing part and are filled by the CLI itself,
 which already knows what happened. The summary is prose the agent supplies and

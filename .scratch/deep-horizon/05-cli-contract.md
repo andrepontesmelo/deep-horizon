@@ -243,8 +243,9 @@ Prints session records, newest first, default limit 20. Human form:
 
 ### 3.7 `horizon session-end`
 
-Appends a session record. Called by a close hook, or mid-session as the
-fallback where no usable close hook exists (HL-10).
+Appends a session record — once per (harness, session_id). Called by a close
+hook, or mid-session as the fallback where no usable close hook exists
+(HL-10).
 
 ```
 horizon session-end --harness hermes --session <id> [--summary "<text>"] [--store <dir>]
@@ -263,6 +264,12 @@ horizon session-end --harness hermes --session <id> [--summary "<text>"] [--stor
   which gap mutations carried this `--session` id in their provenance and which
   closes it recorded for that session.
 - Requires `--harness` and `--session`; missing either → exit 2.
+- One record per (harness, session_id): the pair's first `session-end` wins
+  and every later call for it is a silent no-op — exit 0, no output, nothing
+  appended — even when the repeat carries a different `--summary` (dropped).
+  Distinct pairs keep appending: a new session id, or a new harness with the
+  same id, records anew. The dedupe reads `sessions.jsonl` by the normal
+  path, so a malformed log is the usual exit 7, never an unchecked append.
 - Appending is a single `O_APPEND` write of one line. **No revision check, no
   temp file, no lock** — concurrent appends from two harnesses are safe by
   construction (§4).
@@ -474,6 +481,12 @@ X5. A store directory named `.Horizon` is found on a case-insensitive
 27. `gaps_added` is computed from the session's own mutations, not from a flag.
 28. A session that touched nothing still writes a record, with empty arrays.
 29. Missing `--harness` or `--session`: exit 2, nothing appended.
+29a. One record per (harness, session_id): the first call records; a repeat
+     is a silent no-op — exit 0, no output, `sessions.jsonl` byte-identical —
+     even with a different `--summary` (dropped).
+29b. A different session id, or a different harness with the same session
+     id, records anew: append-only history is per pair.
+29c. The dedupe holds through the `--store` form too.
 
 **log**
 30. `log` prints newest first and honours `--limit`.
