@@ -620,6 +620,67 @@ test("session-end-store. --store targets that store directly; an absent or non-d
   });
 });
 
+// --- session-end idempotency: one record per (harness, session_id) ---
+
+// The close hooks can run session-end twice for one session (a mid-session
+// steer plus session_shutdown, a retried teardown): the pair's first record
+// wins and every later call is a silent no-op, the second summary dropped
+// with it. session-end's only write is the sessions.jsonl append — the
+// repeat must not start writing closes.jsonl either.
+test("session-end-once. first call records; a repeat is a byte-level no-op even with a different summary", async () => {
+  await withDir(async (dir) => {
+    await runCli(["init", "--cwd", dir]);
+    const sessionsPath = join(dir, ".horizon", "sessions.jsonl");
+    const first = await runCli(["session-end", "--harness", "t", "--session", "s1", "--summary", "the real one", "--cwd", dir]);
+    assert.equal(first.code, 0);
+    assert.equal(first.stdout, "");
+    const bytes = readFileSync(sessionsPath, "utf8");
+    for (const summary of ["the real one", "a second, different story"]) {
+      const r = await runCli(["session-end", "--harness", "t", "--session", "s1", "--summary", summary, "--cwd", dir]);
+      assert.equal(r.code, 0);
+      assert.equal(r.stdout, "");
+      assert.equal(r.stderr, "");
+      assert.equal(readFileSync(sessionsPath, "utf8"), bytes, `a repeat appended (summary: ${summary})`);
+    }
+    assert.ok(!existsSync(join(dir, ".horizon", "closes.jsonl")), "a repeat must not touch closes.jsonl");
+  });
+});
+
+test("session-end-once-distinct. a different session id, or a different harness with the same id, records anew", async () => {
+  await withDir(async (dir) => {
+    await runCli(["init", "--cwd", dir]);
+    for (const [harness, session] of [["t", "s1"], ["t", "s2"], ["other", "s1"]]) {
+      const r = await runCli(["session-end", "--harness", harness, "--session", session, "--cwd", dir]);
+      assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    }
+    const lines = readFileSync(join(dir, ".horizon", "sessions.jsonl"), "utf8").trim().split("\n");
+    assert.equal(lines.length, 3);
+    assert.deepEqual(
+      lines.map((l) => {
+        const rec = JSON.parse(l);
+        return `${rec.harness}/${rec.session_id}`;
+      }),
+      ["t/s1", "t/s2", "other/s1"],
+    );
+  });
+});
+
+test("session-end-once-store. the dedupe holds through the --store form too", async () => {
+  await withDir(async (dir) => {
+    seed(dir, ["Stored gap"]);
+    const store = join(dir, ".horizon");
+    await withDir(async (elsewhere) => {
+      const first = await runCli(["session-end", "--harness", "t", "--session", "s-store", "--store", store, "--cwd", elsewhere]);
+      assert.equal(first.code, 0);
+      const again = await runCli(["session-end", "--harness", "t", "--session", "s-store", "--store", store, "--cwd", elsewhere]);
+      assert.equal(again.code, 0);
+      assert.equal(again.stdout, "");
+    });
+    const lines = readFileSync(join(store, "sessions.jsonl"), "utf8").trim().split("\n");
+    assert.equal(lines.length, 1);
+  });
+});
+
 // --- log (30-31) ---
 
 test("30. log prints newest first and honours --limit", async () => {
@@ -764,6 +825,28 @@ test("ADV-2c. syntactically invalid JSONL line: exit 7 (same contract as a null 
   });
 });
 
+// session-end reads sessions.jsonl for the once-per-pair dedupe, so a
+// malformed log fails closed the way every other store read does — exit 7
+// naming the file, never an unchecked append — in both resolution forms.
+test("ADV-2d. malformed sessions.jsonl at session-end: exit 7, cwd and --store forms alike", async () => {
+  await withDir(async (dir) => {
+    // A valid (empty) store seeded through the interface; the hand-written
+    // part is the hostile JSONL sibling below.
+    seed(dir, []);
+    const store = join(dir, ".horizon");
+    writeFileSync(join(store, "sessions.jsonl"), "{not json}\n");
+    const r = await runCli(["session-end", "--harness", "t", "--session", "s1", "--cwd", dir]);
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /sessions\.jsonl/);
+    await withDir(async (elsewhere) => {
+      const rs = await runCli(["session-end", "--harness", "t", "--session", "s2", "--store", store, "--cwd", elsewhere]);
+      assert.equal(rs.code, 7);
+      assert.match(rs.stderr, /sessions\.jsonl/);
+    });
+    assert.ok(!readFileSync(join(store, "sessions.jsonl"), "utf8").includes("s2"), "appended past the malformed log");
+  });
+});
+
 // ADV-3: the close/session record append used to run AFTER the gaps.json
 // rename; an append failure then lost the record while the gap was already
 // gone (unauditable close, exit 1). Now record-first: append, then rename.
@@ -803,7 +886,9 @@ test("ADV-3b. append failure at session-end: exit 7, no session record written",
     const sessions = join(dir, ".horizon", "sessions.jsonl");
     await runCli(["session-end", "--harness", "t", "--session", "s9", "--cwd", dir]);
     chmodSync(sessions, 0o444);
-    const r = await runCli(["session-end", "--harness", "t", "--session", "s9", "--cwd", dir]);
+    // The failing append needs a pair with no record yet: s9's repeat is the
+    // idempotent no-op (session-end-once) and never reaches the append.
+    const r = await runCli(["session-end", "--harness", "t", "--session", "s9-again", "--cwd", dir]);
     assert.equal(r.code, 7);
     assert.match(r.stderr, /sessions\.jsonl/);
     assert.equal(readFileSync(sessions, "utf8").trim().split("\n").length, 1, "record appended despite failure");
