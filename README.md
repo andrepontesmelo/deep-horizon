@@ -348,14 +348,14 @@ error injects nothing and never blocks a session.
 npm install -g ./deep-horizon    # from a clone of this repo — see Install
 ```
 
-The adapter is one POSIX sh script shipped inside the package
-(`adapters/zcode/session-start`); the hook config runs it straight from
-the global install, so there is no copy step. It needs `jq` and `node`
-on PATH.
+The adapter is POSIX sh scripts shipped inside the package
+(`adapters/zcode/session-start`, `adapters/zcode/pre-execute`); the hook
+config runs them straight from the global install, so there is no copy
+step. They need `jq` and `node` on PATH.
 
 `.zcode/config.json` (project-local, checked into the repo — this repo
-carries one; the same `hooks` block may instead live in the user config
-`~/.zcode/cli/config.json`):
+carries the SessionStart half; the same `hooks` block may instead live in
+the user config `~/.zcode/cli/config.json`):
 
 ```json
 {
@@ -372,6 +372,18 @@ carries one; the same `hooks` block may instead live in the user config
             }
           ]
         }
+      ],
+      "PreToolUse": [
+        {
+          "matcher": "Bash|Read|Edit|Write",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/pre-execute\"",
+              "timeout": 10
+            }
+          ]
+        }
       ]
     }
   }
@@ -381,7 +393,15 @@ carries one; the same `hooks` block may instead live in the user config
 `"enabled": true` is load-bearing — ZCode disables config-file hooks by
 default. The `$(npm root -g)` expansion happens in the shell ZCode runs
 `command` hooks with; if the package was installed under a different
-global prefix (pnpm, bun), point the command at the real location.
+global prefix (pnpm, bun), point the command at the real location. The
+`timeout` is seconds; leave it modest — hooks run inline before the tool
+call. The PreToolUse matcher is a case-sensitive regex on the tool name;
+`Bash|Read|Edit|Write` is pinned because those are the calls whose
+arguments carry absolute targets (a command string, a `file_path`), and
+the matcher keeps the hook's cost off calls that can never carry one.
+Omitting the matcher entirely would match every tool and work too — the
+script scans fields, not tool names — it would just fire more often for
+nothing.
 
 Startup: the `SessionStart` hook matches `startup` only — the first turn
 of a fresh session — and injects one composed block through the
@@ -393,6 +413,35 @@ there is no subagent guard: if a subagent session fires the hook, it
 receives the horizon like any other session — noise, not harm. Every
 hook fails open: a missing bin, a missing `jq`, or any error injects
 nothing and never blocks the session.
+
+Param trigger: the `PreToolUse` hook scans each matching call's
+arguments for absolute target directories — a `workdir` argument, the
+dirname of `file_path`/`path`, absolute-path tokens inside a `command`
+string (`git -C <dir>` targets included). Relative paths are dropped:
+the hook cannot know the shell cwd the tool will run in, and guessing
+one would resolve against the harness process. For a touched dir with a
+store, the dir's horizon is injected mid-session through the same
+`additionalContext` envelope, once per store per session — the hook
+itself fires on every matching call (proven live: two identical calls
+produced two injections), so the dedup is the script's job, kept in a
+per-session marker file under `$TMPDIR` that the startup hook seeds with
+the launch store. That seed is the point: a session launched in repo A
+that touches repo A again mid-session does not get repo A's horizon
+twice; a first touch of repo B does. Storeless targets are probed once,
+remembered silent, and never re-asked. The hook never denies a tool
+call — it has no deny path at all (exit 2 would deny; the script cannot
+produce one) — and fails open the same way: any error, missing tool, or
+missing bin means silence and the call proceeds untouched. As with the
+other harnesses' param triggers, a subagent's tool calls are not
+distinguished from top-level ones: a subagent that touches repo B
+delivers repo B's horizon into its own session — noise, not harm.
+
+One-time trust step for project scope: hooks declared in a project's
+`.zcode/config.json` are trust-gated — they stay blocked (logged as
+`pending_trust`) until the workspace-hook trust is granted once, in the
+TUI's review flow; headless runs never grant it. User-scope hooks in
+`~/.zcode/cli/config.json` run unconditionally — that is the reliable
+route if you do not want to touch the trust prompt.
 
 Session end: ZCode has no close hook — `Stop` fires at the end of every
 assistant turn — so the duty rides the startup injection itself. When a
@@ -412,13 +461,13 @@ directory (a storeless composition is empty and injects nothing) and
 only when the payload carries a session id: without the id the agent
 cannot name the record, and a placeholder id would write a wrong one.
 
-Known limitations, stated bluntly: no param trigger — ZCode's
-`PreToolUse` hook sees tool arguments and could carry a mid-session
-injection, but its stdout-to-context path is unproven, so the adapter
-ships without one (like Claude Code). And no true close hook: a session
-interrupted with SIGINT/SIGTERM — or a terminal closed — writes no
-record, because the duty lives in a once-per-session startup injection
-and nothing fires at process exit.
+Known limitations, stated bluntly: the param trigger's dedup memory
+lives in a `$TMPDIR` marker keyed by the session id — a resumed session
+that came back with a new id after a tmp wipe can repeat a repo's
+horizon once. And no true close hook: a session interrupted with
+SIGINT/SIGTERM — or a terminal closed — writes no record, because the
+duty lives in a once-per-session startup injection and nothing fires at
+process exit.
 
 ## Manual use, no global install
 
