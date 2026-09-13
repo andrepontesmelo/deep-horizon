@@ -7,9 +7,16 @@
 //
 // Injection follows moving-target's proven DSH pattern (HL-10 research):
 // `agent/session-start` guarded on source === "startup" and on
-// delegationDepth/origin, seeding via agent.inject() without waking the
-// driver. Hooks fail open (D2): an unresolvable bin injects nothing and the
-// session proceeds.
+// delegationDepth/origin. Hooks fail open (D2): an unresolvable bin injects
+// nothing and the session proceeds.
+//
+// The startup block is resolved at session-start but delivered at the
+// session's first `agent/pre-step`: session-start is a fire-and-forget emit
+// (the loop never awaits its listeners), so an agent.inject() there races
+// turn 1's inbox claim, loses, and lands in next-step — the model's second
+// step. The pre-step waterfall is awaited by the loop and its decision's
+// message list is exactly what the step's request commits, so the seed
+// prepends there and the first model call sees the horizon.
 //
 // Session-end uses the mid-session fallback from day one (D3): DSH has no
 // agent/session-end event, and agent/disposed fires unawaited after the loop
@@ -31,6 +38,7 @@
 // once. A tool call is never vetoed: the
 // handler is pass-through by construction (it always returns next()) and
 // fail-open inside.
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 // The shared spawn/parse policy (support.ts): one resolution order, one
@@ -42,6 +50,11 @@ const HARNESS = "dsh";
 
 function message(text) {
   return {
+    // dsh's inbox dedupes pending messages by id across both queues, and an
+    // absent id still collides ("undefined" is already pending) — every
+    // message needs a fresh identity or the session's second delivery dies
+    // inside the harness.
+    id: `deep-horizon-${randomUUID()}`,
     role: "user",
     content: [{ type: "text", text }],
     source: { kind: "plugin", plugin: "deep-horizon", form: "instructions" },
@@ -72,10 +85,17 @@ function subagentHeader(header) {
 const prompted = new WeakSet();
 
 // Session starts seed once per agent object: some harnesses re-fire
-// agent/session-start with source "startup", and the block must not land
-// twice. Seeded only after a delivered inject, so a fail-open miss stays
-// retryable. Weak so disposal can collect them.
+// agent/session-start with source "startup", and the block must not be
+// resolved twice. Seeded once the bin's answer is in hand — a fail-open miss
+// stays retryable, while delivery itself cannot fail (a prepended decision
+// entry, not an inject call a harness could reject). Weak so disposal can
+// collect them.
 const seeded = new WeakSet();
+
+// The startup seed waiting for the session's first step, per agent: the
+// composed text, resolved at session-start, consumed by the first pre-step
+// whose decision can carry it. Weak so disposal can collect them.
+const seeds = new WeakMap();
 
 // What a session already knows, per agent. `served` — the horizon stores
 // already injected this session (the startup injection's store included):
@@ -164,14 +184,12 @@ export function apply(ctx, overrides = {}) {
     if (!result || result.status !== 0) return;
     const answer = parseInjectAnswer(result.stdout);
     if (!answer || answer.text.length === 0) return;
-    try {
-      agent.inject(message(answer.text));
-      seeded.add(agent);
-    } catch {
-      // A rejecting inject must never take the session down; the horizon
-      // returns next startup.
-      return;
-    }
+    // The block rides the session's first step's request (see onPreStep) —
+    // not an inject here: session-start listeners are fire-and-forget, and
+    // an inject racing turn 1's inbox claim lands in next-step, the model's
+    // second step.
+    seeds.set(agent, answer.text);
+    seeded.add(agent);
     // The bin's answer is this session's knowledge of the launch dir: the
     // store it served counts as served (a mid-session touch must not
     // re-inject it), and the launch dir counts as probed so the param path
@@ -179,6 +197,21 @@ export function apply(ctx, overrides = {}) {
     const mem = memoryFor(agent);
     if (answer.store !== null) mem.served.add(answer.store);
     mem.probed.set(header.cwd, answer.store);
+  }
+
+  // The startup seed's delivery point. `agent/pre-step` is the awaited
+  // waterfall whose decision's messages are exactly the step's committed
+  // request, so the seed prepends there and the model's first call sees the
+  // horizon ahead of the launch prompt. Pass-through by construction: no
+  // pending seed returns next()'s decision untouched; a reject (or an empty
+  // step) leaves the seed pending for the next one.
+  async function onPreStep(input, next) {
+    const text = input?.agent ? seeds.get(input.agent) : undefined;
+    if (text === undefined) return next();
+    const decision = await next();
+    if (decision?.kind !== "enter" || decision.messages.length === 0) return decision;
+    seeds.delete(input.agent);
+    return { ...decision, messages: [message(text), ...decision.messages] };
   }
 
   // One dir's probe, as its own concurrent task: ask the bin, remember the
@@ -252,8 +285,9 @@ export function apply(ctx, overrides = {}) {
 
   if (ctx && typeof ctx.on === "function") {
     ctx.on("agent/session-start", onSessionStart);
+    ctx.on("agent/pre-step", onPreStep);
     ctx.on("agent/turn-stopping", onTurnStopping);
     ctx.on("tools/pre-execute", onPreExecute);
   }
-  return { "agent/session-start": onSessionStart, "agent/turn-stopping": onTurnStopping, "tools/pre-execute": onPreExecute };
+  return { "agent/session-start": onSessionStart, "agent/pre-step": onPreStep, "agent/turn-stopping": onTurnStopping, "tools/pre-execute": onPreExecute };
 }

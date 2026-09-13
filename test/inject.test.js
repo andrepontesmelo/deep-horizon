@@ -170,10 +170,11 @@ test("40. inject supports the CLI's global options (help/version, --harness/--se
 
 // --- The DSH adapter (glue only) ---
 
-test("41. the DSH adapter registers agent/session-start and spawns the bins (no text composition)", async () => {
+test("41. the DSH adapter registers agent/session-start and agent/pre-step and spawns the bins (no text composition)", async () => {
   const calls = [];
+  const header = { cwd: "/somewhere", delegationDepth: 0, origin: "user" };
   const agent = {
-    session: { header: { cwd: "/somewhere", delegationDepth: 0, origin: "user" } },
+    session: { header },
     inject(message) { calls.push({ kind: "inject", message }); },
     steer(message) { calls.push({ kind: "steer", message }); },
   };
@@ -190,16 +191,27 @@ test("41. the DSH adapter registers agent/session-start and spawns the bins (no 
   });
   assert.ok(registered["agent/session-start"], "apply() must return an agent/session-start handler");
   assert.ok(registered2["agent/session-start"], "apply() must also register agent/session-start on the ctx");
+  assert.ok(registered["agent/pre-step"], "apply() must return an agent/pre-step handler");
+  assert.ok(registered2["agent/pre-step"], "apply() must also register agent/pre-step on the ctx");
   assert.ok(registered2["agent/turn-stopping"], "apply() must register agent/turn-stopping on the ctx");
   await registered["agent/session-start"]({ agent, source: "startup" });
   const injectSpawn = calls.find((c) => c.kind === "spawn" && c.bin === "horizon-inject");
   assert.ok(injectSpawn, "horizon-inject must be spawned");
   assert.ok(injectSpawn.args.includes("dsh"), "--harness dsh must be passed");
-  const injected = calls.find((c) => c.kind === "inject");
-  assert.ok(injected, "the bin output must reach agent.inject");
-  assert.equal(injected.message.content[0].text, "MOCK-INJECTED-TEXT");
-  assert.equal(injected.message.role, "user");
-  assert.ok(injected.message.source, "the injected message must carry a source");
+  assert.deepEqual(calls.filter((c) => c.kind !== "spawn"), [],
+    "session-start must not deliver: the loop never awaits it, so the seed waits for the first step");
+  // The seed rides the first step's request, ahead of the launch prompt.
+  const prompt = { id: "prompt-1", role: "user", content: [] };
+  const decision = await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [prompt] }));
+  assert.equal(decision.kind, "enter");
+  assert.equal(decision.messages.length, 2);
+  assert.equal(decision.messages[0].content[0].text, "MOCK-INJECTED-TEXT");
+  assert.equal(decision.messages[0].role, "user");
+  assert.ok(decision.messages[0].source, "the injected message must carry a source");
+  assert.equal(decision.messages[1], prompt, "the launch prompt must follow the horizon");
+  // Once per session: the next step gets the plain decision back.
+  const second = await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [prompt] }));
+  assert.deepEqual(second, { kind: "enter", messages: [prompt] });
 });
 
 test("42. the DSH adapter guards: only source==='startup', never subagents (depth or origin), no cwd is a no-op", async () => {
@@ -264,33 +276,41 @@ test("44. horizon-inject nonzero exit: nothing injected", async () => {
 });
 
 // A harness may re-fire agent/session-start with source "startup" for the
-// same agent; the block must land once. A fail-open miss (nonzero exit,
-// spawn throw, empty stdout) seeds nothing, so the re-fire can still deliver.
-test("dsh-seed-once. a re-fired agent/session-start for the same agent injects once; a fail-open miss stays retryable", async () => {
+// same agent; the block must be resolved once. A fail-open miss (nonzero
+// exit, spawn throw, empty stdout) seeds nothing, so the re-fire can still
+// resolve and deliver.
+test("dsh-seed-once. a re-fired agent/session-start for the same agent seeds once; a fail-open miss stays retryable", async () => {
   const mod = await import(ADAPTER);
-  const calls = [];
   const header = { cwd: "/somewhere", delegationDepth: 0, origin: "user" };
-  const agent = {
-    session: { header },
-    inject() { calls.push("inject"); },
-    steer() {},
-  };
+  const agent = { session: { header }, inject() {}, steer() {} };
   let spawns = 0;
   const registered = mod.apply({}, {
     spawnBin: () => { spawns += 1; return { status: 0, stdout: JSON.stringify({ text: "MOCK-SEED", store: "/seed-store" }), stderr: "" }; },
   });
+  const decisions = [];
+  const preStep = async () => {
+    decisions.push(await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] })));
+  };
   await registered["agent/session-start"]({ agent, source: "startup" });
   await registered["agent/session-start"]({ agent, source: "startup" });
   assert.equal(spawns, 1, "the re-fired startup must not spawn again");
-  assert.deepEqual(calls, ["inject"], "the re-fired startup must not inject again");
+  await preStep();
+  await preStep();
+  assert.equal(decisions[0].messages.length, 2, "the first step carries the seed");
+  assert.equal(decisions[0].messages[0].content[0].text, "MOCK-SEED");
+  assert.equal(decisions[1].messages.length, 1, "the re-fired startup must not seed again");
   // A distinct agent object seeds independently.
-  await registered["agent/session-start"]({
-    agent: { session: { header }, inject() { calls.push("inject-2"); }, steer() {} },
-    source: "startup",
-  });
-  assert.deepEqual(calls, ["inject", "inject-2"]);
+  const decisions2 = [];
+  const agent2 = { session: { header }, inject() {}, steer() {} };
+  await registered["agent/session-start"]({ agent: agent2, source: "startup" });
+  assert.equal(spawns, 2, "a distinct agent object seeds independently");
+  decisions2.push(await registered["agent/pre-step"]({ agent: agent2 }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] })));
+  decisions2.push(await registered["agent/pre-step"]({ agent: agent2 }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] })));
+  assert.equal(decisions2[0].messages[0].content[0].text, "MOCK-SEED", "the distinct agent's first step carries its own seed");
+  assert.equal(decisions2[1].messages.length, 1, "and only once");
   let fail = true;
-  const retry = { session: { header }, inject() { calls.push("inject-3"); }, steer() {} };
+  const retry = { session: { header }, inject() {}, steer() {} };
+  const retryDecisions = [];
   const registered2 = mod.apply({}, {
     spawnBin: () => {
       const r = fail
@@ -300,9 +320,53 @@ test("dsh-seed-once. a re-fired agent/session-start for the same agent injects o
       return r;
     },
   });
+  const retryStep = async () => {
+    retryDecisions.push(await registered2["agent/pre-step"]({ agent: retry }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] })));
+  };
   await registered2["agent/session-start"]({ agent: retry, source: "startup" });
+  await retryStep();
+  assert.equal(retryDecisions[0].messages.length, 1, "the failed resolve must deliver nothing");
   await registered2["agent/session-start"]({ agent: retry, source: "startup" });
-  assert.deepEqual(calls, ["inject", "inject-2", "inject-3"], "the re-fire after a failed delivery must deliver");
+  await retryStep();
+  assert.equal(retryDecisions[1].messages[0].content[0].text, "Y", "the re-fire after a failed resolve must deliver");
+});
+
+// --- The DSH startup delivery (agent/pre-step) ---
+
+// dsh's loop never awaits the session-start emit, so the seed waits for the
+// awaited waterfall whose decision's messages are the step's request. The
+// pass-through shape is load-bearing: the loop trusts what a listener
+// returns, so a broken handler must never corrupt a step.
+
+test("dsh-pre-step-1. no pending seed: a pure pass-through — next() exactly once, its decision returned untouched", async () => {
+  const mod = await import(ADAPTER);
+  const registered = mod.apply({}, { spawnBin: () => { throw new Error("must not spawn"); } });
+  let nextCalls = 0;
+  const decision = { kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] };
+  const out = await registered["agent/pre-step"]({ agent: { session: { header: { cwd: "/x" } } } }, () => { nextCalls += 1; return decision; });
+  assert.equal(nextCalls, 1, "next() must run exactly once");
+  assert.equal(out, decision, "the decision must come back exactly as next() returned it");
+  // Degenerate inputs are the same pass-through, never a throw.
+  await assert.doesNotReject(registered["agent/pre-step"](undefined, () => decision));
+  await assert.doesNotReject(registered["agent/pre-step"]({}, () => decision));
+});
+
+test("dsh-pre-step-2. a reject or an empty step passes through untouched and the seed stays pending for a real one", async () => {
+  const mod = await import(ADAPTER);
+  const header = { cwd: "/somewhere", delegationDepth: 0, origin: "user" };
+  const agent = { session: { header }, inject() {}, steer() {} };
+  const registered = mod.apply({}, {
+    spawnBin: () => ({ status: 0, stdout: JSON.stringify({ text: "MOCK-PENDING-SEED", store: "/s" }), stderr: "" }),
+  });
+  await registered["agent/session-start"]({ agent, source: "startup" });
+  const reject = { kind: "reject" };
+  const out = await registered["agent/pre-step"]({ agent }, () => reject);
+  assert.equal(out, reject, "a reject must come back exactly as next() returned it");
+  const empty = await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [] }));
+  assert.deepEqual(empty, { kind: "enter", messages: [] }, "an empty step carries nothing");
+  const entered = await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "p", role: "user", content: [] }] }));
+  assert.equal(entered.messages.length, 2, "the next real step still carries the seed");
+  assert.equal(entered.messages[0].content[0].text, "MOCK-PENDING-SEED");
 });
 
 // --- The DSH param trigger (tools/pre-execute, HL-23) ---
@@ -489,13 +553,16 @@ test("dsh-param-6. the store the startup injection served is not re-injected by 
     const fx = paramFixture((args) => ({ text: "MOCK-STARTUP", store: args[args.indexOf("--cwd") + 1] }), { cwd: repo, delegationDepth: 0, origin: "user" });
     const registered = mod.apply({}, fx);
     await registered["agent/session-start"]({ agent: fx.agent, source: "startup" });
-    assert.equal(fx.calls.length, 1, "startup injects once");
+    assert.equal(fx.calls.length, 0, "startup resolves without injecting: the seed waits for the first step");
+    const decision = await registered["agent/pre-step"]({ agent: fx.agent }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] }));
+    assert.equal(decision.messages.length, 2, "the first step carries the startup seed");
+    assert.equal(decision.messages[0].content[0].text, "MOCK-STARTUP");
     await registered["tools/pre-execute"](
       { name: "bash", arguments: frozen({ command: `git -C ${repo} status` }), agent: fx.agent },
       () => ({ kind: "allow" }),
     );
     assert.equal(fx.spawned.length, 1, "the param path must not re-spawn for the launch repo");
-    assert.equal(fx.calls.length, 1, "the param path must not re-inject the launch repo");
+    assert.equal(fx.calls.length, 0, "the param path must not re-inject the launch repo");
     // A different repo still fires after the startup one was served.
     await withDir(async (other) => {
       seed(other, ["Other gap"]);
@@ -504,7 +571,7 @@ test("dsh-param-6. the store the startup injection served is not re-injected by 
         () => ({ kind: "allow" }),
       );
       assert.equal(fx.spawned.length, 2);
-      assert.equal(fx.calls.length, 2);
+      assert.equal(fx.calls.length, 1, "only the other repo's param inject: the startup block rides the first step");
     });
   });
 });
@@ -637,6 +704,55 @@ test("dsh-param-10. fresh dirs in one call probe concurrently — every probe is
   });
 });
 
+// The live dsh failure (0.1.5-rc.2): the inbox dedupes pending messages by
+// id, so every id-less delivery after the first died inside agent.inject()
+// ("message \"undefined\" is already pending"), swallowed fail-open — a
+// session in repo A touching repo B never received repo B's horizon. The
+// fake inbox below mirrors dsh's dedupe across both queues; steer splices
+// the same inbox inject does.
+test("dsh-inbox-id. two param injects plus the session-end steer in one session all deliver — every message carries a unique id", async () => {
+  await withDir(async (repoA) => {
+    await withDir(async (repoB) => {
+      seed(repoA, ["Repo A id gap"]);
+      seed(repoB, ["Repo B id gap"]);
+      const mod = await import(ADAPTER);
+      const pending = new Set();
+      const inbox = [];
+      const dedupe = (message) => {
+        assert.equal(typeof message.id, "string", "a pending message must carry an id");
+        assert.ok(message.id.length > 0);
+        if (pending.has(message.id)) throw new Error(`message "${message.id}" is already pending`);
+        pending.add(message.id);
+        inbox.push(message);
+      };
+      const agent = {
+        session: { header: { cwd: repoA, delegationDepth: 0, origin: "user" } },
+        inject: dedupe,
+        steer: dedupe,
+        id: "sess-ids",
+      };
+      const registered = mod.apply({}, {
+        spawnBin: (bin, args) => {
+          const dir = args[args.indexOf("--cwd") + 1];
+          return { status: 0, stdout: JSON.stringify({ text: `HORIZON:${dir}`, store: dir }), stderr: "" };
+        },
+      });
+      const touch = (dir) => registered["tools/pre-execute"](
+        { name: "bash", arguments: frozen({ command: `ls ${dir}` }), agent },
+        () => ({ kind: "allow" }),
+      );
+      await touch(repoA);
+      await touch(repoB);
+      await registered["agent/turn-stopping"]({ agent });
+      assert.equal(inbox.length, 3, "two repo horizons plus the steer must all be pending");
+      assert.ok(inbox[0].content[0].text === `HORIZON:${repoA}`, `repo A's horizon must deliver: ${inbox[0].content[0].text}`);
+      assert.ok(inbox[1].content[0].text === `HORIZON:${repoB}`, `repo B's horizon must deliver: ${inbox[1].content[0].text}`);
+      assert.ok(inbox[2].content[0].text.includes("horizon session-end"), "the session-end steer must deliver");
+      assert.equal(new Set(inbox.map((m) => m.id)).size, 3, "every pending message carries its own id");
+    });
+  });
+});
+
 test("45. no adapter contains a literal of any section-10 text (spec acceptance 36, made real)", async () => {
   const { readdirSync, statSync } = await import("node:fs");
   const { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT } = await import(new URL("../src/index.ts", import.meta.url).pathname);
@@ -708,42 +824,39 @@ test("47. package.json shape per D1: two bins, three adapter exports, no native 
   assert.ok(!existsSync(join(new URL("..", import.meta.url).pathname, "binding.gyp")), "binding.gyp must not exist");
 });
 
-test("48. end-to-end: apply() with no overrides injects the composed block through the real bins", async () => {
+test("48. end-to-end: apply() with no overrides carries the composed block into the session's first step", async () => {
   await withDir(async (dir) => {
     seed(dir, ["End-to-end gap"]);
     const mod = await import(ADAPTER);
-    const injected = [];
     const registered = mod.apply({
       on() {},
     });
-    await registered["agent/session-start"]({
-      agent: {
-        session: { header: { cwd: dir, delegationDepth: 0, origin: "user" } },
-        inject(message) { injected.push(message); },
-      },
-      source: "startup",
-    });
-    assert.equal(injected.length, 1);
-    const text = injected[0].content[0].text;
+    const agent = {
+      session: { header: { cwd: dir, delegationDepth: 0, origin: "user" } },
+      inject() {},
+    };
+    await registered["agent/session-start"]({ agent, source: "startup" });
+    const decision = await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [{ type: "text", text: "go" }] }] }));
+    assert.equal(decision.messages.length, 2);
+    const text = decision.messages[0].content[0].text;
     assert.ok(text.startsWith("This project has a horizon"), `got: ${text.slice(0, 80)}`);
     assert.ok(text.includes("gap-1  End-to-end gap"));
     // The details pointer reaches the harness through the same bin stdout:
     // adapters are glue, so the core's pointer line needs no per-adapter work.
     assert.ok(text.includes("`horizon detail <id>` prints it"), "the dsh path must carry the core's detail pointer");
+    assert.equal(decision.messages[1].content[0].text, "go", "the launch prompt follows the horizon");
     // The empty-store twin: the real bootstrap nudge comes back through the
     // same chain.
     await withDir(async (empty) => {
       seed(empty, []);
-      const injected2 = [];
-      await registered["agent/session-start"]({
-        agent: {
-          session: { header: { cwd: empty, delegationDepth: 0, origin: "user" } },
-          inject(message) { injected2.push(message); },
-        },
-        source: "startup",
-      });
-      assert.equal(injected2.length, 1);
-      assert.ok(injected2[0].content[0].text.startsWith("This project has no horizon yet"));
+      const agent2 = {
+        session: { header: { cwd: empty, delegationDepth: 0, origin: "user" } },
+        inject() {},
+      };
+      await registered["agent/session-start"]({ agent: agent2, source: "startup" });
+      const decision2 = await registered["agent/pre-step"]({ agent: agent2 }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] }));
+      assert.equal(decision2.messages.length, 2);
+      assert.ok(decision2.messages[0].content[0].text.startsWith("This project has no horizon yet"));
     });
   });
 });
