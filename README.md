@@ -15,13 +15,20 @@ between sessions and between tools.
 **CLI first, adapter second.** The binary must be on PATH before any adapter
 is configured; hooks fail open (they inject nothing) when the bin is missing.
 
-There is **no npm release yet** — `npm install -g deep-horizon` 404s on
-registry.npmjs.org (this repo's open gap `registry-release`). Install from a
-checkout, and build before installing: on npm >= 12 the install-scripts
-protection blocks this package's `prepare` (the build) on path installs, and
-the `--allow-scripts` remedies npm's own warning suggests still block for
-path installs — the installed bins then crash with `ERR_MODULE_NOT_FOUND`
-for `dist/cli.js`. (`npm pack` is unaffected; `prepare` still runs there.)
+```bash
+npm install -g deep-horizon
+```
+
+The registry tarball ships `dist/` as packed, so no build step and no
+lifecycle script runs on install — the npm >= 12 install-scripts protection
+is irrelevant on this route.
+
+From a checkout instead (hacking on the adapters): build before installing.
+On npm >= 12 the install-scripts protection blocks this package's `prepare`
+(the build) on path installs, and the `--allow-scripts` remedies npm's own
+warning suggests still block for path installs — an unbuilt clone installs
+bins that crash with `ERR_MODULE_NOT_FOUND` for `dist/cli.js`. (`npm pack`
+is unaffected; `prepare` still runs there.)
 
 ```bash
 git clone https://github.com/andrepontesmelo/deep-horizon
@@ -32,9 +39,6 @@ npm install -g .
 
 A folder install is symlinked, so the global bins run this checkout's
 `dist/` — build in the clone and the install is whole.
-
-Publishing is the intended route, not a user step today: once `npm publish`
-runs, the block above becomes `npm install -g deep-horizon` again.
 
 Status: this package ships the CLI core (`horizon`), the `horizon-inject`
 composer, and adapters for every harness below (Claude Code has no npm
@@ -197,7 +201,7 @@ user-approved steer summary needs.
 ### 2. Claude Code
 
 ```bash
-npm install -g ./deep-horizon    # from a clone of this repo — see Install
+npm install -g deep-horizon           # the CLI — see Install
 ```
 
 `.claude/settings.json` (project-local, checked into the repo):
@@ -240,7 +244,7 @@ record carries `summary: null` — the close hook cannot elicit model text.
 ### 3. pi
 
 ```bash
-npm install -g ./deep-horizon    # from a clone of this repo — see Install
+npm install -g deep-horizon           # the CLI — see Install
 ```
 
 `~/.pi/agent/settings.json`:
@@ -281,7 +285,7 @@ signal, and never reaches pi's process handlers either way.)
 ### 4. opencode — DEGRADED
 
 ```bash
-npm install -g ./deep-horizon    # from a clone of this repo — see Install
+npm install -g deep-horizon           # the CLI — see Install
 ```
 
 `opencode.json` (project):
@@ -319,7 +323,7 @@ inject — `hermes plugins disable horizon-line`, then delete
 
 ```bash
 git clone https://github.com/andrepontesmelo/deep-horizon
-npm install -g ./deep-horizon    # the CLI — see Install
+npm install -g deep-horizon           # the CLI — see Install
 rsync -a --exclude __pycache__ deep-horizon/adapters/hermes/ ~/.hermes/plugins/deep-horizon/
 rm -rf ~/.hermes/plugins/deep-horizon/__pycache__   # upgrades: --exclude keeps the OLD bytecode
 # no rsync? coreutils only:
@@ -380,7 +384,7 @@ error injects nothing and never blocks a session.
 ### 6. ZCode
 
 ```bash
-npm install -g ./deep-horizon    # from a clone of this repo — see Install
+npm install -g deep-horizon           # the CLI — see Install
 ```
 
 The adapter is POSIX sh scripts shipped inside the package
