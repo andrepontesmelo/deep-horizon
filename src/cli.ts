@@ -61,7 +61,7 @@ function helpText() {
     "  detail <id> \"<text>\"      set or rewrite a gap's details (2048 code points max)\n" +
     "  detail <id> --clear       remove a gap's details\n" +
     "  log [--limit N]           print session records, newest first\n" +
-    "  session-end --harness <name> --session <id> [--summary \"<text>\"] [--store <dir>]\n" +
+    "  session-end --harness <name> --session <id> [--summary \"<text>\"] [--store <dir>] — once per (harness, session); a repeat is a silent no-op\n" +
     "  init                      create .horizon/ in --cwd\n"
   );
 }

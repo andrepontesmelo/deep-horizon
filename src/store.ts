@@ -554,7 +554,10 @@ export function closeGap(cwd, id, sessionId) {
   return writeGapsFile(loaded.dir, next);
 }
 
-// recordSession appends the one session record (CONTEXT: Session record).
+// recordSession appends the one session record (CONTEXT: Session record),
+// once per (harness, session_id): a record already in sessions.jsonl for the
+// pair makes the call a silent no-op — the first record wins and a later
+// call's summary is dropped — while distinct pairs keep appending.
 // The join lives here, beside the schemas it reads: gaps.json and
 // closes.jsonl are this module's writes (the close records are closeGap's),
 // so the verb never re-learns their shapes. `store` is the close hooks'
@@ -587,6 +590,13 @@ export function recordSession(cwd, { harness, sessionId, summary = null, store =
   if (!g.ok) return { code: g.code, message: g.message };
   const c = readCloses(storeDir, sessionId);
   if (!c.ok) return { code: c.code, message: c.message };
+  // The dedupe read keeps the malformed-store discipline (an unreadable
+  // sessions.jsonl is exit 7, never an unchecked append) and scans the whole
+  // file: append-only jsonl has no index, and this is the read `log` and the
+  // closes join already make.
+  const seen = readSessions(storeDir);
+  if (!seen.ok) return { code: seen.code, message: seen.message };
+  if (seen.records.some((rec) => rec.harness === harness && rec.session_id === sessionId)) return null;
   const added = [];
   for (const gap of g.data.gaps) {
     if (gap.provenance && gap.provenance.session_id === sessionId && !added.includes(gap.id)) added.push(gap.id);
