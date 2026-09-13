@@ -809,6 +809,147 @@ test("dsh-inbox-id. two param injects plus the session-end steer in one session 
   });
 });
 
+// --- The DSH dispose write (the interrupt path's session-end) ---
+
+// The module-level close-pair memory accumulates across this file's tests
+// (one module instance per run), so every assertion below filters by its own
+// session id instead of counting the whole batch.
+
+// The spawnSync calls the disposer made for one session id, as
+// { file, args, options } (file = the resolved bin or its runner).
+function closesFor(fake, session) {
+  const at = (args) => args[args.indexOf("--session") + 1];
+  return fake.calls.filter((c) => at(c.args) === session);
+}
+
+test("dsh-dispose-1. on signal exit the disposer writes one summary-null session-end per remembered (id, store) pair, synchronously bounded", async () => {
+  await withDir(async (repoA) => {
+    await withDir(async (repoB) => {
+      seed(repoA, ["Dispose launch gap"]);
+      seed(repoB, ["Dispose param gap"]);
+      const mod = await import(ADAPTER);
+      const calls = [];
+      const fakeSync = (file, args, options) => {
+        calls.push({ file, args, options });
+        return { status: 0 };
+      };
+      const registered = mod.apply({ on() {} }, {
+        spawnSync: fakeSync,
+        isExiting: () => true,
+        // The startup answer carries the launch store; the param trigger's
+        // answer carries repo B's. Both must reach the address book.
+        spawnBin: (bin, args) => {
+          const dir = args[args.indexOf("--cwd") + 1];
+          return { status: 0, stdout: JSON.stringify({ text: `H:${dir}`, store: dir }), stderr: "" };
+        },
+      });
+      const agent = { id: "sess-d1", session: { header: { cwd: repoA, delegationDepth: 0, origin: "user" } }, inject() {}, steer() {} };
+      await registered["agent/session-start"]({ agent, source: "startup" });
+      const decision = await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "p", role: "user", content: [] }] }));
+      assert.equal(decision.messages.length, 2, "the seed delivered (the pair is only remembered once the answer carried a store)");
+      await registered["tools/pre-execute"](
+        { name: "bash", arguments: frozen({ command: `git -C ${repoB} status` }), agent },
+        () => ({ kind: "allow" }),
+      );
+      calls.length = 0; // drop the injection spawns' noise from the fake above
+      registered(); // the returned handler bag IS the disposer
+      const closes = closesFor({ calls }, "sess-d1");
+      assert.equal(closes.length, 2, `exactly one session-end per served store, got: ${JSON.stringify(closes)}`);
+      const stores = closes.map((c) => c.args[c.args.indexOf("--store") + 1]).sort();
+      assert.deepEqual(stores, [repoA, repoB].sort(), "the launch store and the param-touched store both close — the --json answer's store verbatim");
+      for (const c of closes) {
+        assert.equal(c.file, process.execPath, "a checkout resolves the sibling bin under the current node");
+        assert.ok(c.args[0].endsWith(join("bin", "horizon.js")), `the sibling runner is bin/horizon.js: ${c.args[0]}`);
+        assert.deepEqual(c.args.slice(1, 5), ["session-end", "--harness", "dsh", "--session"], "the close names the CLI, harness, and session");
+        assert.ok(!c.args.includes("--summary"), "an interrupt record never carries a summary — none was approved");
+        assert.deepEqual(c.options, { timeout: 2000, stdio: "ignore" }, "each spawn is synchronously bounded well under the launcher's 5s dispose budget");
+      }
+    });
+  });
+});
+
+test("dsh-dispose-2. no store served, or no session id: the disposer writes nothing — discovery is never its job", async () => {
+  const mod = await import(ADAPTER);
+  const calls = [];
+  const fakeSync = (file, args, options) => { calls.push({ file, args, options }); return { status: 0 }; };
+  // Storeless startup and storeless param touches: nothing is remembered, so
+  // an interrupt has nothing trustworthy to write (no cwd re-discovery here).
+  const registered = mod.apply({ on() {} }, {
+    spawnSync: fakeSync,
+    isExiting: () => true,
+    spawnBin: () => ({ status: 0, stdout: JSON.stringify({ text: "NUDGE", store: null }), stderr: "" }),
+  });
+  const agent = { id: "sess-d2", session: { header: { cwd: "/storeless", delegationDepth: 0, origin: "user" } }, inject() {}, steer() {} };
+  await registered["agent/session-start"]({ agent, source: "startup" });
+  await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "p", role: "user", content: [] }] }));
+  await registered["tools/pre-execute"](
+    { name: "bash", arguments: frozen({ command: "ls /storeless/deeper" }), agent },
+    () => ({ kind: "allow" }),
+  );
+  registered();
+  assert.equal(closesFor({ calls }, "sess-d2").length, 0, "a session that never injected records nothing on dispose");
+  // A served store without a session id is equally unwritable: the id is the
+  // record's join key, and a placeholder would write a wrong one.
+  const calls2 = [];
+  const registered2 = mod.apply({ on() {} }, {
+    spawnSync: (file, args, options) => { calls2.push({ file, args, options }); return { status: 0 }; },
+    isExiting: () => true,
+    spawnBin: () => ({ status: 0, stdout: JSON.stringify({ text: "BLOCK", store: "/idless-store" }), stderr: "" }),
+  });
+  const idless = { session: { header: { cwd: "/somewhere", delegationDepth: 0, origin: "user" } }, inject() {}, steer() {} };
+  await registered2["agent/session-start"]({ agent: idless, source: "startup" });
+  await registered2["agent/pre-step"]({ agent: idless }, () => ({ kind: "enter", messages: [{ id: "p", role: "user", content: [] }] }));
+  registered2();
+  assert.ok(!calls2.some((c) => c.args.includes("/idless-store")), "no id, no record — even with a served store (other sessions' pairs, if any, are not this assertion's subject)");
+});
+
+test("dsh-dispose-3. dispose failures are silent: a throwing spawn never leaves the disposer, a nonzero sibling takes one PATH retry", async () => {
+  const mod = await import(ADAPTER);
+  // The pair is planted through a normal injection; then the spawn itself
+  // fails in every way a bin can fail.
+  const registered = mod.apply({ on() {} }, {
+    spawnSync: () => { throw new Error("spawnSync ENOENT"); },
+    isExiting: () => true,
+    spawnBin: () => ({ status: 0, stdout: JSON.stringify({ text: "BLOCK", store: "/failing-store" }), stderr: "" }),
+  });
+  const agent = { id: "sess-d3", session: { header: { cwd: "/somewhere", delegationDepth: 0, origin: "user" } }, inject() {}, steer() {} };
+  await registered["agent/session-start"]({ agent, source: "startup" });
+  await registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "p", role: "user", content: [] }] }));
+  assert.doesNotThrow(registered, "a throwing spawnSync must stay inside the disposer's fail-open");
+  // The sibling-first policy's retry twin (support.ts, synchronous): a real
+  // nonzero sibling exit gets exactly one PATH attempt with the bare args.
+  const calls = [];
+  const registered2 = mod.apply({ on() {} }, {
+    spawnSync: (file, args, options) => {
+      calls.push({ file, args, options });
+      return { status: file === "horizon" ? 0 : 7 };
+    },
+    isExiting: () => true,
+    spawnBin: () => ({ status: 0, stdout: JSON.stringify({ text: "BLOCK", store: "/retry-store" }), stderr: "" }),
+  });
+  const agent2 = { id: "sess-d3b", session: { header: { cwd: "/somewhere", delegationDepth: 0, origin: "user" } }, inject() {}, steer() {} };
+  await registered2["agent/session-start"]({ agent: agent2, source: "startup" });
+  await registered2["agent/pre-step"]({ agent: agent2 }, () => ({ kind: "enter", messages: [{ id: "p", role: "user", content: [] }] }));
+  registered2();
+  const closes = closesFor({ calls }, "sess-d3b");
+  assert.equal(closes.length, 2, "sibling attempt plus one PATH retry");
+  assert.equal(closes[0].file, process.execPath, "the first attempt runs the sibling");
+  assert.equal(closes[1].file, "horizon", "the retry is the PATH bin");
+  assert.deepEqual(closes[1].args, closes[0].args.slice(1), "the retry drops the node/sibling prefix and keeps the arguments");
+});
+
+test("dsh-dispose-4. an unload without a signal — the live patch-reload — writes nothing: it is not a session end", async () => {
+  const mod = await import(ADAPTER);
+  const calls = [];
+  const registered = mod.apply({ on() {} }, {
+    spawnSync: (file, args, options) => { calls.push({ file, args, options }); return { status: 0 }; },
+    isExiting: () => false,
+    spawnBin: () => ({ status: 0, stdout: JSON.stringify({ text: "BLOCK", store: "/reload-store" }), stderr: "" }),
+  });
+  registered();
+  assert.deepEqual(calls, [], "a hot-reload unload must never consume the session's one record");
+});
+
 test("45. no adapter contains a literal of any section-10 text (spec acceptance 36, made real)", async () => {
   const { readdirSync, statSync } = await import("node:fs");
   const { HORIZON_BLOCK_TEMPLATE, BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT } = await import(new URL("../src/index.ts", import.meta.url).pathname);
