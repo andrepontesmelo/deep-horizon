@@ -162,16 +162,35 @@ bootstrap nudge, as on the startup path). Like everything
 else in the adapter it fails open: malformed arguments, a failed spawn, or an
 error queue nothing and never block the tool call.
 
-Session end is best-effort by necessity: DSH has no usable close hook —
-`agent/disposed` fires unawaited after the loop stops, when model text is
-already gone. So on the first turn stop of a top-level session the adapter
-steers the agent once to run, mid-session and with the user's approval:
+Session end has two paths. Mid-session, on the first turn stop of a top-level
+session, the adapter steers the agent once to run, with the user's approval:
 
 ```
 horizon session-end --harness dsh --session <id> [--summary "<text>"]
 ```
 
 Omitting `--summary` records `summary: null` — a summary is never fabricated.
+The steer is the only path that can carry a summary, because it is the only
+one that can ask.
+
+And when the session never reaches a turn stop: the DSH launcher itself
+registers SIGINT/SIGTERM and awaits the whole plugin tree's disposal under a
+5-second force-exit budget (`agent/disposed`, the loop-level event, stays
+unawaited — but the plugin-level dispose is a different mechanism, and it is
+awaited). On the first Ctrl-C or SIGTERM the adapter's disposer runs inside
+that budget and writes, synchronously, one summary-null record per store the
+session served — the launch repo plus every repo the param trigger injected:
+
+```
+horizon session-end --harness dsh --session <id> --store <dir>
+```
+
+A second Ctrl-C force-exits past the budget and cuts the writes short;
+SIGHUP — a closed terminal window — has no handler at all and loses the
+record. A live patch-reload also unloads the plugin, but writes nothing: it
+is not a session end, and an early summary-null record would consume the
+`session-end` idempotency slot (first record wins) that the later
+user-approved steer summary needs.
 
 ### 2. Claude Code
 
@@ -249,6 +268,14 @@ and any process chdir since. With no stashed store the command keeps its
 cwd-discovery form. No `--summary` either way, so the record carries
 `summary: null`.
 
+The close has one hole, stated plainly: SIGTERM runs `session_shutdown` and
+the record lands, but closing the terminal sends SIGHUP, and pi's SIGHUP
+path is a deliberate emergency exit — it skips extension cleanup entirely,
+because cleanup writing to a dead terminal can re-trigger the very EIO it
+is cleaning up. A session ended by terminal close therefore writes no
+record. (Ctrl-C inside the interactive TUI is a raw-mode keystroke, not a
+signal, and never reaches pi's process handlers either way.)
+
 ### 4. opencode — DEGRADED
 
 ```bash
@@ -266,8 +293,10 @@ added as an extra text part of the first user message, once per session, on a
 freshness heuristic (recent `session.time.created` plus empty persisted
 history — new-vs-resumed is inferred, not known); subagent sessions are
 excluded via `session.parentID`; and **opencode sessions write no session
-records** — no close hook exists, so opencode sessions are invisible to the
-log. Its gaps still read and write like every other harness's.
+records** — no close hook exists among its plugin hooks, and on signals the
+binary's own handlers are bare `process.exit()` calls, so nothing graceful
+ever runs at exit. opencode sessions are invisible to the log. Its gaps
+still read and write like every other harness's.
 
 `"plugin": ["deep-horizon"]` resolves a registry package, and there is none
 yet — the route today is the local plugin at
@@ -313,9 +342,9 @@ set it to the real project root, or export `TERMINAL_CWD`. The plugin never
 looks for stores itself: it asks `horizon-inject --json`, and a storeless
 session cwd defers to the launch directory when the bin finds a store there.
 
-Known hermes-side limitation: one-shot (`-z`) sessions skip
-`on_session_finalize`, so `horizon session-end` never runs for them (filed
-upstream as kanban task `t_87aa52a7` on the hermes-agent board).
+One-shot (`-z`) sessions finalize too: the CLI's one-shot exit path runs the
+same `on_session_finalize` the gateway does, so `-z` sessions that injected
+also write their record.
 
 The Python plugin wires the horizon into Hermes at three points. All spawning
 goes through the `horizon` / `horizon-inject` bins (the plugin never composes
@@ -340,7 +369,11 @@ error injects nothing and never blocks a session.
   `horizon session-end --harness hermes --session <id> --store <the store
   the injection answer carried>` (summary omitted, so the record carries
   `summary: null`; sessions that never injected fall back to cwd
-  discovery).
+  discovery). The gateway runs finalize on its SIGINT/SIGTERM shutdown
+  inside a 10-second finalize budget — the bin needs milliseconds — so a
+  `systemctl --user restart hermes-gateway` (SIGTERM, then SIGKILL only
+  after the unit's stop timeout) still lands every live session's record;
+  a hard kill or a crash does not.
 
 ### 6. ZCode
 
@@ -415,10 +448,14 @@ cannot name the record, and a placeholder id would write a wrong one.
 Known limitations, stated bluntly: no param trigger — ZCode's
 `PreToolUse` hook sees tool arguments and could carry a mid-session
 injection, but its stdout-to-context path is unproven, so the adapter
-ships without one (like Claude Code). And no true close hook: a session
-interrupted with SIGINT/SIGTERM — or a terminal closed — writes no
-record, because the duty lives in a once-per-session startup injection
-and nothing fires at process exit.
+ships without one (like Claude Code). And no true close hook: its hook
+events number exactly seven (SessionStart, UserPromptSubmit, PreToolUse,
+PermissionRequest, PostToolUse, PostToolUseFailure, Stop) and none of
+them is an exit hook, while on SIGINT/SIGTERM the binary's own shutdown
+runs no user-reachable code at all. A session interrupted with
+SIGINT/SIGTERM — or a terminal closed — writes no record, because the
+duty lives in a once-per-session startup injection and nothing fires at
+process exit.
 
 ## Manual use, no global install
 
