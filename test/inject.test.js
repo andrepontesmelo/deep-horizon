@@ -369,6 +369,62 @@ test("dsh-pre-step-2. a reject or an empty step passes through untouched and the
   assert.equal(entered.messages[0].content[0].text, "MOCK-PENDING-SEED");
 });
 
+// The live race (round-2 E2E gate): the session-start emit arms the spawn
+// and returns un-awaited, and turn 1's pre-step fires while the bin is
+// still running. Step 1's decision must wait for the armed promise. A test
+// that awaits session-start before driving pre-step cannot see this class
+// of bug — the handlers here are started together, spawn unresolved.
+test("dsh-pre-step-race. step 1 waits for the in-flight spawn: the seed rides the first decision even though the emit was never awaited", async () => {
+  const mod = await import(ADAPTER);
+  const header = { cwd: "/somewhere", delegationDepth: 0, origin: "user" };
+  const agent = { session: { header }, inject() {}, steer() {} };
+  let spawns = 0;
+  let release;
+  const registered = mod.apply({}, {
+    spawnBin: () => { spawns += 1; return new Promise((done) => { release = done; }); },
+  });
+  const step = () => registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] }));
+  // The live ordering: both started before the spawn resolves.
+  const arming = registered["agent/session-start"]({ agent, source: "startup" });
+  const stepping = step();
+  await arming;
+  assert.equal(spawns, 1);
+  release({ status: 0, stdout: JSON.stringify({ text: "MOCK-RACE-SEED", store: "/race-store" }), stderr: "" });
+  const decision = await stepping;
+  assert.equal(decision.messages.length, 2, "the first step carries the seed it waited for");
+  assert.equal(decision.messages[0].content[0].text, "MOCK-RACE-SEED");
+  const following = await step();
+  assert.equal(following.messages.length, 1, "once per session");
+});
+
+// The fail-open twin of the race: a spawn that rejects (the unresolvable-bin
+// shape) while step 1 waits leaves the step clean and releases the claim, so
+// the re-fired startup re-arms and the next step delivers.
+test("dsh-pre-step-race-fail. an in-flight spawn that rejects leaves step 1 untouched and the re-fired startup re-arms", async () => {
+  const mod = await import(ADAPTER);
+  const header = { cwd: "/somewhere", delegationDepth: 0, origin: "user" };
+  const agent = { session: { header }, inject() {}, steer() {} };
+  const gates = [];
+  const registered = mod.apply({}, {
+    spawnBin: () => new Promise((done, fail) => gates.push({ done, fail })),
+  });
+  const step = () => registered["agent/pre-step"]({ agent }, () => ({ kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] }));
+  const arming = registered["agent/session-start"]({ agent, source: "startup" });
+  const stepping = step();
+  await arming;
+  gates[0].fail(new Error("horizon-inject ENOENT"));
+  const decision = await stepping;
+  assert.deepEqual(decision, { kind: "enter", messages: [{ id: "prompt", role: "user", content: [] }] },
+    "a failed in-flight resolve must not touch the step");
+  // The re-fired startup re-arms (the miss stayed retryable) and the next
+  // step carries its answer.
+  await registered["agent/session-start"]({ agent, source: "startup" });
+  const stepping2 = step();
+  gates[1].done({ status: 0, stdout: JSON.stringify({ text: "MOCK-RETRY-SEED", store: "/race-store-2" }), stderr: "" });
+  const decision2 = await stepping2;
+  assert.equal(decision2.messages[0].content[0].text, "MOCK-RETRY-SEED");
+});
+
 // --- The DSH param trigger (tools/pre-execute, HL-23) ---
 
 // Shared fixture: a top-level agent plus an apply() whose spawnBin records

@@ -132,14 +132,17 @@ Mount in the profile's `cordis.patch.yml`:
 
 then verify the wiring with `dsh --profile <profile> --dump-config`.
 
-At session start (`agent/session-start`) the adapter resolves one block via
-`horizon-inject` and delivers it at the session's first model step: the
-`agent/pre-step` decision carries it ahead of the launch prompt, so step 1's
-request already holds it (session-start itself is a fire-and-forget event —
-an injection fired there lands in the second step's request). Seeded once
-per agent — fresh, top-level startups only
+At session start (`agent/session-start`) the adapter arms one
+`horizon-inject` resolve — the moment the event fires, before the spawn has
+finished — and delivers the block at the session's first model step: the
+awaited `agent/pre-step` waterfall holds step 1 until the answer lands, so
+the first request already carries the block ahead of the launch prompt
+(session-start itself is fire-and-forget; an injection fired there, rather
+than armed for the first step, lands in the second step's request). A resolve
+that fails or times out (the 15s bin bound) leaves step 1 clean and the miss
+retryable. Seeded once per agent — fresh, top-level startups only
 (`source === "startup"`; resumed or compacted sessions replay their original
-injection, subagents never get one, and a fail-open miss stays retryable).
+injection, subagents never get one).
 The block is one of the composer's three variants: the bootstrap nudge on a
 project with no store or an empty one, the warm nudge when an about line is
 set but no gaps are, the horizon block when gaps are open (the about line

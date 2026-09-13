@@ -16,7 +16,11 @@
 // turn 1's inbox claim, loses, and lands in next-step — the model's second
 // step. The pre-step waterfall is awaited by the loop and its decision's
 // message list is exactly what the step's request commits, so the seed
-// prepends there and the first model call sees the horizon.
+// prepends there. The emit runs the listener body synchronously up to its
+// first await, so the spawn promise is armed during the emit itself and the
+// pre-step handler awaits it — step 1 waits for the still-running bin
+// (bounded by the support.ts timeout) instead of going out without the
+// horizon.
 //
 // Session-end uses the mid-session fallback from day one (D3): DSH has no
 // agent/session-end event, and agent/disposed fires unawaited after the loop
@@ -84,17 +88,19 @@ function subagentHeader(header) {
 // session, not one per turn). Weak so disposal can collect them.
 const prompted = new WeakSet();
 
-// Session starts seed once per agent object: some harnesses re-fire
-// agent/session-start with source "startup", and the block must not be
-// resolved twice. Seeded once the bin's answer is in hand — a fail-open miss
-// stays retryable, while delivery itself cannot fail (a prepended decision
-// entry, not an inject call a harness could reject). Weak so disposal can
-// collect them.
+// Session starts arm the spawn once per agent object: some harnesses re-fire
+// agent/session-start with source "startup", and the bin must not be spawned
+// twice. `seeded` lands when the answer is in hand (the armed promise's
+// settlement), so a fail-open miss stays re-armable; delivery releases the
+// armed entry. Weak so disposal can collect them.
 const seeded = new WeakSet();
 
-// The startup seed waiting for the session's first step, per agent: the
-// composed text, resolved at session-start, consumed by the first pre-step
-// whose decision can carry it. Weak so disposal can collect them.
+// The startup seed per agent: the promise of the bin's answer (the text, or
+// null for a fail-open miss), armed synchronously at the session-start emit
+// — the emit calls the listener body up to its first await, so the promise
+// already exists when turn 1's pre-step fires, though the loop never awaits
+// that emit. The pre-step handler awaits it there; the support.ts timeout
+// bounds the wait. Weak so disposal can collect them.
 const seeds = new WeakMap();
 
 // What a session already knows, per agent. `served` — the horizon stores
@@ -174,42 +180,57 @@ export function apply(ctx, overrides = {}) {
   async function onSessionStart({ agent, source }) {
     const header = agent?.session?.header;
     if (!injectable(header, source)) return;
-    if (seeded.has(agent)) return;
-    let result;
+    if (seeded.has(agent) || seeds.has(agent)) return;
+    // Armed before the first await, so the stash exists while the bin is
+    // still running — turn 1's pre-step fires inside that window, and a
+    // stash that waited for the answer would not exist yet (the seed then
+    // lands at step 2 and step 1 goes out blind). The awaiting happens in
+    // onPreStep instead.
+    let spawning;
     try {
-      result = await spawnBin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", header.cwd]);
+      spawning = spawnBin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", header.cwd]);
     } catch {
-      return; // fail open (D2): unresolvable bin injects nothing
+      return; // fail open (D2): a spawn that cannot even be armed injects nothing
     }
-    if (!result || result.status !== 0) return;
-    const answer = parseInjectAnswer(result.stdout);
-    if (!answer || answer.text.length === 0) return;
-    // The block rides the session's first step's request (see onPreStep) —
-    // not an inject here: session-start listeners are fire-and-forget, and
-    // an inject racing turn 1's inbox claim lands in next-step, the model's
-    // second step.
-    seeds.set(agent, answer.text);
-    seeded.add(agent);
-    // The bin's answer is this session's knowledge of the launch dir: the
-    // store it served counts as served (a mid-session touch must not
-    // re-inject it), and the launch dir counts as probed so the param path
-    // never re-asks the bin for it.
-    const mem = memoryFor(agent);
-    if (answer.store !== null) mem.served.add(answer.store);
-    mem.probed.set(header.cwd, answer.store);
+    const pending = Promise.resolve(spawning)
+      .then((result) => {
+        const answer = result && result.status === 0 ? parseInjectAnswer(result.stdout) : null;
+        if (!answer || answer.text.length === 0) {
+          seeds.delete(agent); // a fail-open miss: the re-fired startup may re-arm
+          return null;
+        }
+        // The bin's answer is this session's knowledge of the launch dir: the
+        // store it served counts as served (a mid-session touch must not
+        // re-inject it), and the launch dir counts as probed so the param path
+        // never re-asks the bin for it.
+        const mem = memoryFor(agent);
+        if (answer.store !== null) mem.served.add(answer.store);
+        mem.probed.set(header.cwd, answer.store);
+        seeded.add(agent);
+        return answer.text;
+      })
+      .catch(() => {
+        seeds.delete(agent); // a rejecting spawn releases the same way
+        return null;
+      });
+    seeds.set(agent, pending);
   }
 
   // The startup seed's delivery point. `agent/pre-step` is the awaited
   // waterfall whose decision's messages are exactly the step's committed
   // request, so the seed prepends there and the model's first call sees the
-  // horizon ahead of the launch prompt. Pass-through by construction: no
+  // horizon ahead of the launch prompt — including the live race where the
+  // bin is still running when step 1 assembles: the decision waits for the
+  // armed promise, never the reverse. Pass-through by construction: no
   // pending seed returns next()'s decision untouched; a reject (or an empty
   // step) leaves the seed pending for the next one.
   async function onPreStep(input, next) {
-    const text = input?.agent ? seeds.get(input.agent) : undefined;
-    if (text === undefined) return next();
+    const pending = input?.agent ? seeds.get(input.agent) : undefined;
+    if (!pending) return next();
     const decision = await next();
     if (decision?.kind !== "enter" || decision.messages.length === 0) return decision;
+    const text = await pending;
+    if (text === null) return decision; // a fail-open miss: nothing to prepend, the entry is already released
     seeds.delete(input.agent);
     return { ...decision, messages: [message(text), ...decision.messages] };
   }
