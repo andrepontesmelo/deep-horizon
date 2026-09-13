@@ -1,0 +1,199 @@
+#!/bin/sh
+# adapters/zcode/pre-execute — ZCode PreToolUse hook (deep-horizon adapter).
+# POSIX sh + jq + node. Reads the hook's stdin JSON once, pulls the absolute
+# target directories out of the tool-call arguments, and — for a dir this
+# session has not answered for yet — asks `horizon-inject --json` for that
+# dir's horizon, emitting it in the envelope ZCode appends to that tool
+# call's result. Fail-open everywhere: any error, missing tool, or missing
+# bin exits 0 with no output — a hook must never disturb the tool call, and
+# must never exit 2 (exit 2 DENIES the call; the deny path also appends
+# context, so a veto-shaped failure would look like an injection that ate
+# the user's command). No nonzero exit is reachable from this script's own
+# logic; the last command is `exit 0`.
+#
+# Output path, PROVEN (2026-09-13 live probe against ZCode 3.11.2-22, plus
+# the harness bundle at
+# /home/andre/.npm-global/lib/node_modules/zcode-app-cli/vendor/zcode.cjs):
+# a PreToolUse hook's stdout parsed as JSON against the strict schema lands
+# in the model's context as "[Hook additional context]" appended to that
+# tool result — parseHookStdout ignores output that does not start with "{",
+# and the schema is strict, so the envelope is exactly
+# {"additionalContext": "<text>"}, one key, camelCase (the output mapping
+# reads only that spelling into the history entries, same as session-start).
+# The repetition run proved the hook fires on EVERY matching tool call, so
+# the once-per-store dedup lives HERE — the harness will not do it.
+#
+# The dedup memory is a per-session marker file,
+# ${TMPDIR:-/tmp}/horizon-zcode-<sanitized session id>, one record per line:
+# `d <dir>` — a dir the bin has already answered for (storeless answers
+# included: a storeless repo is remembered as silence and never re-spawns,
+# which is what keeps a cd-less session from paying a node startup on every
+# call); `s <store>` — a store this session has been served, the launch
+# store included (session-start seeds both, which is what keeps the param
+# path from re-injecting the launch repo's own horizon). No marker, no
+# injection: once-per-store is the difference between a horizon and spam,
+# so a session that cannot remember (unwritable TMPDIR, no session id)
+# stays silent rather than re-injecting on every matching call. Records are
+# appended (small appends are atomic enough on POSIX) and reads are
+# exact-line matches, so a garbage or interleaved line can only cost a
+# redundant probe, never a double injection. One race is accepted rather
+# than locked away: two hook fires landing inside each other's
+# check-then-claim window (the width of one bin spawn) can each deliver a
+# store's first block — a sh lock here would need stale-lock recovery, and
+# a stale lock would silence the session permanently, which costs more
+# than the race.
+#
+# Candidates are field-based, mirroring the DSH adapter's candidateDirs
+# (src/adapters/dsh.ts) — not tool-name-based, so unknown tool shapes simply
+# yield none: a `workdir` argument; the dirname of `file_path`/`path`
+# arguments; absolute-path tokens lexically extracted from a `command`
+# string (`git -C <dir>` targets are just whitespace-delimited absolute
+# paths). ABSOLUTE paths only, `~/` expanded — relative paths are dropped
+# because the hook cannot know the shell cwd the tool will run in, and
+# resolving one against the harness process would guess (the hermes trigger
+# drops them for the same reason). Spellings are lexically normalized
+# (path.resolve — no filesystem access) so one dir probes once per call.
+# tool_name is read off the payload but deliberately unused for the scan:
+# the fields are the contract. cwd is used only to seed the marker (below).
+#
+# Speed: the hook runs inline before every matching call (the bundle has no
+# async escape — `async` hooks run inline — and the timeout default is
+# 60s). The marker is the fast path: an already-known dir costs a grep and
+# no spawn, and only a first touch pays one bin spawn — the bin is the
+# single composer, this script is glue only (D6). The candidate scan is one
+# node startup per fire. Blocks run ~1-2KB, so even a multi-repo fire fits
+# the 32KB stdout cap with room to spare — no truncation logic, and `jq -c`
+# keeps the envelope single-line.
+set -u
+
+payload=$(cat 2>/dev/null) || exit 0
+[ -n "$payload" ] || exit 0
+
+# The non-universal tools this script's memory depends on. jq and node are
+# the documented pair (README section 6); grep is the marker's exact-line
+# read — without it the once-per-store check silently never matches, which
+# would re-inject on every call; tr sanitizes the session id into a
+# filename. Missing any of them: silence, not a degraded injection.
+for tool in jq node grep tr; do
+  command -v $tool >/dev/null 2>&1 || exit 0
+done
+
+# The session id keys the marker. The payload carries it (snake_case alias
+# and camelCase native — probed bundle shape); ZCODE_SESSION_ID is the env
+# fallback the harness exports too. No id, no dedup key: silence, for the
+# reason in the header. The id is sanitized before it becomes a filename —
+# an id carrying / or newline must not write outside ${TMPDIR:-/tmp} (same
+# recipe in session-start's seed).
+sid=$(printf '%s' "$payload" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || exit 0
+[ -n "$sid" ] || sid=${ZCODE_SESSION_ID:-}
+safe=$(printf '%s' "$sid" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null) || safe=""
+[ -n "$safe" ] || exit 0
+
+# The session's working directory (the hook process runs there — probed:
+# the executor passes payload.cwd as the spawn cwd). Only used to seed a
+# fresh marker.
+cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || exit 0
+
+# The candidate scan: one node run per fire, the payload on stdin, dsh's
+# candidateDirs semantics (see the header). No single quotes inside the -e
+# program — it lives in the shell's single quotes; \x27/\x22/\x60 spell the
+# quote characters the token classes exclude. A crash, a malformed payload,
+# or a missing node ends the scan with no candidates — exit 0, silent.
+dirs=$(printf '%s' "$payload" | node -e '
+var path=require("path"),os=require("os"),fs=require("fs");
+var out=[],seen={},p=null,ti=null;
+try{p=JSON.parse(fs.readFileSync(0,"utf8"));}catch(e){}
+if(p&&typeof p=="object"&&!Array.isArray(p)){
+  ti=(p.toolInput!==undefined&&p.toolInput!==null)?p.toolInput:p.tool_input;
+}
+function push(v){
+  if(typeof v!="string"||v.length===0)return;
+  if(v.slice(0,2)=="~/")v=path.join(os.homedir(),v.slice(2));
+  if(v.charAt(0)!="/")return;
+  v=path.resolve(v);
+  if(!seen[v]){seen[v]=1;out.push(v);}
+}
+if(ti&&typeof ti=="object"&&!Array.isArray(ti)){
+  push(ti.workdir);
+  var keys=["file_path","path"],i;
+  for(i=0;i<keys.length;i++){
+    if(typeof ti[keys[i]]=="string")push(path.dirname(ti[keys[i]]));
+  }
+  if(typeof ti.command=="string"){
+    var re=/(?:^|[\s(=;,\x22\x27\x60])((?:~\/|\/)[^\s\x22\x27\x60;|&)]*)/g,m;
+    while((m=re.exec(ti.command)))push(m[1]);
+  }
+}
+process.stdout.write(out.length?out.join("\n")+"\n":"");
+' 2>/dev/null) || exit 0
+[ -n "$dirs" ] || exit 0
+
+# The marker: materialize it, seeding the launch dir as known — its horizon
+# rode the startup injection (or its replay, on a resume whose session-start
+# never ran), so the first touch of the launch dir must not probe at all.
+# Then require it writable: an unwritable marker means no memory, and no
+# memory means silence (see the header).
+marker=${TMPDIR:-/tmp}/horizon-zcode-$safe
+if [ ! -f "$marker" ]; then
+  [ -n "$cwd" ] && printf 'd %s\n' "$cwd" >>"$marker" 2>/dev/null
+  [ -f "$marker" ] || : >"$marker" 2>/dev/null
+fi
+{ [ -f "$marker" ] && [ -w "$marker" ]; } || exit 0
+
+known() { grep -Fxq -- "$1" "$marker" 2>/dev/null; }
+
+# Bin resolution (hermes pattern, as in session-start): an installed package
+# uses the global bin on PATH; a repo checkout runs bin/horizon-inject.js
+# with node, because the bare bins are not linked yet.
+here=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
+if command -v horizon-inject >/dev/null 2>&1; then
+  ask() { horizon-inject --harness zcode --json --cwd "$1" 2>/dev/null; }
+elif command -v node >/dev/null 2>&1 && [ -f "$here/../../bin/horizon-inject.js" ]; then
+  ask() { node "$here/../../bin/horizon-inject.js" --harness zcode --json --cwd "$1" 2>/dev/null; }
+else
+  exit 0
+fi
+
+deliver=
+old_ifs=$IFS
+IFS='
+'
+for dir in $dirs; do
+  [ -n "$dir" ] || continue
+  recline="d $dir"
+  known "$recline" && continue
+  answer=$(ask "$dir") || continue
+  # The bin's total answer is the one store-existence rule (the DSH
+  # adapter's parseInjectAnswer contract): {"text": string, "store":
+  # string|null}. Anything off-shape is a failed probe — the dir stays
+  # unrecorded so the next call retries, exactly like dsh's unprobed dir.
+  ok=$(printf '%s' "$answer" | jq -r 'if type=="object" and (.text|type=="string") and ((.store|type=="string") or .store==null) then "1" else empty end' 2>/dev/null) || continue
+  [ -n "$ok" ] || continue
+  text=$(printf '%s' "$answer" | jq -r '.text' 2>/dev/null) || continue
+  store=$(printf '%s' "$answer" | jq -r '.store // empty' 2>/dev/null) || continue
+  printf '%s\n' "$recline" >>"$marker" 2>/dev/null || continue
+  # store null = silence for this dir, remembered (the d line above is the
+  # whole answer). A store-backed answer claims the store before delivering,
+  # so N dirs over one store still inject exactly once.
+  [ -n "$store" ] || continue
+  sline="s $store"
+  known "$sline" && continue
+  printf '%s\n' "$sline" >>"$marker" 2>/dev/null || continue
+  # A store-backed answer with empty text is a total silence: claimed,
+  # nothing to deliver (dsh's trade). Otherwise the text rides this fire's
+  # envelope — several fresh stores touched by one call concatenate into
+  # the single additionalContext the schema allows.
+  [ -n "$text" ] || continue
+  if [ -n "$deliver" ]; then
+    deliver="$deliver
+
+$text"
+  else
+    deliver=$text
+  fi
+done
+IFS=$old_ifs
+
+[ -n "$deliver" ] || exit 0
+jq -cn --arg text "$deliver" '{additionalContext: $text}' 2>/dev/null || exit 0
+exit 0

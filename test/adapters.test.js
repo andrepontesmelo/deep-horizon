@@ -1182,6 +1182,10 @@ test("81. the ZCode session-start hook injects ONLY on fresh startups, through t
     const r = runHook(join(ZCODE_DIR, "session-start"), {
       input: sessionStartPayload(dir),
       cwd: dir,
+      // The hook now writes the param trigger's seed marker under TMPDIR;
+      // every run owns a private one (unique session ids keep runs apart
+      // even where TMPDIR is shared).
+      env: { TMPDIR: dir },
     });
     assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
     const parsed = JSON.parse(r.stdout);
@@ -1196,6 +1200,7 @@ test("81. the ZCode session-start hook injects ONLY on fresh startups, through t
     const resumed = runHook(join(ZCODE_DIR, "session-start"), {
       input: sessionStartPayload(dir, { source: "resume" }),
       cwd: dir,
+      env: { TMPDIR: dir },
     });
     assert.equal(resumed.code, 0);
     assert.equal(resumed.stdout, "", "a resumed session must not re-inject");
@@ -1210,7 +1215,7 @@ test("82. the ZCode session-start hook fails open: malformed stdin, empty stdin,
   await withDir(async (dir) => {
     seed(dir, ["ZCode fail-open gap"]);
     for (const input of ["not json", "", "{}"]) {
-      const r = runHook(join(ZCODE_DIR, "session-start"), { input, cwd: dir });
+      const r = runHook(join(ZCODE_DIR, "session-start"), { input, cwd: dir, env: { TMPDIR: dir } });
       assert.equal(r.code, 0, `input ${JSON.stringify(input)} must not fail the hook`);
       assert.equal(r.stdout, "", `input ${JSON.stringify(input)} must inject nothing`);
     }
@@ -1231,7 +1236,7 @@ test("82. the ZCode session-start hook fails open: malformed stdin, empty stdin,
     const r = runHook(join(isolated, "session-start"), {
       input: sessionStartPayload(dir),
       cwd: dir,
-      env: { PATH: fakeBin },
+      env: { PATH: fakeBin, TMPDIR: dir },
     });
     assert.equal(r.code, 0, "a missing bin must never fail the hook");
     assert.equal(r.stdout, "", "a missing bin must inject nothing");
@@ -1250,6 +1255,7 @@ test("83. the ZCode session-start hook carries the session-end duty: a session i
     const r = runHook(join(ZCODE_DIR, "session-start"), {
       input: sessionStartPayload(dir, { sessionId: sid, session_id: sid }),
       cwd: dir,
+      env: { TMPDIR: dir },
     });
     assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
     const parsed = JSON.parse(r.stdout);
@@ -1266,6 +1272,7 @@ test("83. the ZCode session-start hook carries the session-end duty: a session i
     const bare = runHook(join(ZCODE_DIR, "session-start"), {
       input: sessionStartPayload(dir, { sessionId: null, session_id: null }),
       cwd: dir,
+      env: { TMPDIR: dir },
     });
     assert.equal(bare.code, 0);
     const bareParsed = JSON.parse(bare.stdout);
@@ -1281,7 +1288,7 @@ test("83. the ZCode session-start hook carries the session-end duty: a session i
       const none = runHook(join(ZCODE_DIR, "session-start"), {
         input: sessionStartPayload(storeless, { sessionId: sid, session_id: sid }),
         cwd: storeless,
-        env: { HOME: storeless },
+        env: { HOME: storeless, TMPDIR: dir },
       });
       assert.equal(none.code, 0);
       assert.equal(none.stdout, "", "a storeless dir must inject nothing, tail included");
@@ -1301,13 +1308,281 @@ test("84. the ZCode adapter ships its config and scripts: .zcode/config.json wir
   // The event points at the shipped script, and the package ships it executable.
   const startCmd = config.hooks.events.SessionStart[0].hooks[0].command;
   assert.ok(startCmd.includes("adapters/zcode/session-start"), `SessionStart must run the shipped script, got: ${startCmd}`);
-  for (const name of ["session-start"]) {
+  for (const name of ["session-start", "pre-execute"]) {
     const script = join(ZCODE_DIR, name);
     assert.ok(existsSync(script), `adapters/zcode/${name} must exist`);
     assert.ok((statSync(script).mode & 0o111) !== 0, `adapters/zcode/${name} must be executable`);
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     assert.ok(pkg.files.includes(`adapters/zcode/${name}`), `package.json files must ship adapters/zcode/${name}`);
   }
+});
+
+// --- ZCode pre-execute: the param trigger (PreToolUse → additionalContext) ---
+//
+// The 2026-09-13 live probe proved the mechanism this glue rides: a
+// PreToolUse hook's stdout, emitted as strict single-key JSON, lands in the
+// model's context appended to that tool call's result, and the hook fires on
+// EVERY matching call — so the once-per-store dedup is the script's own job.
+// These are tier-2 tests like session-start's: real processes, real tmp
+// stores, and — wherever the spawn count is the assertion — a counting shim
+// that wins the script's `command -v horizon-inject` resolution, exactly the
+// seat the installed global bin occupies.
+
+function preExecutePayload(cwd, toolInput, extra = {}) {
+  // The stdin shape the harness sends for PreToolUse (probed live:
+  // camelCase native fields plus snake_case aliases; ZCODE_SESSION_ID is
+  // the env fallback for the session id).
+  const sid = extra.sessionId ?? extra.session_id ?? "sess_param1";
+  return JSON.stringify({
+    hookEventName: "PreToolUse",
+    hook_event_name: "PreToolUse",
+    toolName: "Bash",
+    tool_name: "Bash",
+    toolInput,
+    tool_input: toolInput,
+    sessionId: sid,
+    session_id: sid,
+    cwd,
+    mode: "yolo",
+    riskLevel: "low",
+    timestamp: "2026-09-13T00:00:00Z",
+    ...extra,
+  });
+}
+
+// The spawn camera: a fake horizon-inject that beats the checkout sibling
+// (PATH-prepend), appends its argv to LOG per spawn, then either prints
+// ANSWER (the canned --json body) or — with `delegate` — execs the real
+// bin, so a test can hold the camera AND the real store resolution at once.
+// The returned runner fires the hook and reports the spawn lines with it —
+// count 0 is the marker fast path's claim to fame.
+function shimRunner(dir, { log, answer, delegate } = {}) {
+  const fakeBin = join(dir, "fakebin");
+  mkdirSync(fakeBin, { recursive: true });
+  const shim = join(fakeBin, "horizon-inject");
+  const body = delegate
+    ? "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LOG\"\nexec node \"$DELEGATE\" \"$@\"\n"
+    : "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LOG\"\nprintf '%s' \"$ANSWER\"\n";
+  writeFileSync(shim, body);
+  chmodSync(shim, 0o755);
+  return (toolInput, { answer: ans = answer, sid = "sess_shim1" } = {}) => {
+    const r = runHook(join(ZCODE_DIR, "pre-execute"), {
+      input: preExecutePayload(dir, toolInput, { sessionId: sid, session_id: sid }),
+      cwd: dir,
+      env: {
+        TMPDIR: dir,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        LOG: log,
+        ...(delegate ? { DELEGATE: delegate } : { ANSWER: typeof ans === "string" ? ans : JSON.stringify(ans) }),
+      },
+    });
+    const spawns = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((l) => l.length > 0) : [];
+    return { ...r, spawns, count: spawns.length };
+  };
+}
+
+test("zcode-param-1. the pre-execute hook injects a store-backed touched dir once, through exactly the strict single-key single-line envelope, and never again on the second touch", async () => {
+  await withDir(async (dir) => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo, { recursive: true });
+    seed(repo, ["pre-execute gap"]);
+    const call = () => runHook(join(ZCODE_DIR, "pre-execute"), {
+      input: preExecutePayload(dir, { command: `git -C ${repo} status` }),
+      cwd: dir,
+      env: { TMPDIR: dir },
+    });
+    const first = call();
+    assert.equal(first.code, 0, `hook failed: ${first.stderr}`);
+    assert.ok(first.stdout.length > 0, "the first touch of a store-backed dir must inject");
+    const parsed = JSON.parse(first.stdout);
+    assert.deepEqual(Object.keys(parsed).sort(), ["additionalContext"],
+      "the envelope must carry exactly additionalContext — the harness schema rejects extra keys");
+    assert.ok(parsed.additionalContext.startsWith("This project has a horizon"));
+    assert.ok(parsed.additionalContext.includes("gap-1  pre-execute gap"));
+    assert.ok(parsed.additionalContext.includes("`horizon detail <id>` prints it"),
+      "the param path must carry the core's detail pointer like every other path");
+    assert.ok(!first.stdout.slice(0, -1).includes("\n"), "the envelope must stay single-line JSON");
+    const second = call();
+    assert.equal(second.code, 0);
+    assert.equal(second.stdout, "", "the second identical touch must not re-inject");
+  }, "horizon-zcode-param-");
+});
+
+test("zcode-param-2. the bin is asked exactly once per fresh dir: storeless silence is remembered, spelling variants share one probe, and candidates come from workdir, file_path, path, and command", async () => {
+  await withDir(async (dir) => {
+    const run = shimRunner(dir, { log: join(dir, "spawns.log"), answer: { text: "", store: null } });
+    const a = join(dir, "storeless-a");
+    // First touch of a storeless dir: one probe, silence.
+    let r = run({ command: `ls ${a}` });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, "", "a storeless dir must stay silent on the param path");
+    assert.equal(r.count, 1);
+    assert.equal(r.spawns[0], `--harness zcode --json --cwd ${a}`,
+      `the bin must be asked with the total-answer flags and the candidate dir, got: ${r.spawns[0]}`);
+    // The identical touch: remembered silence — no re-spawn (this is what
+    // keeps a long session from paying a node startup on every call).
+    r = run({ command: `ls ${a}` });
+    assert.equal(r.stdout, "");
+    assert.equal(r.count, 1, "a storeless dir must never re-spawn");
+    // Spelling variants of one dir inside a single command collapse to one
+    // probe (lexical path.resolve — no filesystem access).
+    const b = join(dir, "b");
+    r = run({ command: `ls ${b}//x ${b}/./x ${b}/x/` });
+    assert.equal(r.stdout, "");
+    assert.equal(r.count, 2, `spelling variants must share one probe, got: ${r.spawns.join(" | ")}`);
+    // A workdir argument candidates as itself.
+    const c = join(dir, "c");
+    r = run({ workdir: c, command: "make" });
+    assert.equal(r.count, 3, `a workdir argument must candidate, got: ${r.spawns.join(" | ")}`);
+    // file_path and path candidate as their dirname, not the file.
+    const d = join(dir, "d");
+    r = run({ file_path: `${d}/notes.md` });
+    assert.equal(r.count, 4);
+    assert.ok(r.spawns.at(-1).endsWith(`--cwd ${d}`),
+      `file_path must candidate as its dirname, got: ${r.spawns.at(-1)}`);
+    const e = join(dir, "e");
+    r = run({ path: `${e}/f` });
+    assert.equal(r.count, 5);
+    assert.ok(r.spawns.at(-1).endsWith(`--cwd ${e}`),
+      `path must candidate as its dirname, got: ${r.spawns.at(-1)}`);
+    // Relative paths never candidate: the hook cannot know the shell cwd.
+    r = run({ command: "cd some/relative/dir && ls" });
+    assert.equal(r.stdout, "");
+    assert.equal(r.count, 5, "relative paths must be dropped");
+  }, "horizon-zcode-param-");
+});
+
+test("zcode-param-3. session-start seeds the param marker: the launch store is never re-injected, by root or by subdir, while a second repo still delivers once", async () => {
+  await withDir(async (dir) => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo, { recursive: true });
+    seed(repo, ["launch repo gap"]);
+    const sid = "sess_seed1";
+    const start = runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(repo, { sessionId: sid, session_id: sid }),
+      cwd: repo,
+      env: { TMPDIR: dir },
+    });
+    assert.equal(start.code, 0, `session-start failed: ${start.stderr}`);
+    assert.ok(JSON.parse(start.stdout).additionalContext.includes("launch repo gap"),
+      "the startup injection must deliver the launch horizon first");
+    // The seed: the launch dir known, the launch store served.
+    const marker = readFileSync(join(dir, `horizon-zcode-${sid}`), "utf8");
+    assert.ok(marker.includes(`d ${repo}\n`), `the launch dir must be seeded, got: ${marker}`);
+    assert.ok(marker.includes(`s ${join(repo, ".horizon")}\n`), `the launch store must be seeded, got: ${marker}`);
+    // Camera on the bin, real composition behind it: the shim logs the ask
+    // and execs the checkout bin, so every store resolution below is the
+    // real one — only the spawn count is borrowed from the fake. The launch
+    // root must not even probe (the marker fast path); a subdir of it
+    // probes once and lands on the served store — silence; a different
+    // store-backed repo delivers exactly once.
+    mkdirSync(join(repo, "sub"), { recursive: true });
+    const second = join(dir, "second");
+    mkdirSync(second, { recursive: true });
+    seed(second, ["second repo gap"]);
+    const run = shimRunner(dir, { log: join(dir, "spawns.log"), delegate: join(ROOT, "bin", "horizon-inject.js") });
+    let r = run({ command: `git -C ${repo} status` }, { sid });
+    assert.equal(r.stdout, "", "the launch repo's own horizon must not re-inject");
+    assert.equal(r.count, 0, `the seeded launch dir must not even probe, got: ${r.spawns.join(" | ")}`);
+    r = run({ file_path: `${repo}/sub/f.txt` }, { sid });
+    assert.equal(r.stdout, "", "a subdir of the launch repo resolves to the served store: silence");
+    assert.equal(r.count, 1, "the subdir itself was fresh: one probe");
+    r = run({ command: `git -C ${second} status` }, { sid });
+    assert.equal(r.code, 0);
+    assert.ok(JSON.parse(r.stdout).additionalContext.includes("second repo gap"));
+    assert.equal(r.count, 2, "a fresh dir over a fresh store: one probe, one inject");
+    r = run({ command: `git -C ${second} status` }, { sid });
+    assert.equal(r.stdout, "", "the second touch of the second repo stays silent");
+    assert.equal(r.count, 2, "and it does not re-spawn");
+  }, "horizon-zcode-param-");
+});
+
+test("zcode-param-4. the pre-execute hook fails open: malformed stdin, a payload with no session id, and a missing jq all exit 0 silently", async () => {
+  await withDir(async (dir) => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo, { recursive: true });
+    seed(repo, ["fail-open gap"]);
+    for (const input of ["not json", "", "{}"]) {
+      const r = runHook(join(ZCODE_DIR, "pre-execute"), { input, cwd: dir, env: { TMPDIR: dir } });
+      assert.equal(r.code, 0, `input ${JSON.stringify(input)} must not fail the hook`);
+      assert.equal(r.stdout, "", `input ${JSON.stringify(input)} must inject nothing`);
+    }
+    // No session id in the payload or the env: no dedup key, no injection —
+    // once-per-store is unenforceable without memory, and re-injecting on
+    // every matching call would be spam. No id, no marker file either.
+    const sidless = runHook(join(ZCODE_DIR, "pre-execute"), {
+      input: preExecutePayload(dir, { command: `git -C ${repo} status` }, { sessionId: null, session_id: null }),
+      cwd: dir,
+      env: { TMPDIR: dir, ZCODE_SESSION_ID: "" },
+    });
+    assert.equal(sidless.code, 0);
+    assert.equal(sidless.stdout, "", "a session without an id must not inject");
+    // Missing jq with everything else present: the very first jq use (the
+    // session id read) ends the run silently — PATH juggling like test 82's.
+    const fakeBin = join(dir, "fakebin-nojq");
+    mkdirSync(fakeBin, { recursive: true });
+    for (const tool of ["node", "grep", "tr", "sh", "dirname", "pwd", "cat", "command"]) {
+      const resolved = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
+      if (resolved.status === 0 && resolved.stdout.trim()) {
+        try { symlinkSync(resolved.stdout.trim(), join(fakeBin, tool)); } catch {}
+      }
+    }
+    const nojq = runHook(join(ZCODE_DIR, "pre-execute"), {
+      input: preExecutePayload(dir, { command: `git -C ${repo} status` }),
+      cwd: dir,
+      env: { PATH: fakeBin, TMPDIR: dir },
+    });
+    assert.equal(nojq.code, 0, "a missing jq must never fail the hook");
+    assert.equal(nojq.stdout, "", "a missing jq must inject nothing");
+  }, "horizon-zcode-param-");
+});
+
+test("zcode-param-5. the envelope encodes hostile text verbatim and stays single-line: quotes, backslashes, newlines, tabs, dollars", async () => {
+  await withDir(async (dir) => {
+    const hostile = "line1\n\"quoted\" \\backslash `tick` $dollar ${brace}\ttab";
+    const run = shimRunner(dir, { log: join(dir, "spawns.log"), answer: { text: hostile, store: join(dir, ".horizon") } });
+    const r = run({ command: `git -C ${dir}/repo status` });
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(parsed).sort(), ["additionalContext"],
+      "exactly one key — any extra key fails the harness schema and discards the output");
+    assert.equal(parsed.additionalContext, hostile, "the text must survive the envelope byte-for-byte");
+    assert.ok(!r.stdout.slice(0, -1).includes("\n"), "the envelope must stay single-line JSON");
+  }, "horizon-zcode-param-");
+});
+
+test("zcode-param-6. several fresh stores touched by one call concatenate into the single allowed envelope, one probe per dir, delivered once", async () => {
+  await withDir(async (dir) => {
+    const fakeBin = join(dir, "fakebin");
+    mkdirSync(fakeBin, { recursive: true });
+    const shim = join(fakeBin, "horizon-inject");
+    // Answer per candidate: the store IS the asked dir and the text names
+    // it — a store-backed answer for every dir the script brings, so the
+    // multi-store fire is exercisable with a stateless shim ($5 is --cwd's
+    // value; tmp paths carry no JSON metacharacters).
+    writeFileSync(shim, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LOG\"\nprintf '{\"text\":\"BLOCK %s\",\"store\":\"%s\"}' \"$5\" \"$5\"\n");
+    chmodSync(shim, 0o755);
+    const a = join(dir, "a");
+    const b = join(dir, "b");
+    const call = () => runHook(join(ZCODE_DIR, "pre-execute"), {
+      input: preExecutePayload(dir, { workdir: a, file_path: `${b}/f.txt` }),
+      cwd: dir,
+      env: { TMPDIR: dir, PATH: `${fakeBin}:${process.env.PATH}`, LOG: join(dir, "spawns.log") },
+    });
+    const r = call();
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(parsed).sort(), ["additionalContext"]);
+    assert.ok(parsed.additionalContext.includes(`BLOCK ${a}`), `the first store must ride the envelope: ${parsed.additionalContext}`);
+    assert.ok(parsed.additionalContext.includes(`BLOCK ${b}`), `the second store must ride the same envelope: ${parsed.additionalContext}`);
+    const marker = readFileSync(join(dir, "horizon-zcode-sess_param1"), "utf8");
+    assert.ok(marker.includes(`s ${a}\n`) && marker.includes(`s ${b}\n`), `both stores must be claimed, got: ${marker}`);
+    // The replay: both dirs known, both stores served — silence, no spawns.
+    const second = call();
+    assert.equal(second.stdout, "", "the replayed fire must inject nothing");
+    assert.equal(readFileSync(join(dir, "spawns.log"), "utf8").split("\n").filter((l) => l.length > 0).length, 2,
+      "the replayed fire must not re-spawn for either dir");
+  }, "horizon-zcode-param-");
 });
 
 // --- support.ts: the one spawn policy (runBin, parseInjectAnswer, truthy) ---

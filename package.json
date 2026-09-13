@@ -51,6 +51,7 @@
     "adapters/hermes/deep_horizon.py",
     "adapters/hermes/plugin.yaml",
     "adapters/zcode/session-start",
+    "adapters/zcode/pre-execute",
     "README.md",
     "LICENSE"
   ],

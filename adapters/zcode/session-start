@@ -39,6 +39,24 @@
 # — and only when the payload carries a sessionId: without the id the agent
 # cannot name the record, and a placeholder id would write a wrong one.
 #
+# The param trigger's seed (adapters/zcode/pre-execute reads the same
+# marker): ZCode's PreToolUse hook fires on every matching tool call, and
+# its dedup lives in a per-session marker file under ${TMPDIR:-/tmp} —
+# `d <dir>` records a dir the bin has answered for, `s <store>` a store the
+# session has been served. Once the startup injection is real, this hook
+# seeds both for the launch dir: the store it resolved counts as served and
+# the launch dir as known, so a mid-session touch of the launch repo never
+# re-injects the horizon this injection just delivered. That needs the
+# store's path, so the bin is asked with --json — the total answer's text
+# composes identically to the plain form (the stdout bytes below do not
+# move) and the store field rides along for free. The marker is keyed by
+# the session id, sanitized before it becomes a filename (same recipe as
+# pre-execute). Storeless launches (the bootstrap nudge) seed the dir
+# alone — the nudge was delivered here, and a param re-nudge would
+# duplicate it. Fail-open: an unwritable TMPDIR costs the seed, never the
+# injection (pre-execute then stays silent for the session, its own
+# no-memory-no-injection rule).
+#
 # cwd: the hook process runs in the session's working directory (probed:
 # executionPort.run({cwd: payload.cwd || getWorkingDirectory()})), and
 # ZCODE_PROJECT_DIR env carries the same path, so the store resolves the way
@@ -68,12 +86,19 @@ cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || exit 0
 # missing build fails open with no text below.
 here=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
 if command -v horizon-inject >/dev/null 2>&1; then
-  text=$(horizon-inject --harness zcode --cwd "$cwd" 2>/dev/null)
+  answer=$(horizon-inject --harness zcode --json --cwd "$cwd" 2>/dev/null)
 elif command -v node >/dev/null 2>&1 && [ -f "$here/../../bin/horizon-inject.js" ]; then
-  text=$(node "$here/../../bin/horizon-inject.js" --harness zcode --cwd "$cwd" 2>/dev/null)
+  answer=$(node "$here/../../bin/horizon-inject.js" --harness zcode --json --cwd "$cwd" 2>/dev/null)
 else
   exit 0
 fi
+
+# The --json answer is the total shape the DSH adapter parses: {"text":
+# string, "store": string|null}. The text composes identically to the plain
+# form; the store is the marker seed's reason for --json (see the header).
+# Anything off-shape fails open: no text, no injection.
+text=$(printf '%s' "$answer" | jq -r 'if type=="object" and (.text|type=="string") then .text else empty end' 2>/dev/null) || exit 0
+store=$(printf '%s' "$answer" | jq -r 'if type=="object" and (.store|type=="string") then .store else empty end' 2>/dev/null) || store=""
 
 # Empty composition = nothing to inject (a storeless $HOME stays silent).
 [ -n "$text" ] || exit 0
@@ -83,6 +108,20 @@ fi
 # alone. The id comes off the harness's own payload (camelCase, see the
 # shape above).
 sid=$(printf '%s' "$payload" | jq -r '.sessionId // empty' 2>/dev/null) || exit 0
+
+# The marker seed (see the header): only once the injection is real — the
+# empty-text exit above — and only with a session id to key it on. The
+# appends fail open: an unwritable marker costs the seed, never this
+# injection.
+if [ -n "$sid" ]; then
+  safe=$(printf '%s' "$sid" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null) || safe=""
+  if [ -n "$safe" ]; then
+    marker=${TMPDIR:-/tmp}/horizon-zcode-$safe
+    printf 'd %s\n' "$cwd" >>"$marker" 2>/dev/null
+    [ -n "$store" ] && printf 's %s\n' "$store" >>"$marker" 2>/dev/null
+  fi
+fi
+
 if [ -n "$sid" ]; then
   text="$text
 
