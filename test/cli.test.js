@@ -571,6 +571,32 @@ test("28. untouched session still writes a record with empty arrays", async () =
   });
 });
 
+test("28b. closing another session's gap closes only — the closer never inherits authorship", async () => {
+  // The union that fills the same-session add+close hole (an added gap no
+  // longer open, witnessed by the close record's added_session_id) must not
+  // over-attribute: a gap ADDED by s1 and CLOSED by s2 lands in s2's
+  // gaps_closed alone, never in s2's gaps_added.
+  await withDir(async (dir) => {
+    await runCli(["init", "--cwd", dir]);
+    await runCli(["add", "old-gap", "Added long ago", "--cwd", dir, "--session", "s1"]);
+    await runCli(["close", "old-gap", "--cwd", dir, "--session", "s2"]);
+    const r = await runCli(["session-end", "--harness", "t", "--session", "s2", "--cwd", dir]);
+    assert.equal(r.code, 0);
+    const rec = JSON.parse(readFileSync(join(dir, ".horizon", "sessions.jsonl"), "utf8").trim());
+    assert.deepEqual(rec.gaps_closed, ["old-gap"]);
+    assert.deepEqual(rec.gaps_added, []);
+    // And the same-session shape still carries both: added AND closed by s3.
+    await runCli(["add", "flash-gap", "Added and closed in one session", "--cwd", dir, "--session", "s3"]);
+    await runCli(["close", "flash-gap", "--cwd", dir, "--session", "s3"]);
+    const r3 = await runCli(["session-end", "--harness", "t", "--session", "s3", "--cwd", dir]);
+    assert.equal(r3.code, 0);
+    const lines = readFileSync(join(dir, ".horizon", "sessions.jsonl"), "utf8").trim().split("\n");
+    const rec3 = JSON.parse(lines[lines.length - 1]);
+    assert.deepEqual(rec3.gaps_added, ["flash-gap"]);
+    assert.deepEqual(rec3.gaps_closed, ["flash-gap"]);
+  });
+});
+
 test("29. missing --harness or --session: exit 2, nothing appended", async () => {
   await withDir(async (dir) => {
     await runCli(["init", "--cwd", dir]);

@@ -651,9 +651,12 @@ export function recordSession(cwd, { harness, sessionId, summary = null, store =
   const closedIds = [];
   for (const rec of c.records) {
     if (!openIds.has(rec.gap_id) && !closedIds.includes(rec.gap_id)) closedIds.push(rec.gap_id);
-  }
-  for (const gapId of closedIds) {
-    if (!added.includes(gapId)) added.push(gapId);
+    // The same-session add+close hole the provenance scan cannot see: the
+    // gap is no longer open, so the close record's added_session_id is the
+    // only witness that THIS session added it. Any other added_session_id
+    // (another session, or the pre-0.4 "unknown") closes only — a session
+    // that closes an old gap must not inherit its authorship.
+    if (rec.added_session_id === sessionId && !added.includes(rec.gap_id)) added.push(rec.gap_id);
   }
   return appendLine(storeDir, SESSIONS_FILE, {
     ts: utcNow(),

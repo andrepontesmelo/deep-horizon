@@ -1,6 +1,6 @@
 {
   "name": "deep-horizon",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Deep Horizon CLI core: a deterministic, human-authored horizon (open gaps + session log) shared across agent harnesses.",
   "license": "MIT",
   "author": "Andre Melo",

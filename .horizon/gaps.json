@@ -1,31 +1,7 @@
 {
   "version": 1,
-  "revision": 17,
+  "revision": 19,
   "gaps": [
-    {
-      "id": "zcode-param-trigger",
-      "text": "ZCode sessions get mid-session injection when the working directory changes",
-      "added_at": "2026-09-11T21:45:56Z",
-      "provenance": {
-        "harness": "unknown",
-        "session_id": "unknown",
-        "tty": false,
-        "origin": "agent-proposed"
-      },
-      "details": "Evidence: README, verbatim — 'Known limitations, stated bluntly: no param trigger — ZCode's PreToolUse hook sees tool arguments and could carry a mid-session injection, but its stdout-to-context path is unproven, so the adapter ships without one (like Claude Code).' The Hermes adapter already has one: each user turn scans new tool-call parameters (terminal command+workdir, read_file/write_file/patch/search_files path). Done = ZCode gets mid-session coverage on a proven stdout-to-context path, or the limitation is retired with the reason recorded."
-    },
-    {
-      "id": "close-hook",
-      "text": "An interrupted session still leaves a session record",
-      "added_at": "2026-09-11T21:45:56Z",
-      "provenance": {
-        "harness": "unknown",
-        "session_id": "unknown",
-        "tty": false,
-        "origin": "agent-proposed"
-      },
-      "details": "Evidence: README — 'no true close hook: a session interrupted with SIGINT/SIGTERM — or a terminal closed — writes no record, because Stop only steers at a turn boundary and nothing fires at process exit.' So session-end records miss exactly the aborted sessions worth knowing about. Done = a session killed by signal or a closed terminal leaves a record (summary: null is honest and fine) for every adapter that can host such a hook."
-    },
     {
       "id": "registry-release",
       "text": "deep-horizon is installable from the npm registry",
@@ -43,7 +19,9 @@
     "friendly-gap-ids",
     "gap-details-field",
     "plugin-parity",
-    "npm-release"
+    "npm-release",
+    "close-hook",
+    "zcode-param-trigger"
   ],
   "about": "A CLI plus per-harness adapters that keep a project's aim — one about line, up to 5 gaps — in front of every agent session, from one shared .horizon store"
 }
