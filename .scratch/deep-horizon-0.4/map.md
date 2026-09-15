@@ -43,6 +43,11 @@ install path are all locked.
 - Tracker: local markdown, this directory. Kanban cards spawn at
   implementation start (per the build map's "task tracking stays on Kanban"
   rule), not during charting.
+- **Execution override (2026-09-15)**: Andre authorized AFK resolution of the
+  grilling tickets ("drive the map to conclusion"), waiving wayfinder's
+  one-HITL-ticket-per-session rule. Resolutions cite evidence and prior
+  rulings (the build map's Decisions and this map's research); every ruling
+  stays vetoable — re-open a ticket and the map follows.
 
 ## Decisions so far
 
@@ -96,27 +101,75 @@ install path are all locked.
   default workdir) and cron `workdir` are **pure job/board config**. Gateway
   PATH resolves the horizon shims (load-bearing: the plugin's `../../bin`
   repo shortcut resolves to `~/.hermes/bin` in production).
+- [ZCode session-end mechanism](issues/03-grill-zcode-session-end.md) —
+  startup reconciliation: at every session-start the adapter scans durable
+  markers for prior sessions whose store is this one and runs
+  `horizon session-end` for each orphan (store once-guard = idempotent;
+  60 s mtime guard spares live sessions). No close hook exists and
+  instruction-only close is disproven by data (agents defer correctly, real
+  sessions end without wrap-up); the instruction survives demoted to the
+  **summary path**. Signal deaths covered by construction — the next session
+  reconciles the corpse. Stop-steer stays retired.
+- [ZCode re-injection and dedup](issues/04-grill-zcode-reinjection-dedup.md) —
+  matcher widens to `"startup|resume"` (F4's cause was the matcher excluding
+  resume, not persistence); the F7 double-injection guard is a
+  **simultaneity window** (suppress only if an identical seed landed <10 s
+  ago), not an identity key — a restart hours later re-injects, which is the
+  point. Markers move to `~/.cache/deep-horizon/markers/` (reboot durability
+  now matters: reconciliation reads them).
+- [Hermes finalize store selection](issues/05-grill-hermes-finalize-store.md) —
+  `_session_store` becomes session→**set**: the param path stashes what it
+  injects, finalize records once per stashed store (a multi-project telegram
+  session leaves one record per project — honest in each). Partial-close
+  world accepted and documented: telegram records on /new, /reset, shutdown;
+  kanban on TUI close; **cron and compression fire no hook at all** (cron
+  injection rides ticket 11's workdir; cron recording is the upstream ask).
+- [Hermes section semantics](issues/06-grill-hermes-section-semantics.md) —
+  F2 reframed: the post-update silence is **correct** ($HOME-silent rule
+  holding); the bug was the pre-update candidate defer freezing the
+  `.hermes` nudge into store-covered sessions. Rule: a non-empty session
+  cwd is the only candidate (the `""`-cwd shape that needed the defer died
+  in 0.21.2); empty cwd still falls back to process cwd. The frozen-nudge +
+  param-block contradiction is accepted, bounded to a session. Subagents:
+  param path already excludes them; section path accepts the noise
+  (fail-open, the pi trade) pending the upstream ask.
+- [Store topology](issues/08-grill-store-topology.md) — committed
+  `gaps.json` **branches**, not forks: git merge reconciles worktrees,
+  because a committed file rides the branch. The jsonl logs stay
+  machine-local per checkout (append-only, concurrent, no-lock — never
+  merged). The trade, documented once: *what* travels with git; *when and
+  in which session* stays on the machine. horizon-line's existing root
+  whitelist is the canonical pattern; `horizon init` gains one teaching
+  line; no tooling.
+- [Hook observability](issues/09-grill-observability.md) —
+  `<store>/.horizon/hooks.log`, always-on, one line per **bin** fire
+  (injected/nudged/silent/recorded/error) written by the bins themselves —
+  adapters inherit logging by shelling out; best-effort, never raises.
+  Plus read-only `horizon doctor`: per-harness wiring checks (the F3
+  "shipped but not wired" detector), PASS/FAIL + fix hints, exit 0/1.
+- [Install wiring and the registry release](issues/10-grill-install-wiring.md) —
+  `horizon install --harness <h>` **writes** global config via
+  parse→merge→validate→backup→write (never regex; loud failure on unknown
+  shapes — ticket 01's whole-config-dies finding bans blind writes);
+  zcode gets SessionStart (`startup|resume`) + PreToolUse, hermes gets the
+  plugin copy + config.yaml registration. Global-only (project hooks are
+  trust-gated, stale-prone, double-firing). 0.4.0 publishes to npm (dist in
+  `files`, no lifecycle scripts); cutover here: drop the symlink, install
+  from registry, doctor green. Upgrade = re-run install (idempotent merge
+  is the migration).
+- [Hermes workspace posture](issues/11-task-hermes-workspace-posture.md) —
+  executed via hermes CLI: HKRC cron `workdir` → its repo (next 05:00 fire
+  sees its horizon), casa board `default_workdir` → the repo via
+  `project bind-board` (worktree/dir-kind tasks launch where stores live).
+  Residual, honestly recorded: plain-created tasks still default to scratch
+  (hermes-core creation default) — habit/README mitigation:
+  `--workspace worktree`. Behavioral proof pending next fire/task.
 
 ## Not yet specified
 
-- 0.4.0 release mechanics: publish checklist, symlink→registry cutover on
-  this machine, migration of existing stores. (Retro-repair of `"unknown"`
-  provenance is decided — leave it — per
-  *Spec 0.4.0 — provenance and honest commands*.)
-- Retroactive session records: hermes state.db + zcode db hold enough ground
-  truth to backfill records for the ~40 analysed sessions — worth doing once,
-  by hand or script? Decide after the close mechanisms land.
-- Upstream hermes asks: the section mapping's missing parent/discriminator
-  key and the finalize payload's missing cwd are hermes-core gaps the plugin
-  works around — does 0.4.0 file/carry upstream issues for them, or is the
-  workaround the permanent shape? Depends on tickets 05/06.
-- ZCode subagent start-phase: today's subagent sessions pass the SessionStart
-  phase at 0 ms with no marker — the hook appears not to run for them, but
-  the mechanism is UNVERIFIED (ticket 01). Verify before ticket 04 trusts
-  it as an exclusion story.
-- Build-time verification that the dsh/opencode/pi spawn sites actually pass
-  `--session` (the amendment's one-flag delta is mechanical but unexercised
-  on this machine).
+(none — the fog is cleared. Items that were here either resolved into
+Decisions so far, moved to Out of scope, or became build-time checklist
+entries in the Implementation section below.)
 
 ## Out of scope
 
@@ -131,26 +184,66 @@ install path are all locked.
 - Backfilling or rewriting existing stores' history as a *product feature* —
   a one-time local repair may fall out of the fog above, but store history
   rewriting as a shipped capability does not.
+- **Retroactive session records** for the ~40 analysed sessions — decided
+  out at resolution (2026-09-15): one-time value is low, pre-0.4 provenance
+  is `"unknown"` anyway, and sessions.jsonl is going-forward truth. The
+  forensic record already exists in
+  [research/00](research/00-session-analysis-findings.md).
+- **Upstream hermes issues** (session_info parent/discriminator key;
+  finalize payload cwd; cron finalize) — the plugin's workarounds are the
+  permanent 0.4.0 shape; filing upstream is a worthwhile *follow-up effort*
+  outside this map, not a ticket on it.
 
 ## Ticket index
 
-Created and wired at charting; open tickets live in `issues/`.
+All tickets closed. 01/02 at charting (research subagents); 07 on
+2026-09-15 with Andre live; 03–06, 08–10 on 2026-09-15 under the AFK
+authorization (map Notes); 11 executed 2026-09-15 (see its resolution for
+the pending behavioral proof).
 
-| # | Name | Type | Blocked by |
+| # | Name | Type | Resolution |
 |---|---|---|---|
-| 01 | [ZCode hook surface re-probe](issues/01-research-zcode-hook-surface-reprobe.md) | research | — |
-| 02 | [Hermes hook payload audit](issues/02-research-hermes-hook-payloads.md) | research | — |
-| 03 | [ZCode session-end mechanism](issues/03-grill-zcode-session-end.md) | grilling | 01 |
-| 04 | [ZCode re-injection and dedup across app instances](issues/04-grill-zcode-reinjection-dedup.md) | grilling | 01 |
-| 05 | [Hermes finalize store selection](issues/05-grill-hermes-finalize-store.md) | grilling | 02 |
-| 06 | [Hermes section semantics — nudge, candidates, subagents](issues/06-grill-hermes-section-semantics.md) | grilling | 02 |
-| 07 | [Spec 0.4.0 — provenance and honest commands](issues/07-grill-spec-provenance-commands.md) | grilling | — |
-| 08 | [Store topology — worktrees and commit defaults](issues/08-grill-store-topology.md) | grilling | — |
-| 09 | [Hook observability shape](issues/09-grill-observability.md) | grilling | — |
-| 10 | [Install wiring and the registry release](issues/10-grill-install-wiring.md) | grilling | 01 ✅ |
-| 11 | [Hermes workspace posture — worktree workspaces and cron workdir](issues/11-task-hermes-workspace-posture.md) | task | — |
+| 01 | [ZCode hook surface re-probe](issues/01-research-zcode-hook-surface-reprobe.md) | research | closed — [research/01](research/01-zcode-hook-surface-reprobe.md) |
+| 02 | [Hermes hook payload audit](issues/02-research-hermes-hook-payloads.md) | research | closed — [research/02](research/02-hermes-hook-payloads.md) |
+| 03 | [ZCode session-end mechanism](issues/03-grill-zcode-session-end.md) | grilling | closed — startup reconciliation |
+| 04 | [ZCode re-injection and dedup](issues/04-grill-zcode-reinjection-dedup.md) | grilling | closed — `startup\|resume` + simultaneity window |
+| 05 | [Hermes finalize store selection](issues/05-grill-hermes-finalize-store.md) | grilling | closed — every injected store records |
+| 06 | [Hermes section semantics](issues/06-grill-hermes-section-semantics.md) | grilling | closed — silence was right; the defer was the bug |
+| 07 | [Spec 0.4.0 — provenance and honest commands](issues/07-grill-spec-provenance-commands.md) | grilling | closed — [07-spec-amendment.md](07-spec-amendment.md) |
+| 08 | [Store topology](issues/08-grill-store-topology.md) | grilling | closed — gaps.json rides git |
+| 09 | [Hook observability](issues/09-grill-observability.md) | grilling | closed — hooks.log + doctor |
+| 10 | [Install wiring and the registry release](issues/10-grill-install-wiring.md) | grilling | closed — install writes, doctor verifies |
+| 11 | [Hermes workspace posture](issues/11-task-hermes-workspace-posture.md) | task | closed — executed, proof pending next fire |
 
-01 and 02 closed at charting (their resolutions are in Decisions so far).
-Frontier after research: **03, 04, 05, 06, 07, 08, 09, 10, 11** — all HITL
-grilling except 11 (AFK task). Andre was AFK at charting; the grilling
-tickets wait for him.
+**The map is complete.** The frontier is empty; nothing is left to decide
+before the 0.4.0 build.
+
+## Implementation (post-map)
+
+Build order — six vertical slices, each a build+review pair (per the
+orchestrator convention), main stays clean until review passes:
+
+1. **Core amendment** — texts.ts `<id>` token + the §10.5 provenance footer
+   (function substitution, DEF-1); inject.ts uses `--session`; cli.ts env
+   chain (`ZCODE_SESSION_ID`/`HORIZON_SESSION`); test 34 relock, new test
+   37. Slice = core + tests + spec file updated together.
+2. **ZCode slice** — matcher `startup|resume`; simultaneity window on
+   seeding; markers to `~/.cache/deep-horizon/markers/`; adapters pass
+   `--session`; startup reconciliation of orphan markers → `horizon
+   session-end`. Slice = adapter scripts + a store-side reconcile helper if
+   needed + e2e in /tmp/zcode-e2e style.
+3. **Hermes slice** — non-empty cwd is the only candidate; param path
+   stashes (session→set); finalize records per store; spawns pass
+   `--session`. Slice = adapter + live verification against the gateway.
+4. **Observability** — hooks.log (bins) + nested .gitignore line +
+   `horizon doctor` (zcode + hermes checks). Slice = core + both check sets.
+5. **Topology docs** — README worktree paragraph + commit-gaps.json
+   teaching; `horizon init` closing line. Prose slice.
+6. **Release** — `npm publish` 0.4.0; `horizon install` (both harnesses);
+   local cutover from the symlink; doctor green. Ship slice.
+
+Build-time checklist (fog graduates that need eyes during the build, not
+decisions): verify dsh/opencode/pi spawn sites pass `--session`; verify the
+zcode subagent start-phase behavior (0 ms no-marker passes suggest hooks
+skip subagents — confirm, then document); confirm kanban/cron behavioral
+proof when the next task/fire lands after ticket 11's config.

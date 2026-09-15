@@ -1,8 +1,8 @@
 # Grill: Hermes finalize store selection
 
 Type: grilling
-Status: open
-Blocked by: [02 Hermes hook payload audit](02-research-hermes-hook-payloads.md)
+Status: closed (resolved 2026-09-15, AFK-authorized — see map Notes)
+Blocked by: [02 Hermes hook payload audit](02-research-hermes-hook-payloads.md) ✅
 
 ## Question
 
@@ -31,3 +31,37 @@ This is the hermes half of the write path (F1) and the hermes row of the
 open `close-hook` horizon gap. The rule must hold for telegram (home cwd,
 multi-repo touches), cron (home cwd, single repo), and kanban (scratch cwd,
 worktree repos) — three shapes, one rule.
+
+## Why it matters (amended by research)
+
+Ticket 02 found the real constraint: finalize fires **only** on /new,
+/reset, gateway shutdown, and TUI close. `cron_complete`, `cli_close`,
+`agent_close`, and `compression` book state.db rows but fire no hook at all
+(cron's finalizer is disarmed by design). The rule must therefore hold for a
+partial-close world.
+
+## Resolution
+
+**Every store that injected, records; the partial-close world is accepted
+and documented.**
+
+1. `_session_store` becomes a session→**set** map: `_section_text` keeps
+   stashing; `_pre_llm_call` starts stashing (it already holds the store at
+   `deep_horizon.py:590`). At finalize, `horizon session-end` runs **once
+   per stashed store** — a session that touched three projects leaves three
+   records, one per store, each honest in its own project's log. The store
+   format already allows it; the "one session, many stores" telegram shape
+   is exactly why.
+2. Fallback unchanged (payload cwd — still absent per ticket 02 — then
+   process cwd; storeless stays a safe no-op).
+3. End-reason coverage is hermes's, not the plugin's: telegram sessions
+   record on /new, /reset, and gateway shutdown; kanban sessions record on
+   TUI close (which is what `cli_close` actually rides). **Cron and
+   compression sessions book rows but fire no hook** — cron's *injection*
+   is fixed by ticket 11's `workdir` config; cron *recording* is upstream
+   territory (carried as the map's upstream ask). Documented degradation,
+   not silence: the 0.21.2 dispatch sites are cited in research/02.
+4. Subagents: excluded when known (`parent_session_id` guard already skips
+   the param path; subagent finalizes fire no hook anyway per ticket 02 —
+   `agent_close` books rows only). No special casing needed beyond the
+   existing guard.

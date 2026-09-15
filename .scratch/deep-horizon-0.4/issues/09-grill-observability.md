@@ -1,7 +1,7 @@
 # Grill: Hook observability shape
 
 Type: grilling
-Status: open
+Status: closed (resolved 2026-09-15, AFK-authorized — see map Notes)
 Blocked by: —
 
 ## Question
@@ -31,3 +31,29 @@ core-riding, no per-adapter inventions):
 
 Fail-open without signals means every future bug costs an afternoon of
 forensics — this session's analysis. The cheapest insurance on the map.
+
+## Resolution
+
+**`hooks.log` in the store, always-on, written by the bins; `horizon doctor`
+checks the wiring.**
+
+1. **`<store>/.horizon/hooks.log`** — one append-only line per bin fire:
+   `<iso-ts> <harness> <bin|hook> session=<id|-> store=<resolved|->
+   outcome=<injected|nudged|silent|recorded|error>`. The **bins** write it
+   (`horizon-inject`, `horizon session-end`), not the adapters — every
+   adapter that shells out gets logging for free, one implementation, no
+   per-adapter inventions (the charting constraint). The nested `.gitignore`
+   gains `hooks.log` next to `sessions.jsonl`. Storeless fires (the nudge,
+   the silence) have no store to log into — they stay unlogged, which is
+   fine: the F2/F5 class was diagnosed from harness logs; the invisible
+   class was *store-side* drops (records not landing, injections not
+   composing). The logging itself is best-effort and never raises: an
+   unwritable hooks.log costs the line, never the hook (fail-open all the
+   way down).
+2. **`horizon doctor`** — a read-only diagnostic the install story (ticket
+   10) leans on: per harness, checks wiring — zcode: `horizon-inject` on
+   PATH, SessionStart hook present with the right matcher, PreToolUse
+   present (the F3 detector), global config parses as JSON; hermes: plugin
+   files present at `~/.hermes/plugins/deep-horizon`, `config.yaml` lists it
+   enabled, shims resolve on the gateway PATH. Prints one PASS/FAIL line
+   per check with the fix hint, exits 0/1. Reads, never writes.
