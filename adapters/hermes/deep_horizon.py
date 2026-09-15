@@ -9,9 +9,9 @@ injected strings in any adapter), and it deliberately does NOT import
 Injection: ``register_system_prompt_section("deep-horizon", <callable>)`` —
 the persistent, every-turn mechanism. The callable receives the core's
 read-only session-info mapping — ``types.MappingProxyType``, a ``Mapping`` but
-NOT a ``dict`` (``plugins_dispatch.py:396``) — carrying ``session_id``,
+NOT a ``dict`` (``plugins_dispatch.py:402``) — carrying ``session_id``,
 ``cwd``, ``profile_name``, ..., and returns
-``horizon-inject --harness hermes --cwd <cwd>`` stdout, or
+``horizon-inject --harness hermes --session <id> --cwd <cwd>`` stdout, or
 ``""`` when nothing should be injected. The core renders the section once for
 a new session, freezes it on the agent, and persists it verbatim; on resume
 the stored bytes are recovered from the persisted prompt, so the horizon is
@@ -20,40 +20,70 @@ core's hard maximum); the worst-case block (5 gaps x 512 code points plus
 boilerplate) renders at ~3.5k chars, and an oversized render is dropped by the
 core rather than breaking the session (fail open).
 
-Subagent exclusion: delegate_task children run the same conversation loop, so
-the section must render nothing for them. The live session-info mapping exposes
-only ``session_id``, ``model``, ``provider``, ``platform``, ``profile_name`` and
-``cwd`` — it carries NO parent/depth discriminator, so the guard accepts every
-convention the core might adopt (``parent_session_id``, ``is_subagent``,
-``delegation_depth``, ``origin: "subagent"``) and adds an explicit
-``HORIZON_SUBAGENT=1`` opt-out mirroring the pi adapter. None of those keys
-arrive today, so the guard is best-effort and fails open, exactly like pi.
+Provenance: every ``horizon-inject`` spawn carries ``--session <session_id>``
+(spec amendment 07-D1 — the composer bakes a provenance footer naming
+``--harness {{HARNESS}} --session {{SESSION}}`` into the block and both
+nudges when the flag is present); ``horizon session-end`` has carried
+``--session`` since the close hook landed. The section takes the id from
+``session_info``, the param path from its payload (validated non-empty
+before any spawn); an absent or empty id spawns without the flag, the same
+rule a hand-run probe follows.
 
-Working directory: ``cwd`` is the only selector for session-derived spawns, and
-it arrives as ``""`` when ``resolve_context_cwd()`` returns ``None`` (no
-``terminal.cwd`` configured — the local CLI's "relies on the launch dir"
-fallback lives in ``resolve_agent_cwd()``, not in ``resolve_context_cwd()``).
-It can also arrive NON-EMPTY BUT WRONG: a placeholder ``terminal.cwd: "."``
-resolves to the home fallback (/home/andre). The plugin never walks the
-filesystem for stores itself — store existence is the bin's answer, one rule.
-The section spawns ``horizon-inject --json`` for the best candidate (the
-session cwd, then the launch dir); a storeless answer defers once to the next
-candidate, whose store wins when it has one, and otherwise the first
-candidate's text stands — a genuinely storeless project dir still gets its
-nudge, and a storeless $HOME stays silent. The answer's ``store`` field is
-what the close hook records against. The pre_llm_call path never distrusts
-(its repo paths come from the model's own tool-call parameters and are ground
-truth); a storeless answer there is silence — the nudge never fires from a
-param probe.
+Subagent exclusion (ticket 06): the two paths split. The param path really
+excludes children — its payload carries ``parent_session_id`` whenever the
+core built a delegate child (wired 2026-07-27), and the guard below skips on
+it. The section path accepts the noise: the session-info mapping still
+exposes only ``session_id``, ``model``, ``provider``, ``platform``,
+``profile_name`` and ``cwd`` — no parent/depth discriminator, and dropping
+the section for cwd-less session-info would silence real sessions too — so
+it fails open, the pi adapter's trade, carried as the upstream ask. The
+guard still accepts every convention the core might adopt
+(``parent_session_id``, ``is_subagent``, ``delegation_depth``,
+``origin: "subagent"``) and the explicit ``HORIZON_SUBAGENT=1`` opt-out.
 
-Close: ``on_session_finalize`` (the real close hook: process exit, /new,
-/reset — research/10, Hermes row) runs ``horizon session-end --harness hermes
---session <id> --store <the store the injection answer carried>`` with no
-``--summary``: the record carries ``summary: null``, never a fabricated
-summary. A session that never injected (no stashed store) falls back to
-``--cwd`` with the first cwd candidate, the reduced shape of the old
-distrust walk. Hooks fail open (D2): an unresolvable or failing bin injects
-nothing, records nothing, and the session proceeds.
+Candidate rule (ticket 06): a non-empty session cwd is the ONLY candidate —
+the section spawns ``horizon-inject`` for it exactly once and never defers
+to the process working directory. That defer existed for the pre-0.21.2
+empty-cwd shape; hermes 0.21.2 resolves the ``terminal.cwd: "."`` placeholder
+to the home fallback (``tools/terminal_scope.py``,
+``_resolve_scope_cwd_placeholder``), so gateway/telegram/cron sessions now
+carry ``cwd=/home/andre`` — real but storeless — and horizon-inject's own
+$HOME-silence answers ``""``. That silence is the "silence on absence"
+philosophy holding, not failing: home-cwd sessions were never project-dir
+sessions, and their horizons arrive via the param path; freezing the launch
+dir's nudge behind them (the old defer) was the F5 false-nudge bug. An empty
+cwd (the local CLI with ``terminal.cwd`` unset: ``resolve_context_cwd()``
+returns ``None``) still falls back to the process working directory, the
+launch dir. The plugin never walks the filesystem for stores itself — store
+existence is the bin's answer (``--json``'s ``store`` field), one rule; a
+storeless answer is taken verbatim (the nudge for a storeless project dir,
+silence for $HOME). The pre_llm_call path never distrusts (its repo paths
+come from the model's own tool-call parameters and are ground truth); a
+storeless answer there is silence — the nudge never fires from a param
+probe.
+
+Multi-store stash (ticket 05): ``_session_store`` maps session id -> the SET
+of stores this session's injections were composed from. ``_section_text``
+stashes its answer's store; ``_pre_llm_call`` stashes the store behind every
+store-backed param injection — a telegram session that touched three
+projects stashes three stores.
+
+Close: ``on_session_finalize`` runs ``horizon session-end --harness hermes
+--session <id> --store <store>`` ONCE PER STASHED STORE — every store that
+injected records, so a multi-store session leaves one record per project,
+each honest in its own log, with ``summary: null`` (never a fabricated
+summary). The partial-close world is accepted and documented (research/02):
+the hook fires ONLY on CLI /new, gateway /new|/reset, gateway shutdown, and
+TUI close — ``cron_complete``, ``cli_close``, ``agent_close``, and
+``compression`` book state.db rows but fire no hook, so cron and plain-CLI/
+kanban sessions that never finalize record nothing (documented degradation,
+carried as the upstream ask). A session that never injected (no stash) falls
+back to ``--cwd`` with the first cwd candidate — the payload cwd (absent at
+every 0.21.2 finalize site), then the process working directory;
+session-end on a storeless cwd is a safe no-op. Hooks fail open (D2): an
+unresolvable or failing bin injects nothing, records nothing, and the
+session proceeds — and one store's failing session-end never blocks the
+others.
 """
 
 from __future__ import annotations
@@ -122,8 +152,9 @@ def _parse_answer(stdout: object) -> dict | None:
     Anything off-shape is a failed probe (None), never an injection — the
     plugin trusts only the total answer the composer documents. The store
     field is the one store-existence rule: a str is the store the answer was
-    composed from, None is storeless (silence on the param path, a defer
-    candidate on the section path)."""
+    composed from (stashed for the close hook on both paths), None is
+    storeless (silence on the param path, the verbatim nudge-or-silence
+    answer on the section path)."""
     if not isinstance(stdout, str) or not stdout.strip():
         return None
     try:
@@ -138,13 +169,25 @@ def _parse_answer(stdout: object) -> dict | None:
     return {"text": parsed["text"], "store": store}
 
 
-def _spawn_answer(cwd: str) -> dict | None:
+def _inject_args(cwd: str, session_id: object) -> list[str]:
+    """The horizon-inject argv for one candidate cwd: the total-answer flags
+    plus the session id (spec amendment 07-D1 — the composer bakes the
+    provenance footer from --harness/--session, so every adapter spawn rides
+    the id it holds). An absent or empty id spawns without the flag — the
+    same no-footer rule a hand-run probe follows."""
+    args = ["--harness", HARNESS]
+    if isinstance(session_id, str) and session_id:
+        args += ["--session", session_id]
+    return args + ["--json", "--cwd", cwd]
+
+
+def _spawn_answer(cwd: str, session_id: object = "") -> dict | None:
     """horizon-inject --json for one cwd, parsed; None on any failure (D2).
 
     Fail open: an unresolvable bin, a timeout, a nonzero exit, or an
     off-shape payload all mean the same thing — this probe never happened."""
     try:
-        status, stdout, _stderr = _spawn_bin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", cwd])
+        status, stdout, _stderr = _spawn_bin("horizon-inject", _inject_args(cwd, session_id))
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return None  # fail open (D2): unresolvable bin injects nothing
     if status != 0:
@@ -175,37 +218,33 @@ def _is_subagent(session_info) -> bool:
 
 
 def _cwd_candidates(session_cwd: object) -> list[str]:
-    """The cwd candidates for a session-derived spawn, best-first.
+    """The cwd candidates for a session-derived spawn, best-first — at most one.
 
-    The session cwd (when a non-empty string) leads; the process working
-    directory (the launch dir) follows when it differs. Order is all the
-    plugin knows: store existence is the bin's answer (--json's store
-    field), never a local walk — the only path knowledge left here is
-    spawning bins and remembering what they answered."""
+    Ticket 06: a non-empty session cwd is the ONLY candidate; the process
+    working directory follows ONLY when the session cwd is empty (the local
+    CLI's unset ``terminal.cwd`` — the launch dir). Store existence is the
+    bin's answer (--json's store field), never a local walk — the only path
+    knowledge left here is spawning bins and remembering what they
+    answered."""
 
-    candidates: list[str] = []
     if isinstance(session_cwd, str) and session_cwd.strip():
-        candidates.append(session_cwd)
+        return [session_cwd]
     try:
         proc_cwd = os.getcwd()
     except OSError:
-        proc_cwd = ""
-    if proc_cwd and proc_cwd not in candidates:
-        candidates.append(proc_cwd)
-    return candidates
+        return []
+    return [proc_cwd] if proc_cwd else []
 
 
 def _resolve_horizon_cwd(session_cwd: object) -> str:
     """The cwd for a session-derived spawn with no stashed store, "" when unusable.
 
-    Reduced to candidate order now that store existence is the bin's answer:
-    the first candidate stands (the session cwd when non-empty, else the
-    process working directory). The old distrust walk — a storeless session
-    cwd deferring to a launch dir with a visible store — lives where the
-    answer is: _section_text spawns --json and tries the next candidate when
-    the first comes back storeless. This fallback is for sessions that never
-    injected, where the first candidate is the best guess and session-end on
-    a storeless cwd is a safe no-op anyway.
+    Candidate order (ticket 06): the session cwd when non-empty, else the
+    process working directory — the first candidate stands, and with the
+    single-candidate rule that is the whole list. Used only by the close
+    hook's no-stash fallback: the session never injected, the first
+    candidate is the best guess, and session-end on a storeless cwd is a
+    safe no-op anyway.
     """
     candidates = _cwd_candidates(session_cwd)
     return candidates[0] if candidates else ""
@@ -225,46 +264,28 @@ def _section_text(session_info) -> str:
             return ""
         if _is_subagent(session_info):
             return ""
-        # The cwd candidates: the session cwd, then the process working
-        # directory (the launch dir). The bin's --json answer is the one
-        # store-existence rule: spawn for the first candidate; a storeless
-        # answer defers once to the next candidate, whose store wins when it
-        # has one — the gateway resolves a placeholder terminal.cwd ("." on
-        # this machine) to the home fallback /home/andre, non-empty but
-        # wrong, so trusting a storeless first answer verbatim would freeze
-        # the nudge instead of the launch dir's real horizon. When no
-        # candidate has a store the FIRST answer's text stands: a genuinely
-        # storeless project dir still gets its nudge, and a storeless $HOME
-        # stays silent (its answer is "").
-        #
-        # Documented hazard (kept visible): in the gateway the process cwd is
-        # the gateway's WorkingDirectory (/home/andre/.hermes), and
-        # horizon-inject's resolveStore climbs ANCESTORS from every candidate
-        # — so a store appearing at /home/andre/.horizon would also win the
-        # defer for storeless sessions and freeze into EVERY such session's
-        # system prompt.
-        answer = None
-        store_answer = None
-        for candidate in _cwd_candidates(session_info.get("cwd")):
-            got = _spawn_answer(candidate)
-            if got is None:
-                continue  # failed probe: this candidate never answered
-            if answer is None:
-                answer = got  # the first answer's text stands when no store appears
-            if got["store"] is not None:
-                store_answer = got
-                break
+        # The candidate (ticket 06): a non-empty session cwd is the ONLY
+        # candidate — one spawn, no process-cwd defer. The defer existed for
+        # the pre-0.21.2 empty-cwd shape (terminal.cwd "." resolving to the
+        # gateway process cwd); 0.21.2 resolves the placeholder to $HOME
+        # instead, so the gateway home session's answer is horizon-inject's
+        # own $HOME silence — correct, nothing to defer to. An empty cwd
+        # falls back to the launch dir (the local CLI's shape) and its
+        # answer stands the same way. Store existence is the bin's answer:
+        # a storeless answer is taken verbatim — the nudge for a storeless
+        # project dir, silence for $HOME.
+        sid = session_info.get("session_id")
+        candidates = _cwd_candidates(session_info.get("cwd"))
+        answer = _spawn_answer(candidates[0], sid) if candidates else None
         if answer is None:
             return ""
-        if store_answer is not None:
-            answer = store_answer
-        # Remember the store THIS session's horizon was composed from, so the
-        # close hook can hand it back with --store even though the finalize
-        # payload arrives with no cwd and the process may have chdir'd by
-        # then (_session_store below).
-        sid = session_info.get("session_id")
-        if store_answer is not None and isinstance(sid, str) and sid:
-            _session_store[sid] = store_answer["store"]
+        if answer["store"] is not None and isinstance(sid, str) and sid:
+            # Remember the store THIS session's horizon was composed from, so
+            # the close hook can hand it back with --store even though the
+            # finalize payload arrives with no cwd and the process may have
+            # chdir'd by then (_session_store below — a set: the param path
+            # adds its own stores alongside this one).
+            _session_store.setdefault(sid, set()).add(answer["store"])
         return answer["text"]
     except Exception:  # noqa: BLE001 — the section must never break a session
         logger.warning("deep-horizon section render failed", exc_info=True)
@@ -272,19 +293,22 @@ def _section_text(session_info) -> str:
 
 
 def _on_session_finalize(payload=None, **kwargs) -> None:
-    """Close hook: append a session record with summary omitted (null).
-    Swallows everything — finalize is teardown; nothing here may break it.
+    """Close hook: one session-end record per stashed store, summary omitted
+    (null). Swallows everything — finalize is teardown; nothing here may
+    break it.
 
     Sync by contract: hermes' invoke_hook dispatches callbacks synchronously
-    and never awaits a coroutine (verified live, 2026-09-10) — an async def
-    here returns a coroutine nobody runs and the hook body silently never
-    executes. Keep this a plain def; there is nothing to await anyway.
+    (0.21.2 also resolves coroutine results, but sync stays correct) — an
+    async def here would have silently never executed before it. Keep this a
+    plain def; there is nothing to await anyway.
 
     The dispatcher calls hooks with FLAT kwargs — session_id=…, platform=…,
     reason=… (plugins_dispatch.py:159) — not a single payload dict, so a
     payload-only signature never binds and the hook no-ops (verified live,
     2026-09-11). Accept both shapes: read session_id/cwd from the kwargs
-    first, then from a positional payload dict."""
+    first, then from a positional payload dict. The hook fires only on CLI
+    /new, gateway /new|/reset, gateway shutdown, and TUI close (research/02)
+    — the partial-close world this loop's fail-open per store lives in."""
     try:
         session_id = kwargs.get("session_id")
         if not isinstance(session_id, str) or not session_id:
@@ -292,30 +316,37 @@ def _on_session_finalize(payload=None, **kwargs) -> None:
             session_id = info.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             return
-        # The record must land in the store the session actually injected
-        # from. Preferred source is the store the SECTION froze for this
-        # session (the --json answer's store field, _session_store) — handed
-        # straight back with --store, immune to the payload's missing cwd and
-        # to any chdir since turn one. Without a stash (a session that never
-        # injected, or a startup whose spawn failed) the cwd candidates
-        # remain the fallback: the payload cwd (if a future core adds it),
-        # then the process cwd — the first candidate stands; session-end on
-        # a storeless cwd is a safe no-op.
         info = payload if isinstance(payload, dict) else {}
-        store = _session_store.pop(session_id, "")
-        args = ["session-end", "--harness", HARNESS, "--session", session_id]
-        if store:
-            args += ["--store", store]
-        else:
-            cwd = _resolve_horizon_cwd(
-                kwargs.get("cwd") if isinstance(kwargs.get("cwd"), str) and kwargs.get("cwd") else info.get("cwd")
-            )
-            if cwd:
-                args += ["--cwd", cwd]
-        try:
-            _spawn_bin("horizon", args)
-        except (FileNotFoundError, subprocess.SubprocessError, OSError):
-            return  # fail open (D2)
+        # One record per stashed store (ticket 05): pop the whole set, then
+        # session-end once per store — a session that touched three projects
+        # leaves three records, each honest in its own project's log (the
+        # store format allows one session id on many records; the telegram
+        # shape is exactly why). Sorted for determinism: a set iterates
+        # arbitrarily and the record order should not. The loop fails open
+        # PER STORE (D2) — one store's unresolvable bin or failed spawn
+        # never blocks the others.
+        stores = _session_store.pop(session_id, set())
+        if stores:
+            for store in sorted(stores):
+                args = ["session-end", "--harness", HARNESS, "--session", session_id, "--store", store]
+                try:
+                    _spawn_bin("horizon", args)
+                except (FileNotFoundError, subprocess.SubprocessError, OSError):
+                    continue  # fail open (D2) — the remaining stores still record
+            return
+        # No stash (a session that never injected, or whose spawns failed):
+        # the cwd candidates remain the fallback — the payload cwd (if a
+        # future core adds it), then the process cwd; the first candidate
+        # stands, and session-end on a storeless cwd is a safe no-op.
+        cwd = _resolve_horizon_cwd(
+            kwargs.get("cwd") if isinstance(kwargs.get("cwd"), str) and kwargs.get("cwd") else info.get("cwd")
+        )
+        if cwd:
+            args = ["session-end", "--harness", HARNESS, "--session", session_id, "--cwd", cwd]
+            try:
+                _spawn_bin("horizon", args)
+            except (FileNotFoundError, subprocess.SubprocessError, OSError):
+                return  # fail open (D2)
     except Exception:  # noqa: BLE001
         logger.warning("deep-horizon session finalize failed", exc_info=True)
 
@@ -350,16 +381,19 @@ _seen: dict[tuple[str, str], int] = {}
 # guard); see _pre_llm_call.
 _scanned: dict[str, int] = {}
 
-# Per-session store memory for the close hook. The finalize payload carries
-# no cwd key (verified live, 2026-09-10), and by exit time the process cwd
-# may have moved (the -z runner chdirs mid-session), so the store a record
-# belongs in is the one the injection answer named at freeze time — the
-# "store" field of the horizon-inject --json answer the section rendered.
-# _section_text stashes session_id -> store; _on_session_finalize hands it
-# back with --store. Entries pop on use; a session whose finalize never
-# fires (a harness gap) leaves at most one short string behind — the same
-# growth shape as _seen below.
-_session_store: dict[str, str] = {}
+# Per-session store memory for the close hook — session id -> the SET of
+# stores this session's injections were composed from. The finalize payload
+# carries no cwd key at any 0.21.2 dispatch site (research/02), and by exit
+# time the process cwd may have moved, so the stores a record belongs in are
+# the ones the horizon-inject --json answers named at injection time.
+# _section_text stashes the section answer's store; _pre_llm_call stashes
+# every store-backed param injection's store — a telegram session that
+# touched three projects stashes three. _on_session_finalize records once
+# per stashed store and pops the entry whole. A session whose finalize never
+# fires (the partial-close world: cron_complete, cli_close, agent_close,
+# compression book rows but fire no hook — research/02) leaves a few short
+# strings behind — the same growth shape as _seen below.
+_session_store: dict[str, set[str]] = {}
 
 # Allowlist: which tools' params are scanned, and which string params per
 # tool count as path-bearing. terminal's command string is where ``git -C`` /
@@ -573,7 +607,7 @@ def _pre_llm_call(
                 continue
             _seen[(session_id, repo)] = 1
             try:
-                status, stdout, _stderr = _spawn_bin("horizon-inject", ["--harness", HARNESS, "--json", "--cwd", repo])
+                status, stdout, _stderr = _spawn_bin("horizon-inject", _inject_args(repo, session_id))
             except (FileNotFoundError, subprocess.SubprocessError, OSError):
                 # Release the claim: a transient spawn failure must never
                 # silence this repo for the rest of the session — the next
@@ -589,6 +623,10 @@ def _pre_llm_call(
                 continue
             if answer["store"] is None:
                 continue  # storeless: silence, never the nudge — remembered for the session
+            # Stash the store THIS injection was composed from (ticket 05):
+            # finalize records once per stashed store, so the param path
+            # contributes its stores alongside whatever the section froze.
+            _session_store.setdefault(session_id, set()).add(answer["store"])
             if answer["text"]:
                 blocks.append(answer["text"])
         return {"context": "\n\n".join(blocks)}
