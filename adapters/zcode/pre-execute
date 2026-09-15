@@ -24,16 +24,24 @@
 # the once-per-store dedup lives HERE — the harness will not do it.
 #
 # The dedup memory is a per-session marker file,
-# ${TMPDIR:-/tmp}/horizon-zcode-<sanitized session id>, one record per line:
+# ${XDG_CACHE_HOME:-$HOME/.cache}/deep-horizon/markers/horizon-zcode-<sanitized
+# session id>, one record per line:
 # `d <dir>` — a dir the bin has already answered for (storeless answers
 # included: a storeless repo is remembered as silence and never re-spawns,
 # which is what keeps a cd-less session from paying a node startup on every
 # call); `s <store>` — a store this session has been served, the launch
 # store included (session-start seeds both, which is what keeps the param
-# path from re-injecting the launch repo's own horizon). No marker, no
-# injection: once-per-store is the difference between a horizon and spam,
-# so a session that cannot remember (unwritable TMPDIR, no session id)
-# stays silent rather than re-injecting on every matching call. Records are
+# path from re-injecting the launch repo's own horizon). The file moved here
+# from ${TMPDIR:-/tmp} in 0.4 (ticket 04): /tmp dies on reboot and the
+# Sep-13 reboot erased every marker, which is tolerable for this dedup
+# alone but not now that session-start's reconciliation reads markers as
+# the record of which sessions touched which stores. The move is clean —
+# legacy /tmp markers are neither read nor migrated (an upgrade-day gap
+# shaped like a reboot: one re-probe per dir, never a double injection).
+# No marker, no injection: once-per-store is the difference between a
+# horizon and spam, so a session that cannot remember (unwritable cache
+# dir, no session id) stays silent rather than re-injecting on every
+# matching call. Records are
 # appended (small appends are atomic enough on POSIX) and reads are
 # exact-line matches, so a garbage or interleaved line can only cost a
 # redundant probe, never a double injection. One race is accepted rather
@@ -88,8 +96,9 @@ payload=$(cat 2>/dev/null) || exit 0
 # the documented pair (README section 6); grep is the marker's exact-line
 # read — without it the once-per-store check silently never matches, which
 # would re-inject on every call; tr sanitizes the session id into a
-# filename. Missing any of them: silence, not a degraded injection.
-for tool in jq node grep tr; do
+# filename; mkdir builds the marker's cache dir. Missing any of them:
+# silence, not a degraded injection.
+for tool in jq node grep tr mkdir; do
   command -v $tool >/dev/null 2>&1 || exit 0
 done
 
@@ -97,8 +106,11 @@ done
 # and camelCase native — probed bundle shape); ZCODE_SESSION_ID is the env
 # fallback the harness exports too. No id, no dedup key: silence, for the
 # reason in the header. The id is sanitized before it becomes a filename —
-# an id carrying / or newline must not write outside ${TMPDIR:-/tmp} (same
-# recipe in session-start's seed).
+# an id carrying / or newline must not write outside the markers dir (same
+# recipe in session-start's seed and its reconciliation scan). The id also
+# rides every bin spawn below (--session, the 0.4 spec amendment: the
+# composed footer names the session verbatim; accepted by today's bin as a
+# no-behavior value flag, the footer lands with the core slice).
 sid=$(printf '%s' "$payload" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || exit 0
 [ -n "$sid" ] || sid=${ZCODE_SESSION_ID:-}
 safe=$(printf '%s' "$sid" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null) || safe=""
@@ -145,12 +157,21 @@ process.stdout.write(out.length?out.join("\n")+"\n":"");
 ' 2>/dev/null) || exit 0
 [ -n "$dirs" ] || exit 0
 
-# The marker: materialize it empty. The launch dir is NOT seeded here —
+# The marker: materialize it empty under the cache dir (the same file
+# session-start seeds and reconciles — see the header for the move from
+# ${TMPDIR:-/tmp}). The launch dir is NOT seeded here —
 # only session-start seeds (its fire knows an injection happened); an
 # unseeded launch dir is probed honestly like any other dir. Then require
 # the marker writable: an unwritable marker means no memory, and no
 # memory means silence (see the header).
-marker=${TMPDIR:-/tmp}/horizon-zcode-$safe
+cache_base=${XDG_CACHE_HOME:-}
+if [ -z "$cache_base" ]; then
+  [ -n "$HOME" ] && cache_base=$HOME/.cache
+fi
+[ -n "$cache_base" ] || exit 0
+markers_dir=$cache_base/deep-horizon/markers
+mkdir -p "$markers_dir" 2>/dev/null || exit 0
+marker=$markers_dir/horizon-zcode-$safe
 [ -f "$marker" ] || : >"$marker" 2>/dev/null
 { [ -f "$marker" ] && [ -w "$marker" ]; } || exit 0
 
@@ -158,12 +179,13 @@ known() { grep -Fxq -- "$1" "$marker" 2>/dev/null; }
 
 # Bin resolution (hermes pattern, as in session-start): an installed package
 # uses the global bin on PATH; a repo checkout runs bin/horizon-inject.js
-# with node, because the bare bins are not linked yet.
+# with node, because the bare bins are not linked yet. The spawn carries
+# --session (see the session id comment above).
 here=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
 if command -v horizon-inject >/dev/null 2>&1; then
-  ask() { horizon-inject --harness zcode --json --cwd "$1" 2>/dev/null; }
+  ask() { horizon-inject --harness zcode --json --session "$sid" --cwd "$1" 2>/dev/null; }
 elif command -v node >/dev/null 2>&1 && [ -f "$here/../../bin/horizon-inject.js" ]; then
-  ask() { node "$here/../../bin/horizon-inject.js" --harness zcode --json --cwd "$1" 2>/dev/null; }
+  ask() { node "$here/../../bin/horizon-inject.js" --harness zcode --json --session "$sid" --cwd "$1" 2>/dev/null; }
 else
   exit 0
 fi

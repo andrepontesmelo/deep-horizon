@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { copyFileSync, chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seed, withDir } from "./harness.js";
 
@@ -1308,6 +1308,32 @@ test("hermes-param-release. a failed or nonzero spawn releases the (session, rep
 
 const ZCODE_DIR = join(ROOT, "adapters", "zcode");
 
+// The 0.4 marker home (ticket 04): ${XDG_CACHE_HOME:-$HOME/.cache}/
+// deep-horizon/markers/horizon-zcode-<sid> — reboot durability matters now
+// that session-start's reconciliation reads markers as the record of which
+// sessions touched which stores.
+function markerPath(cacheBase, sid) {
+  return join(cacheBase, "deep-horizon", "markers", `horizon-zcode-${sid}`);
+}
+
+// The documented toolset as a COMPLETE PATH, the horizon bins deliberately
+// absent: with horizon resolvable nowhere, the hooks' own bin resolution
+// falls to this checkout's bin/ sibling — the zcode tests prove the
+// worktree, not whatever ~/.local/bin's horizon symlinks point at today
+// (they target the main checkout). Tests that count spawns instead win the
+// resolution with a shim ahead of the real PATH (shimRunner below).
+function hermeticPath(dir) {
+  const fakeBin = join(dir, "fakebin-hermetic");
+  mkdirSync(fakeBin, { recursive: true });
+  for (const tool of ["sh", "jq", "node", "grep", "tr", "dirname", "cat", "mkdir"]) {
+    const resolved = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
+    if (resolved.status === 0 && resolved.stdout.trim()) {
+      try { symlinkSync(resolved.stdout.trim(), join(fakeBin, tool)); } catch {}
+    }
+  }
+  return fakeBin;
+}
+
 function runHook(script, { input, cwd, env = {} } = {}) {
   const r = spawnSync("sh", [script], {
     input: input ?? "",
@@ -1342,7 +1368,7 @@ function sessionStartPayload(cwd, extra = {}) {
   });
 }
 
-test("81. the ZCode session-start hook injects ONLY on fresh startups, through the additionalContext envelope the harness requires", async () => {
+test("81. the ZCode session-start hook injects on every fresh app-instance opening — startup AND resume — through the additionalContext envelope the harness requires", async () => {
   // Probed zcode.cjs (3.11.2-22): parseHookStdout (jni) ignores stdout that
   // does not start with "{" — plain text never injects — and the output
   // mapping (Oni) reads only camelCase "additionalContext" into the session
@@ -1350,14 +1376,15 @@ test("81. the ZCode session-start hook injects ONLY on fresh startups, through t
   // the envelope must carry exactly that one key.
   await withDir(async (dir) => {
     seed(dir, ["ZCode startup gap"]);
-    const r = runHook(join(ZCODE_DIR, "session-start"), {
-      input: sessionStartPayload(dir),
+    const run = (payload) => runHook(join(ZCODE_DIR, "session-start"), {
+      input: payload,
       cwd: dir,
-      // The hook now writes the param trigger's seed marker under TMPDIR;
-      // every run owns a private one (unique session ids keep runs apart
-      // even where TMPDIR is shared).
-      env: { TMPDIR: dir },
+      // The hooks write their markers under XDG_CACHE_HOME; every run owns
+      // a private one (unique session ids keep runs apart even where the
+      // cache root is shared).
+      env: { XDG_CACHE_HOME: dir, PATH: hermeticPath(dir) },
     });
+    const r = run(sessionStartPayload(dir));
     assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
     const parsed = JSON.parse(r.stdout);
     assert.deepEqual(Object.keys(parsed).sort(), ["additionalContext"],
@@ -1366,15 +1393,16 @@ test("81. the ZCode session-start hook injects ONLY on fresh startups, through t
     assert.ok(parsed.additionalContext.includes("gap-1  ZCode startup gap"));
     assert.ok(parsed.additionalContext.includes("`horizon detail <id>` prints it"),
       "the zcode path must carry the core's detail pointer");
-    // Resume replays the persisted history (the original injection rides in
-    // it), so only source "startup" injects.
-    const resumed = runHook(join(ZCODE_DIR, "session-start"), {
-      input: sessionStartPayload(dir, { source: "resume" }),
-      cwd: dir,
-      env: { TMPDIR: dir },
-    });
+    // Resume injects too (ticket 04, F4): additionalContext is ephemeral
+    // (probed: 0 persisted hook_context rows in 15,208), so a session
+    // resumed in a NEW app instance replays its history without the old
+    // block — every instance must hand its session the horizon once, and
+    // the old startup-only matcher was the bug. (A resume of the SAME
+    // session seconds later is the simultaneity window's job — test 86.)
+    const resumed = run(sessionStartPayload(dir, { source: "resume", sessionId: "sess_z1r", session_id: "sess_z1r" }));
     assert.equal(resumed.code, 0);
-    assert.equal(resumed.stdout, "", "a resumed session must not re-inject");
+    assert.ok(JSON.parse(resumed.stdout).additionalContext.startsWith("This project has a horizon"),
+      "a resumed session in a new instance must be re-injected (the F4 fix)");
     // The payload has no subagent discriminator (probed: no parent_session_id,
     // no task_type; agentName is ambiguous), so no guard is built — a payload
     // of the real shape injects, fail-open.
@@ -1386,7 +1414,7 @@ test("82. the ZCode session-start hook fails open: malformed stdin, empty stdin,
   await withDir(async (dir) => {
     seed(dir, ["ZCode fail-open gap"]);
     for (const input of ["not json", "", "{}"]) {
-      const r = runHook(join(ZCODE_DIR, "session-start"), { input, cwd: dir, env: { TMPDIR: dir } });
+      const r = runHook(join(ZCODE_DIR, "session-start"), { input, cwd: dir, env: { XDG_CACHE_HOME: dir } });
       assert.equal(r.code, 0, `input ${JSON.stringify(input)} must not fail the hook`);
       assert.equal(r.stdout, "", `input ${JSON.stringify(input)} must inject nothing`);
     }
@@ -1407,7 +1435,7 @@ test("82. the ZCode session-start hook fails open: malformed stdin, empty stdin,
     const r = runHook(join(isolated, "session-start"), {
       input: sessionStartPayload(dir),
       cwd: dir,
-      env: { PATH: fakeBin, TMPDIR: dir },
+      env: { PATH: fakeBin, XDG_CACHE_HOME: dir },
     });
     assert.equal(r.code, 0, "a missing bin must never fail the hook");
     assert.equal(r.stdout, "", "a missing bin must inject nothing");
@@ -1426,7 +1454,7 @@ test("83. the ZCode session-start hook carries the session-end duty: a session i
     const r = runHook(join(ZCODE_DIR, "session-start"), {
       input: sessionStartPayload(dir, { sessionId: sid, session_id: sid }),
       cwd: dir,
-      env: { TMPDIR: dir },
+      env: { XDG_CACHE_HOME: dir, PATH: hermeticPath(dir) },
     });
     assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
     const parsed = JSON.parse(r.stdout);
@@ -1443,7 +1471,7 @@ test("83. the ZCode session-start hook carries the session-end duty: a session i
     const bare = runHook(join(ZCODE_DIR, "session-start"), {
       input: sessionStartPayload(dir, { sessionId: null, session_id: null }),
       cwd: dir,
-      env: { TMPDIR: dir },
+      env: { XDG_CACHE_HOME: dir, PATH: hermeticPath(dir) },
     });
     assert.equal(bare.code, 0);
     const bareParsed = JSON.parse(bare.stdout);
@@ -1459,7 +1487,7 @@ test("83. the ZCode session-start hook carries the session-end duty: a session i
       const none = runHook(join(ZCODE_DIR, "session-start"), {
         input: sessionStartPayload(storeless, { sessionId: sid, session_id: sid }),
         cwd: storeless,
-        env: { HOME: storeless, TMPDIR: dir },
+        env: { HOME: storeless, XDG_CACHE_HOME: dir, PATH: hermeticPath(storeless) },
       });
       assert.equal(none.code, 0);
       assert.equal(none.stdout, "", "a storeless dir must inject nothing, tail included");
@@ -1472,9 +1500,13 @@ test("84. the ZCode adapter ships its config and scripts: .zcode/config.json wir
   assert.ok(existsSync(configPath), "the project-local .zcode/config.json must be checked in");
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   assert.equal(config.hooks.enabled, true, "config-file hooks are disabled by default; enabled:true is required");
-  // SessionStart, matcher startup only — the only event the adapter wires.
+  // SessionStart, matcher "startup|resume" — every fresh app-instance
+  // opening injects (ticket 04: additionalContext is ephemeral, so a
+  // session resumed in a new instance must be re-served; the pipe form is
+  // the supported plain-token spelling — the bundle's $Nr does
+  // split("|").includes).
   assert.ok(Array.isArray(config.hooks.events.SessionStart) && config.hooks.events.SessionStart.length === 1);
-  assert.equal(config.hooks.events.SessionStart[0].matcher, "startup");
+  assert.equal(config.hooks.events.SessionStart[0].matcher, "startup|resume");
   assert.equal(config.hooks.events.Stop, undefined, "no Stop hook is wired — SessionStart is the adapter's only event");
   // The event points at the shipped script, and the package ships it executable.
   const startCmd = config.hooks.events.SessionStart[0].hooks[0].command;
@@ -1486,6 +1518,151 @@ test("84. the ZCode adapter ships its config and scripts: .zcode/config.json wir
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     assert.ok(pkg.files.includes(`adapters/zcode/${name}`), `package.json files must ship adapters/zcode/${name}`);
   }
+});
+
+test("85. the ZCode markers moved to the XDG cache dir: session-start seeds ${XDG_CACHE_HOME:-$HOME/.cache}/deep-horizon/markers/ and the legacy tmp path stays empty", async () => {
+  // Ticket 04: /tmp dies on reboot (the Sep-13 reboot erased every marker),
+  // which was tolerable while markers only fed pre-execute's dedup and is
+  // not now that reconciliation (test 87) reads them as the record of which
+  // sessions touched which stores. The move is clean — the legacy path is
+  // neither read nor migrated.
+  await withDir(async (dir) => {
+    seed(dir, ["cache dir gap"]);
+    const sid = "sess_cache1";
+    const r = runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(dir, { sessionId: sid, session_id: sid }),
+      cwd: dir,
+      env: { XDG_CACHE_HOME: dir, PATH: hermeticPath(dir) },
+    });
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    const marker = markerPath(dir, sid);
+    assert.ok(existsSync(marker), "the marker must live under the cache dir");
+    const body = readFileSync(marker, "utf8");
+    assert.ok(body.includes(`d ${dir}\n`), `the launch dir must be seeded, got: ${body}`);
+    assert.ok(body.includes(`s ${join(dir, ".horizon")}\n`), `the launch store must be seeded, got: ${body}`);
+    assert.ok(!existsSync(join(dir, `horizon-zcode-${sid}`)), "no marker may appear at the legacy tmp path");
+    // The HOME fallback: XDG_CACHE_HOME unset, the marker lands under
+    // $HOME/.cache/deep-horizon/markers/.
+    const sid2 = "sess_cache2";
+    const home = join(dir, "home");
+    mkdirSync(home, { recursive: true });
+    const r2 = runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(dir, { sessionId: sid2, session_id: sid2 }),
+      cwd: dir,
+      env: { HOME: home, XDG_CACHE_HOME: "", PATH: hermeticPath(dir) },
+    });
+    assert.equal(r2.code, 0, `hook failed: ${r2.stderr}`);
+    assert.ok(existsSync(markerPath(join(home, ".cache"), sid2)),
+      "XDG_CACHE_HOME unset must fall back to $HOME/.cache");
+    // pre-execute reads the SAME file: the launch dir session-start seeded
+    // is already known to it, so a touch of the launch repo probes nothing.
+    const run = shimRunner(dir, { log: join(dir, "spawns.log"), delegate: join(ROOT, "bin", "horizon-inject.js") });
+    const touch = run({ command: `git -C ${dir} status` }, { sid });
+    assert.equal(touch.stdout, "", "pre-execute must read the cache-dir marker session-start seeded");
+    assert.equal(touch.count, 0, `the seeded launch dir must not even probe, got: ${touch.spawns.join(" | ")}`);
+  }, "horizon-adapter-test-");
+});
+
+test("86. the F7 simultaneity window: an identical seed pair younger than 10s suppresses the second fire whole; outside the window it injects and appends again", async () => {
+  // Two app instances 0.8s apart both fired session-start for one session id
+  // and duplicated the block into one context (proven: sess_15c584a4's
+  // 142-byte marker is the seed pair twice). The dedup key is TIME, not
+  // identity: identical pair + fresh mtime = another instance just injected
+  // = stay silent; anything else — a restart hours later, F4 working —
+  // injects and appends unconditionally, duplicate seed lines being
+  // harmless to pre-execute's grep -Fx reads.
+  await withDir(async (dir) => {
+    seed(dir, ["simultaneity gap"]);
+    const sid = "sess_race1";
+    const fire = () => runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(dir, { sessionId: sid, session_id: sid }),
+      cwd: dir,
+      env: { XDG_CACHE_HOME: dir, PATH: hermeticPath(dir) },
+    });
+    const first = fire();
+    assert.equal(first.code, 0, `hook failed: ${first.stderr}`);
+    assert.ok(JSON.parse(first.stdout).additionalContext.includes("simultaneity gap"));
+    const marker = markerPath(dir, sid);
+    const lines = () => readFileSync(marker, "utf8").trim().split("\n");
+    assert.equal(lines().length, 2, `the first fire seeds exactly the pair, got: ${lines().join(" | ")}`);
+    // The racing second instance: identical pair, mtime seconds old —
+    // suppressed whole (no envelope, no tail, no extra seed lines).
+    const second = fire();
+    assert.equal(second.code, 0);
+    assert.equal(second.stdout, "", "a fire inside the 10s window must inject nothing");
+    assert.equal(lines().length, 2, "the suppressed fire must not touch the marker");
+    // Outside the window (mtime backdated 11s): injects again and appends a
+    // second pair.
+    const stale = new Date(Date.now() - 11000);
+    utimesSync(marker, stale, stale);
+    const third = fire();
+    assert.equal(third.code, 0);
+    assert.ok(JSON.parse(third.stdout).additionalContext.includes("simultaneity gap"),
+      "a stale pair must inject again");
+    assert.equal(lines().length, 4, "the re-injection appends the pair again");
+  }, "horizon-adapter-test-");
+});
+
+test("87. startup reconciliation: an orphan marker over this session's store is closed with horizon session-end (summary null); a live marker and a recorded sid are spared", async () => {
+  // Ticket 03: no close hook (the 7-event enum is exhaustive) and
+  // instruction-only close disproven by data — so at every startup the
+  // adapter scans the markers dir for OTHER sessions' markers whose `s`
+  // line names this session's resolved store, older than 60s (live
+  // concurrent sessions stay out of scope) and not yet recorded in the
+  // store's sessions.jsonl, and runs the real bin for each. Idempotent
+  // twice over: the hook greps first, and the store's own once-guard (same
+  // harness+session_id is a no-op) would eat a repeat anyway. A killed
+  // session (SIGINT, closed terminal) leaves a marker, so signal deaths
+  // reconcile by construction.
+  await withDir(async (dir) => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo, { recursive: true });
+    seed(repo, ["reconcile gap"]);
+    const store = join(repo, ".horizon");
+    mkdirSync(join(dir, "deep-horizon", "markers"), { recursive: true });
+    const backdate = (file, ms) => {
+      const t = new Date(Date.now() - ms);
+      utimesSync(file, t, t);
+    };
+    // The orphan: a dead session's marker over the same store, 2min old.
+    const orphan = markerPath(dir, "sess_orphan");
+    writeFileSync(orphan, `d ${repo}\ns ${store}\n`);
+    backdate(orphan, 120000);
+    // The live one: a concurrent session that started seconds ago — spared.
+    const live = markerPath(dir, "sess_live");
+    writeFileSync(live, `d ${repo}\ns ${store}\n`);
+    backdate(live, 2000);
+    // This session starts over the same store.
+    const fire = (sid) => runHook(join(ZCODE_DIR, "session-start"), {
+      input: sessionStartPayload(repo, { sessionId: sid, session_id: sid }),
+      cwd: repo,
+      env: { XDG_CACHE_HOME: dir, PATH: hermeticPath(dir) },
+    });
+    const r = fire("sess_now");
+    assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
+    assert.ok(JSON.parse(r.stdout).additionalContext.includes("reconcile gap"),
+      "the current session's injection must be unaffected by the scan");
+    const sessionsFile = join(store, "sessions.jsonl");
+    assert.ok(existsSync(sessionsFile), "reconciliation must have written the store's sessions.jsonl");
+    const records = () => readFileSync(sessionsFile, "utf8").trim().split("\n")
+      .filter((l) => l.length > 0).map((l) => JSON.parse(l));
+    let recs = records();
+    assert.equal(recs.length, 1, `exactly the orphan must record, got: ${JSON.stringify(recs)}`);
+    assert.equal(recs[0].harness, "zcode");
+    assert.equal(recs[0].session_id, "sess_orphan");
+    assert.equal(recs[0].summary, null, "the reconciliation record carries summary: null");
+    assert.deepEqual(recs[0].gaps_added, []);
+    assert.deepEqual(recs[0].gaps_closed, []);
+    // A second startup (different session, same store): the orphan is now
+    // recorded — the grep spares it; the live marker is still inside its
+    // 60s window; the firing sessions seed markers, not records.
+    assert.equal(fire("sess_now2").code, 0);
+    recs = records();
+    assert.equal(recs.length, 1, `no double record for the recorded orphan, got: ${JSON.stringify(recs)}`);
+    assert.ok(!recs.some((rec) => rec.session_id === "sess_live"), "a live session must never be reconciled");
+    assert.ok(!recs.some((rec) => rec.session_id === "sess_now" || rec.session_id === "sess_now2"),
+      "the firing sessions must not record themselves");
+  }, "horizon-adapter-test-");
 });
 
 // --- ZCode pre-execute: the param trigger (PreToolUse → additionalContext) ---
@@ -1541,7 +1718,7 @@ function shimRunner(dir, { log, answer, delegate } = {}) {
       input: preExecutePayload(dir, toolInput, { sessionId: sid, session_id: sid }),
       cwd: dir,
       env: {
-        TMPDIR: dir,
+        XDG_CACHE_HOME: dir,
         PATH: `${fakeBin}:${process.env.PATH}`,
         LOG: log,
         ...(delegate ? { DELEGATE: delegate } : { ANSWER: typeof ans === "string" ? ans : JSON.stringify(ans) }),
@@ -1560,7 +1737,7 @@ test("zcode-param-1. the pre-execute hook injects a store-backed touched dir onc
     const call = () => runHook(join(ZCODE_DIR, "pre-execute"), {
       input: preExecutePayload(dir, { command: `git -C ${repo} status` }),
       cwd: dir,
-      env: { TMPDIR: dir },
+      env: { XDG_CACHE_HOME: dir, PATH: hermeticPath(dir) },
     });
     const first = call();
     assert.equal(first.code, 0, `hook failed: ${first.stderr}`);
@@ -1588,8 +1765,8 @@ test("zcode-param-2. the bin is asked exactly once per fresh dir: storeless sile
     assert.equal(r.code, 0);
     assert.equal(r.stdout, "", "a storeless dir must stay silent on the param path");
     assert.equal(r.count, 1);
-    assert.equal(r.spawns[0], `--harness zcode --json --cwd ${a}`,
-      `the bin must be asked with the total-answer flags and the candidate dir, got: ${r.spawns[0]}`);
+    assert.equal(r.spawns[0], `--harness zcode --json --session sess_shim1 --cwd ${a}`,
+      `the bin must be asked with the provenance session id, the total-answer flags, and the candidate dir, got: ${r.spawns[0]}`);
     // The identical touch: remembered silence — no re-spawn (this is what
     // keeps a long session from paying a node startup on every call).
     r = run({ command: `ls ${a}` });
@@ -1649,13 +1826,14 @@ test("zcode-param-3. session-start seeds the param marker: the launch store is n
     const start = runHook(join(ZCODE_DIR, "session-start"), {
       input: sessionStartPayload(repo, { sessionId: sid, session_id: sid }),
       cwd: repo,
-      env: { TMPDIR: dir },
+      env: { XDG_CACHE_HOME: dir },
     });
     assert.equal(start.code, 0, `session-start failed: ${start.stderr}`);
     assert.ok(JSON.parse(start.stdout).additionalContext.includes("launch repo gap"),
       "the startup injection must deliver the launch horizon first");
-    // The seed: the launch dir known, the launch store served.
-    const marker = readFileSync(join(dir, `horizon-zcode-${sid}`), "utf8");
+    // The seed: the launch dir known, the launch store served (in the cache
+    // marker dir).
+    const marker = readFileSync(markerPath(dir, sid), "utf8");
     assert.ok(marker.includes(`d ${repo}\n`), `the launch dir must be seeded, got: ${marker}`);
     assert.ok(marker.includes(`s ${join(repo, ".horizon")}\n`), `the launch store must be seeded, got: ${marker}`);
     // Camera on the bin, real composition behind it: the shim logs the ask
@@ -1691,7 +1869,7 @@ test("zcode-param-4. the pre-execute hook fails open: malformed stdin, a payload
     mkdirSync(repo, { recursive: true });
     seed(repo, ["fail-open gap"]);
     for (const input of ["not json", "", "{}"]) {
-      const r = runHook(join(ZCODE_DIR, "pre-execute"), { input, cwd: dir, env: { TMPDIR: dir } });
+      const r = runHook(join(ZCODE_DIR, "pre-execute"), { input, cwd: dir, env: { XDG_CACHE_HOME: dir } });
       assert.equal(r.code, 0, `input ${JSON.stringify(input)} must not fail the hook`);
       assert.equal(r.stdout, "", `input ${JSON.stringify(input)} must inject nothing`);
     }
@@ -1701,7 +1879,7 @@ test("zcode-param-4. the pre-execute hook fails open: malformed stdin, a payload
     const sidless = runHook(join(ZCODE_DIR, "pre-execute"), {
       input: preExecutePayload(dir, { command: `git -C ${repo} status` }, { sessionId: null, session_id: null }),
       cwd: dir,
-      env: { TMPDIR: dir, ZCODE_SESSION_ID: "" },
+      env: { XDG_CACHE_HOME: dir, ZCODE_SESSION_ID: "" },
     });
     assert.equal(sidless.code, 0);
     assert.equal(sidless.stdout, "", "a session without an id must not inject");
@@ -1718,7 +1896,7 @@ test("zcode-param-4. the pre-execute hook fails open: malformed stdin, a payload
     const nojq = runHook(join(ZCODE_DIR, "pre-execute"), {
       input: preExecutePayload(dir, { command: `git -C ${repo} status` }),
       cwd: dir,
-      env: { PATH: fakeBin, TMPDIR: dir },
+      env: { PATH: fakeBin, XDG_CACHE_HOME: dir },
     });
     assert.equal(nojq.code, 0, "a missing jq must never fail the hook");
     assert.equal(nojq.stdout, "", "a missing jq must inject nothing");
@@ -1746,16 +1924,17 @@ test("zcode-param-6. several fresh stores touched by one call concatenate into t
     const shim = join(fakeBin, "horizon-inject");
     // Answer per candidate: the store IS the asked dir and the text names
     // it — a store-backed answer for every dir the script brings, so the
-    // multi-store fire is exercisable with a stateless shim ($5 is --cwd's
-    // value; tmp paths carry no JSON metacharacters).
-    writeFileSync(shim, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LOG\"\nprintf '{\"text\":\"BLOCK %s\",\"store\":\"%s\"}' \"$5\" \"$5\"\n");
+    // multi-store fire is exercisable with a stateless shim ($7 is --cwd's
+    // value — $5 is the --session id since 0.4; tmp paths carry no JSON
+    // metacharacters).
+    writeFileSync(shim, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LOG\"\nprintf '{\"text\":\"BLOCK %s\",\"store\":\"%s\"}' \"$7\" \"$7\"\n");
     chmodSync(shim, 0o755);
     const a = join(dir, "a");
     const b = join(dir, "b");
     const call = () => runHook(join(ZCODE_DIR, "pre-execute"), {
       input: preExecutePayload(dir, { workdir: a, file_path: `${b}/f.txt` }),
       cwd: dir,
-      env: { TMPDIR: dir, PATH: `${fakeBin}:${process.env.PATH}`, LOG: join(dir, "spawns.log") },
+      env: { XDG_CACHE_HOME: dir, PATH: `${fakeBin}:${process.env.PATH}`, LOG: join(dir, "spawns.log") },
     });
     const r = call();
     assert.equal(r.code, 0, `hook failed: ${r.stderr}`);
@@ -1763,7 +1942,7 @@ test("zcode-param-6. several fresh stores touched by one call concatenate into t
     assert.deepEqual(Object.keys(parsed).sort(), ["additionalContext"]);
     assert.ok(parsed.additionalContext.includes(`BLOCK ${a}`), `the first store must ride the envelope: ${parsed.additionalContext}`);
     assert.ok(parsed.additionalContext.includes(`BLOCK ${b}`), `the second store must ride the same envelope: ${parsed.additionalContext}`);
-    const marker = readFileSync(join(dir, "horizon-zcode-sess_param1"), "utf8");
+    const marker = readFileSync(markerPath(dir, "sess_param1"), "utf8");
     assert.ok(marker.includes(`s ${a}\n`) && marker.includes(`s ${b}\n`), `both stores must be claimed, got: ${marker}`);
     // The replay: both dirs known, both stores served — silence, no spawns.
     const second = call();
@@ -1787,7 +1966,7 @@ test("zcode-param-7. an unseeded launch dir is probed honestly: with session-sta
     assert.ok(r.stdout.includes("unseeded launch gap"),
       "no session-start seed: the launch dir must be probed and served like any other dir");
     assert.equal(r.count, 1, "exactly one probe");
-    const marker = readFileSync(join(dir, `horizon-zcode-${sid}`), "utf8");
+    const marker = readFileSync(markerPath(dir, sid), "utf8");
     assert.ok(marker.includes(`s ${join(dir, ".horizon")}\n`), `the store must be claimed, got: ${marker}`);
     r = run({ command: `git -C ${dir} status` }, { sid });
     assert.equal(r.stdout, "", "the second touch stays silent");
@@ -1809,7 +1988,7 @@ test("zcode-param-8. an off-shape --json answer — a missing store key — is n
     assert.equal(r.code, 0);
     assert.equal(r.stdout, "", "an off-shape answer injects nothing");
     assert.equal(r.count, 1);
-    assert.ok(!readFileSync(join(dir, "horizon-zcode-sess_shim1"), "utf8").includes(`d ${repo}\n`),
+    assert.ok(!readFileSync(markerPath(dir, "sess_shim1"), "utf8").includes(`d ${repo}\n`),
       "an off-shape answer must not record the dir");
     r = run({ command: `git -C ${repo} status` });
     assert.equal(r.stdout, "");

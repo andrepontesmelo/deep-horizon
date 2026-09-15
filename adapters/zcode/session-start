@@ -1,9 +1,13 @@
 #!/bin/sh
 # adapters/zcode/session-start — ZCode SessionStart hook (deep-horizon adapter).
-# POSIX sh + jq. Reads the hook's stdin JSON and, for fresh startups of a
-# project with a horizon store, emits the composed block in the envelope ZCode
-# injects into the session. Fail-open everywhere: any error, missing tool, or
-# missing bin exits 0 with no output — a hook must never block a session.
+# POSIX sh + jq + node. Reads the hook's stdin JSON and, for every fresh
+# app-instance opening (source "startup" or "resume") of a project with a
+# horizon store, emits the composed block in the envelope ZCode injects into
+# the session — deduped against a 10-second simultaneity window — then
+# reconciles the store's orphaned prior sessions by running `horizon
+# session-end` for them. Fail-open everywhere: any error, missing tool, or
+# missing bin exits 0 with no output — a hook must never block a session,
+# and reconciliation failures never cost the injection.
 #
 # Output path, PROVEN against the harness bundle
 # (/home/andre/.npm-global/lib/node_modules/zcode-app-cli/vendor/zcode.cjs,
@@ -16,46 +20,132 @@
 # is emitted. Non-zero exits other than 2 have their output discarded, which
 # is what makes fail-open free here.
 #
+# Matcher: "startup|resume" (ticket 04, F4). SessionStart fires once per app
+# INSTANCE (the sessionStartHookRan latch is never reset), and
+# additionalContext is ephemeral (probed: `data LIKE '%hook_context%'` is 0
+# rows across 15,208 message rows — the injection lives only in the
+# in-memory messageHistory), so every app instance must hand its session the
+# horizon exactly once. The old startup-only matcher was F4's cause: a
+# session resumed in a new instance fires source "resume", the matcher
+# excluded it, and nothing re-delivered. The bundle's runSessionStartHooks
+# has exactly two call sites — "startup" and "resume" — so the docs'
+# "clear"/"compact" sources never appear in this build and the negative
+# match covers them for free.
+#
+# Markers live in ${XDG_CACHE_HOME:-$HOME/.cache}/deep-horizon/markers/ as
+# horizon-zcode-<sanitized sid> (ticket 04) — the same file pre-execute
+# reads. /tmp dies on reboot, and the Sep-13 reboot erased every marker;
+# that was tolerable when the marker only fed pre-execute's dedup, and is
+# not now that reconciliation (below) reads markers as the record of which
+# sessions touched which stores. The move is clean: legacy /tmp markers are
+# neither read nor migrated — an upgrade-day gap shaped exactly like a
+# reboot, closed by the next injection's seed. The dir is mkdir -p'd; an
+# unwritable cache costs the seed, the dedup guard, and the reconciliation,
+# never the injection (pre-execute then stays silent for the session, its
+# own no-memory-no-injection rule).
+#
+# The F7 simultaneity window: two app instances 0.8 s apart both fired
+# session-start for one session id and duplicated the block into one context
+# (proven: sess_15c584a4's 142-byte marker is the seed pair twice). That is
+# not identity duplication — it is simultaneity — so the dedup key is TIME,
+# not identity: before injecting+seeding, a marker that already holds the
+# exact seed pair this fire would write (`d <cwd>`, plus `s <store>` when
+# the answer is store-backed) AND is younger than 10 seconds suppresses this
+# fire entirely (silent exit 0 — the winning instance's block is the one the
+# session keeps, tail and all). Outside the window it injects and appends
+# unconditionally: a restart hours later re-injects, which is F4 working as
+# designed, and duplicate seed lines are harmless to pre-execute's grep -Fx
+# readers. The window is a check, not a lock — two fires landing inside each
+# other's read-then-append gap can both pass, the same accepted-race trade
+# pre-execute documents (a lock would need stale-lock recovery, and a stale
+# lock would silence sessions permanently, which costs more than the race).
+# The mtime read is node's (POSIX sh has no stat); node missing or any stat
+# failure reads as stale, so the guard fails open toward injection, never
+# toward silence — under-dedup costs one duplicate in a sub-second race,
+# over-dedup loses the horizon silently. One honest edge of the shared
+# mtime: pre-execute's own claims append to the same marker, so a resume
+# landing within 10 seconds of a fresh param claim for this very pair is
+# suppressed by the same window — accepted, because the window is the width
+# of the race being guarded (0.8 s in evidence), not the width of a session.
+#
+# Startup reconciliation (ticket 03, F1): ZCode has no session-close hook
+# (the 7-event enum is exhaustive), and the data disproved
+# instruction-only close — agents understand the duty, defer it, and real
+# sessions end without a wrap-up exchange, so 0 of 20 analysed sessions ever
+# recorded. The mechanism that needs no agent and no close hook: after the
+# injection, scan the markers dir for OTHER sessions' markers whose `s`
+# line names THIS session's resolved store, whose mtime is older than 60
+# seconds (the liveness guard — a marker touched in the last minute belongs
+# to a live concurrent session, kept out of scope), and whose sid is not
+# already in the store's sessions.jsonl (a fixed-string grep for the sid;
+# an absent file means nothing is recorded yet); for each orphan, run
+#   horizon session-end --harness zcode --session <sid> --store <store>
+# with bin resolution identical to the inject spawn (PATH horizon, else
+# node ../../bin/horizon.js) and output discarded. Idempotent twice over:
+# the grep skips recorded sids, and the store's own once-guard
+# (src/store.ts recordSession — same harness+session_id is a no-op, exit 0)
+# would eat a repeat anyway. The sid is recovered from the marker filename:
+# the sanitizer keeps exactly the characters a zcode session id uses
+# (`sess_` + hex/dashes), so the suffix is the id for every id in evidence;
+# an id that sanitized lossily would record once under its sanitized
+# spelling — wrong but bounded, and visible in the log. `ts` is the
+# reconciliation write time, which is honest — that is when the record was
+# written; summary is null unless a real wrap-up supplied one. A killed
+# session (SIGINT/SIGTERM, closed terminal — the close-hook gap row) leaves
+# its marker and is reconciled by the next startup over the same store, so
+# signal deaths are covered by construction. Known edge, accepted and
+# documented (ticket 03): a project whose sessions all die before any next
+# startup in that store stays unrecorded until then. Every step fails open —
+# an unreadable marker, a failing grep, a missing node, a failing
+# session-end — and the envelope is emitted before the scan runs, so
+# reconciliation cannot cost the injection by construction.
+#
+# Session end, the summary path (the zcode-only tail): reconciliation now
+# writes the records (summary: null), so this tail is demoted — it is the
+# quality path, not the load-bearing one: a real wrap-up yields a real
+# summary. It rides the injection unchanged: once the composed text passes
+# the empty check, a tail is appended telling the agent to offer `horizon
+# session-end --harness zcode --session <id>` when the user is wrapping up.
+# The tail fires only when a store exists somewhere above the cwd —
+# inherited from the non-empty-text check, a storeless composition being
+# empty and exit-silent — and only when the payload carries a sessionId:
+# without the id the agent cannot name the record, and a placeholder id
+# would write a wrong one.
+#
+# The param trigger's seed (adapters/zcode/pre-execute reads the same
+# marker): ZCode's PreToolUse hook fires on every matching tool call, and
+# its dedup lives in the per-session marker file described above — `d <dir>`
+# records a dir the bin has answered for, `s <store>` a store the session
+# has been served. Once the startup injection is real, this hook seeds both
+# for the launch dir: the store it resolved counts as served and the launch
+# dir as known, so a mid-session touch of the launch repo never re-injects
+# the horizon this injection just delivered. That needs the store's path, so
+# the bin is asked with --json — the total answer's text composes identically
+# to the plain form (the stdout bytes below do not move) and the store field
+# rides along for free. The marker is keyed by the session id, sanitized
+# before it becomes a filename (same recipe as pre-execute). Storeless
+# launches (the bootstrap nudge) seed the dir alone — the nudge was
+# delivered here, and a param re-nudge would duplicate it; the simultaneity
+# guard's pair degrades to the d line for the same reason.
+#
+# --session on the inject spawn (0.4 spec amendment, ticket 07): the
+# payload's sessionId rides every horizon-inject call, so the composed
+# footer can name the session verbatim and the agent copies flags instead of
+# remembering them. The flag is accepted by today's bin (a known value flag
+# that changes no behavior yet); the footer lands with the core slice.
+#
 # Subagents: the SessionStart stdin payload carries NO subagent discriminator
 # (probed the bundle: payload is agentName/cwd/hookEventName/mode/model/
 # sessionId/source/timestamp/traceId/turnId; no parent_session_id, no
 # task_type). agentName is ambiguous — top-level workflow/expert sessions
 # also carry zcode-* names — so a guard on it would misfire, and none is
-# built. Whether subagent child sessions run SessionStart hooks at all is
-# UNPROVEN in the bundle; if they do, they receive the horizon like a
-# top-level session would (noise, not harm — the pi adapter's trade).
-#
-# Session end (the zcode-only tail): ZCode has no session-close hook (the
-# stop-steer probe still stands: Stop fires at the end of EVERY assistant
-# turn, not at session close), so the close duty rides this startup
-# injection — once the composed text passes the empty check, a tail is
-# appended telling the agent to offer `horizon session-end --harness zcode
-# --session <id>` when the user is wrapping up. The retired steer's
-# once-guards (a record already in sessions.jsonl, a marker file in
-# $TMPDIR) are gone because the instruction rides the once-per-session
-# startup injection now, which is its own once-guard. The tail fires only
-# when a store exists somewhere above the cwd — inherited from the
-# non-empty-text check, a storeless composition being empty and exit-silent
-# — and only when the payload carries a sessionId: without the id the agent
-# cannot name the record, and a placeholder id would write a wrong one.
-#
-# The param trigger's seed (adapters/zcode/pre-execute reads the same
-# marker): ZCode's PreToolUse hook fires on every matching tool call, and
-# its dedup lives in a per-session marker file under ${TMPDIR:-/tmp} —
-# `d <dir>` records a dir the bin has answered for, `s <store>` a store the
-# session has been served. Once the startup injection is real, this hook
-# seeds both for the launch dir: the store it resolved counts as served and
-# the launch dir as known, so a mid-session touch of the launch repo never
-# re-injects the horizon this injection just delivered. That needs the
-# store's path, so the bin is asked with --json — the total answer's text
-# composes identically to the plain form (the stdout bytes below do not
-# move) and the store field rides along for free. The marker is keyed by
-# the session id, sanitized before it becomes a filename (same recipe as
-# pre-execute). Storeless launches (the bootstrap nudge) seed the dir
-# alone — the nudge was delivered here, and a param re-nudge would
-# duplicate it. Fail-open: an unwritable TMPDIR costs the seed, never the
-# injection (pre-execute then stays silent for the session, its own
-# no-memory-no-injection rule).
+# built. The re-probe (ticket 01) upgraded the open question to: subagent
+# sessions run the session_start_hooks PHASE but with durationMs 0 and no
+# marker ever observed across ~40 of them — no effective execution; if one
+# ever does fire, it receives the horizon like a top-level session would
+# (noise, not harm — the pi adapter's trade), and its reconciliation scan
+# would find the same orphans the next top-level start finds (the store
+# once-guard eats the double).
 #
 # cwd: the hook process runs in the session's working directory (probed:
 # executionPort.run({cwd: payload.cwd || getWorkingDirectory()})), and
@@ -64,34 +154,63 @@
 # process cwd.
 set -u
 
+# within_seconds <file> <ms> — prints "1" when <file>'s mtime is younger
+# than <ms> milliseconds; prints nothing on any failure (node missing, stat
+# error), which every caller treats as "not within" — the guards fail open
+# toward injection (the header's rule), never toward silence.
+within_seconds() {
+  command -v node >/dev/null 2>&1 || return 0
+  node -e 'var fs=require("fs");try{if(Date.now()-fs.statSync(process.argv[1]).mtimeMs<Number(process.argv[2]))process.stdout.write("1")}catch(e){}' "$1" "$2" 2>/dev/null
+  return 0
+}
+
 payload=$(cat 2>/dev/null) || exit 0
 [ -n "$payload" ] || exit 0
 
-# Fresh startups only ("startup" is the first turn of a session-manager
-# instance; "resume" fires after --resume, and a resumed session replays the
-# original injection from its persisted history — re-injecting would
-# duplicate it). The docs' "clear"/"compact" sources never appear in this
-# build's call sites, so the negative match covers them for free.
+# Every fresh app-instance opening injects (see the matcher paragraph):
+# "startup" is the first turn of a session-manager instance, "resume" fires
+# after --resume, and the harness matcher "startup|resume" admits both —
+# a resumed session's persisted history does NOT carry the old injection
+# (additionalContext never persists), so excluding resume was the F4 bug.
 source=$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null) || exit 0
-[ "$source" = "startup" ] || exit 0
+[ "$source" = "startup" ] || [ "$source" = "resume" ] || exit 0
 
 cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null) || exit 0
 [ -n "$cwd" ] || cwd=${ZCODE_PROJECT_DIR:-}
 [ -n "$cwd" ] || cwd=$(pwd)
 
+# The session id, read early: it rides the inject spawn (--session), keys
+# the marker, and names the close tail. Absent or empty, the horizon still
+# injects — it just carries no footer, no seed, and no tail.
+sid=$(printf '%s' "$payload" | jq -r '.sessionId // empty' 2>/dev/null) || exit 0
+
 # Bin resolution (hermes pattern): an installed package uses the global bin
 # on PATH; a repo checkout runs bin/horizon-inject.js with node, because the
 # bare bins are not linked yet — the bin is a shim onto the built dist, so
 # the checkout needs its build step (npm install / npm run build) first; a
-# missing build fails open with no text below.
+# missing build fails open with no text below. ask() takes the cwd and the
+# session id; without an id the plain form runs.
 here=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || exit 0
 if command -v horizon-inject >/dev/null 2>&1; then
-  answer=$(horizon-inject --harness zcode --json --cwd "$cwd" 2>/dev/null)
+  ask() {
+    if [ -n "$2" ]; then
+      horizon-inject --harness zcode --json --session "$2" --cwd "$1" 2>/dev/null
+    else
+      horizon-inject --harness zcode --json --cwd "$1" 2>/dev/null
+    fi
+  }
 elif command -v node >/dev/null 2>&1 && [ -f "$here/../../bin/horizon-inject.js" ]; then
-  answer=$(node "$here/../../bin/horizon-inject.js" --harness zcode --json --cwd "$cwd" 2>/dev/null)
+  ask() {
+    if [ -n "$2" ]; then
+      node "$here/../../bin/horizon-inject.js" --harness zcode --json --session "$2" --cwd "$1" 2>/dev/null
+    else
+      node "$here/../../bin/horizon-inject.js" --harness zcode --json --cwd "$1" 2>/dev/null
+    fi
+  }
 else
   exit 0
 fi
+answer=$(ask "$cwd" "$sid")
 
 # The --json answer is the total shape the DSH adapter parses: {"text":
 # string, "store": string|null}. The text composes identically to the plain
@@ -103,25 +222,57 @@ store=$(printf '%s' "$answer" | jq -r 'if type=="object" and (.store|type=="stri
 # Empty composition = nothing to inject (a storeless $HOME stays silent).
 [ -n "$text" ] || exit 0
 
-# The session-end tail names the record the agent is to close, so it needs
-# the session id from the payload; absent or empty, the horizon injects
-# alone. The id comes off the harness's own payload (camelCase, see the
-# shape above).
-sid=$(printf '%s' "$payload" | jq -r '.sessionId // empty' 2>/dev/null) || exit 0
+# Marker setup: sanitize the id, resolve the cache dir (XDG first, $HOME
+# fallback, never a bare "/.cache" when both are unset), mkdir -p it, and
+# name the file. Any failure leaves marker empty — the seed, the guard, and
+# the reconciliation are lost, the injection is not.
+safe=""
+markers_dir=""
+marker=""
+if [ -n "$sid" ]; then
+  safe=$(printf '%s' "$sid" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null) || safe=""
+  if [ -n "$safe" ]; then
+    cache_base=${XDG_CACHE_HOME:-}
+    if [ -z "$cache_base" ] && [ -n "${HOME:-}" ]; then
+      cache_base=$HOME/.cache
+    fi
+    if [ -n "$cache_base" ]; then
+      markers_dir=$cache_base/deep-horizon/markers
+      mkdir -p "$markers_dir" 2>/dev/null || markers_dir=""
+    fi
+    [ -n "$markers_dir" ] && marker=$markers_dir/horizon-zcode-$safe
+  fi
+fi
+
+# The F7 simultaneity guard (see the header): the exact seed pair this fire
+# would write, younger than 10 seconds, means another app instance just
+# injected for this very session — stay silent, the block is already in the
+# context. grep missing or failing reads as no-match (the pair check fails
+# open toward injection); a fresh mtime with no node reads as stale.
+if [ -n "$marker" ] && [ -f "$marker" ]; then
+  pair=yes
+  grep -Fxq -- "d $cwd" "$marker" 2>/dev/null || pair=no
+  if [ "$pair" = "yes" ] && [ -n "$store" ]; then
+    grep -Fxq -- "s $store" "$marker" 2>/dev/null || pair=no
+  fi
+  if [ "$pair" = "yes" ]; then
+    [ -n "$(within_seconds "$marker" 10000)" ] && exit 0
+  fi
+fi
 
 # The marker seed (see the header): only once the injection is real — the
 # empty-text exit above — and only with a session id to key it on. The
 # appends fail open: an unwritable marker costs the seed, never this
-# injection.
-if [ -n "$sid" ]; then
-  safe=$(printf '%s' "$sid" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null) || safe=""
-  if [ -n "$safe" ]; then
-    marker=${TMPDIR:-/tmp}/horizon-zcode-$safe
-    printf 'd %s\n' "$cwd" >>"$marker" 2>/dev/null
-    [ -n "$store" ] && printf 's %s\n' "$store" >>"$marker" 2>/dev/null
-  fi
+# injection. Duplicate pairs accumulate across restarts, harmless to
+# pre-execute's exact-line reads.
+if [ -n "$marker" ]; then
+  printf 'd %s\n' "$cwd" >>"$marker" 2>/dev/null
+  [ -n "$store" ] && printf 's %s\n' "$store" >>"$marker" 2>/dev/null
 fi
 
+# The session-end tail names the record the agent is to close, so it needs
+# the session id from the payload; absent or empty, the horizon injects
+# alone.
 if [ -n "$sid" ]; then
   text="$text
 
@@ -134,4 +285,42 @@ let it go."
 fi
 
 jq -cn --arg text "$text" '{additionalContext: $text}' 2>/dev/null || exit 0
+
+# Startup reconciliation (see the header, ticket 03): close this store's
+# orphaned prior sessions. The envelope above is already emitted, so nothing
+# here can cost the injection; every candidate must clear four gates — a
+# marker file, an `s` line naming this store, an mtime older than 60
+# seconds (live sessions are out of scope), and a sid absent from the
+# store's sessions.jsonl — before a session-end is spawned with its output
+# discarded. Without node the mtime check reads as stale and the scan
+# proceeds anyway — unreachable in practice (reaching the scan proves node
+# just ran the ask), and a stale-read worst case is a record for a session
+# whose marker stopped ticking, which the once-guard keeps honest. The
+# record-matching grep pins the JSON field ("session_id":"<sid>"), so a
+# sid can only match its own record, never a superset in free text. A
+# per-fire cap bounds the loop: a huge orphan backlog must never push
+# this hook into the harness's 60s timeout — a timeout kill would discard
+# the already-emitted envelope above. The remainder drains on the next
+# fire (the drain-once dynamic keeps backlogs small by construction).
+if [ -n "$store" ] && [ -n "$markers_dir" ]; then
+  reconciled=0
+  for f in "$markers_dir"/horizon-zcode-*; do
+    [ "$reconciled" -lt 20 ] || break
+    [ -f "$f" ] || continue
+    [ "$f" = "$marker" ] && continue
+    grep -Fxq -- "s $store" "$f" 2>/dev/null || continue
+    [ -n "$(within_seconds "$f" 60000)" ] && continue
+    other=${f##*/horizon-zcode-}
+    [ -n "$other" ] || continue
+    if [ -f "$store/sessions.jsonl" ]; then
+      grep -Fq -- "\"session_id\":\"$other\"" "$store/sessions.jsonl" 2>/dev/null && continue
+    fi
+    if command -v horizon >/dev/null 2>&1; then
+      horizon session-end --harness zcode --session "$other" --store "$store" >/dev/null 2>&1
+    elif command -v node >/dev/null 2>&1 && [ -f "$here/../../bin/horizon.js" ]; then
+      node "$here/../../bin/horizon.js" session-end --harness zcode --session "$other" --store "$store" >/dev/null 2>&1
+    fi
+    reconciled=$((reconciled + 1))
+  done
+fi
 exit 0
