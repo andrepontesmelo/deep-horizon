@@ -292,12 +292,20 @@ jq -cn --arg text "$text" '{additionalContext: $text}' 2>/dev/null || exit 0
 # marker file, an `s` line naming this store, an mtime older than 60
 # seconds (live sessions are out of scope), and a sid absent from the
 # store's sessions.jsonl — before a session-end is spawned with its output
-# discarded. No node (the mtime reader) means no reconciliation: an
-# uncheckable liveness guard skips the whole scan rather than risk
-# recording a live session early — that record would carry a bogus early
-# ts, and the once-guard would then hide the honest one.
+# discarded. Without node the mtime check reads as stale and the scan
+# proceeds anyway — unreachable in practice (reaching the scan proves node
+# just ran the ask), and a stale-read worst case is a record for a session
+# whose marker stopped ticking, which the once-guard keeps honest. The
+# record-matching grep pins the JSON field ("session_id":"<sid>"), so a
+# sid can only match its own record, never a superset in free text. A
+# per-fire cap bounds the loop: a huge orphan backlog must never push
+# this hook into the harness's 60s timeout — a timeout kill would discard
+# the already-emitted envelope above. The remainder drains on the next
+# fire (the drain-once dynamic keeps backlogs small by construction).
 if [ -n "$store" ] && [ -n "$markers_dir" ]; then
+  reconciled=0
   for f in "$markers_dir"/horizon-zcode-*; do
+    [ "$reconciled" -lt 20 ] || break
     [ -f "$f" ] || continue
     [ "$f" = "$marker" ] && continue
     grep -Fxq -- "s $store" "$f" 2>/dev/null || continue
@@ -305,13 +313,14 @@ if [ -n "$store" ] && [ -n "$markers_dir" ]; then
     other=${f##*/horizon-zcode-}
     [ -n "$other" ] || continue
     if [ -f "$store/sessions.jsonl" ]; then
-      grep -Fq -- "$other" "$store/sessions.jsonl" 2>/dev/null && continue
+      grep -Fq -- "\"session_id\":\"$other\"" "$store/sessions.jsonl" 2>/dev/null && continue
     fi
     if command -v horizon >/dev/null 2>&1; then
       horizon session-end --harness zcode --session "$other" --store "$store" >/dev/null 2>&1
     elif command -v node >/dev/null 2>&1 && [ -f "$here/../../bin/horizon.js" ]; then
       node "$here/../../bin/horizon.js" session-end --harness zcode --session "$other" --store "$store" >/dev/null 2>&1
     fi
+    reconciled=$((reconciled + 1))
   done
 fi
 exit 0
