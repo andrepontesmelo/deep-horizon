@@ -890,16 +890,19 @@ test("67. the section renders for the read-only mapping the core actually passes
   }, "horizon-adapter-test-");
 });
 
-test("73. the Hermes section distrusts a storeless session cwd: the launch dir's store wins (terminal.cwd '.' resolves to the home fallback)", async () => {
-  // The live bug: hermes config carries terminal.cwd: "." (a placeholder), so
-  // the core resolves the session cwd to the home fallback /home/andre —
-  // non-empty but wrong. Trusting it verbatim spawned horizon-inject in a dir
-  // with no store, which injected the nudge: the project's about line and gaps
-  // never landed. The fix: a non-empty session cwd with no VISIBLE store is
-  // distrusted, and the process cwd (the launch dir) wins when it has one.
+test("73. the Hermes section treats a non-empty session cwd as the ONLY candidate: a storeless answer stands after one spawn, never deferring to a stored launch dir", async () => {
+  // Ticket 06: hermes 0.21.2 resolves the terminal.cwd "." placeholder to
+  // $HOME, so gateway/telegram/cron sessions hand the section cwd=/home/andre
+  // — real but storeless. horizon-inject's own $HOME-silent rule answers ""
+  // there, and that silence is CORRECT (the "silence on absence" philosophy:
+  // home-cwd sessions were never project-dir sessions; their horizons ride
+  // the param path). The old defer-to-process-cwd walk existed for the
+  // pre-0.21.2 empty-cwd shape and froze false nudges into store-covered
+  // sessions (F5) — it is gone: a non-empty session cwd spawns exactly once
+  // and its answer stands verbatim, whatever the launch dir holds.
   await withDir(async (dir) => {
     const launch = join(dir, "launch");
-    const sessionCwd = join(dir, "session-cwd");
+    const sessionCwd = join(dir, "session-cwd"); // the /home/andre shape: non-empty, storeless
     mkdirSync(launch, { recursive: true });
     mkdirSync(sessionCwd, { recursive: true });
     seed(launch, ["launch dir gap"]);
@@ -908,19 +911,28 @@ test("73. the Hermes section distrusts a storeless session cwd: the launch dir's
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
       "import deep_horizon",
+      "spawns = []",
+      "orig = deep_horizon._spawn_bin",
+      "def counting(bin_name, args):",
+      "    spawns.append((bin_name, list(args)))",
+      "    return orig(bin_name, args)",
+      "deep_horizon._spawn_bin = counting",
       "text = deep_horizon._section_text({'session_id': 's-1', 'cwd': " + JSON.stringify(sessionCwd) + ", 'model': 'm', 'platform': 'cli', 'profile_name': 'dev'})",
-      "sys.stdout.write(text)",
+      "assert len(spawns) == 1, 'a non-empty session cwd must spawn exactly once, got: %r' % (spawns,)",
+      "assert spawns[0][1][spawns[0][1].index('--cwd') + 1] == " + JSON.stringify(sessionCwd) + ", 'the one probe must be the session cwd: %r' % (spawns,)",
+      "assert 'no horizon yet' in text, 'the storeless session cwd answer must stand verbatim: %r' % (text[:80],)",
+      "assert 'launch dir gap' not in text, 'the stored launch dir must never bleed behind a non-empty session cwd'",
+      "assert 's-1' not in deep_horizon._session_store, 'a storeless answer must not stash a store'",
+      "print('OK')",
       "",
     ].join("\n"));
     const r = runPython([script], { cwd: launch });
     assert.equal(r.code, 0, `python failed: ${r.stderr}`);
-    assert.ok(r.stdout.startsWith("This project has a horizon"),
-      `storeless session cwd must defer to the launch dir's store, got: ${JSON.stringify(r.stdout.slice(0, 80))}`);
-    assert.ok(r.stdout.includes("launch dir gap"), "the injection must be composed from the launch dir's store");
+    assert.equal(r.stdout.trim(), "OK");
   }, "horizon-adapter-test-");
 });
 
-test("74. the Hermes section prefers the session cwd when it has a store, even if the launch dir also has one", async () => {
+test("74. the Hermes section composes only the session cwd's horizon — a stored launch dir never bleeds in", async () => {
   await withDir(async (dir) => {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -944,10 +956,10 @@ test("74. the Hermes section prefers the session cwd when it has a store, even i
   }, "horizon-adapter-test-");
 });
 
-test("75. the Hermes section keeps the first candidate when neither cwd has a store — the bootstrap nudge for the session cwd, not silence", async () => {
+test("75. a storeless non-empty session cwd gets its own nudge — no launch-dir deferral", async () => {
   // A genuinely storeless project dir must still get its nudge (that is
-  // correct behavior), and the first candidate (the session cwd) stands —
-  // the launch dir never hijacks a storeless session.
+  // correct behavior); the session cwd stands alone (ticket 06) — the
+  // launch dir is never consulted, so it can neither hijack nor rescue.
   await withDir(async (dir) => {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -985,17 +997,18 @@ test("76. the Hermes session-end spawn hands back the stashed injection store wi
     mkdirSync(launch, { recursive: true });
     mkdirSync(sessionCwd, { recursive: true });
     mkdirSync(other, { recursive: true });
-    seed(launch, ["launch dir gap"]);
+    seed(sessionCwd, ["session cwd gap"]);
     const script = join(dir, "drive.py");
     writeFileSync(script, [
       "import sys",
       "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
       "import deep_horizon",
       "# The section runs first, against the REAL bins, from the launch dir:",
-      "# a storeless session cwd defers to the launch dir's store, and the",
-      "# answer's store field is frozen for the close hook.",
+      "# the session cwd is the only candidate (ticket 06), it has the store,",
+      "# and the answer's store field is frozen for the close hook. The launch",
+      "# dir stays empty — under the single-candidate rule it is never read.",
       "deep_horizon._section_text({'session_id': 's-stash', 'cwd': " + JSON.stringify(sessionCwd) + "})",
-      "assert deep_horizon._session_store.get('s-stash') == " + JSON.stringify(join(launch, ".horizon")) + ", deep_horizon._session_store",
+      "assert deep_horizon._session_store.get('s-stash') == {" + JSON.stringify(join(sessionCwd, ".horizon")) + "}, deep_horizon._session_store",
       "# Now the spawn is fake, the process chdir'd away, and the finalize",
       "# arrives with no cwd key at all (the -z payload shape).",
       "spawns = []",
@@ -1014,7 +1027,7 @@ test("76. the Hermes session-end spawn hands back the stashed injection store wi
       "    return ran_args()",
       "args = run('s-stash')",
       "assert args[args.index('--session') + 1] == 's-stash', args",
-      "assert '--store' in args and args[args.index('--store') + 1] == " + JSON.stringify(join(launch, ".horizon")) + ", args",
+      "assert '--store' in args and args[args.index('--store') + 1] == " + JSON.stringify(join(sessionCwd, ".horizon")) + ", args",
       "assert '--cwd' not in args, 'a stashed store must not also carry --cwd: ' + str(args)",
       "# Pop-on-use: the stash entry is consumed by that finalize, so a",
       "# second one for the same id takes the payload/process fallback",
@@ -1041,6 +1054,164 @@ test("76. the Hermes session-end spawn hands back the stashed injection store wi
       "",
     ].join("\n"));
     const r = runPython([script], { cwd: launch });
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  }, "horizon-adapter-test-");
+});
+
+// Ticket 05: the param path (the one that actually delivered to the five
+// telegram sessions) drops its store on the floor today — finalize then
+// records nothing for every session that injected only through it. The
+// stash is the fix: a store-backed pre_llm_call injection remembers its
+// store and the close hook records into it.
+test("hermes-param-stash. a store-backed pre_llm_call injection stashes its store and finalize records into it with --store", async () => {
+  await withDir(async (dir) => {
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
+      "deep_horizon._session_store.clear()",
+      "repo = " + JSON.stringify(join(dir, "casa")),
+      "store = repo + '/.horizon'",
+      "hist = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'git -C ' + repo + ' status'})}},",
+      "]}]",
+      "spawns = []",
+      "def fake_spawn(bin_name, args):",
+      "    spawns.append((bin_name, list(args)))",
+      "    if bin_name == 'horizon-inject':",
+      "        return (0, json.dumps({'text': 'PARAM-BLOCK', 'store': store}), '')",
+      "    return (0, '', '')",
+      "deep_horizon._spawn_bin = fake_spawn",
+      "deep_horizon._pre_llm_call(session_id='s-tg', conversation_history=[])",  // turn 1: first sight, no spawn
+      "spawns.clear()",
+      "r = deep_horizon._pre_llm_call(session_id='s-tg', conversation_history=hist)",
+      "assert 'PARAM-BLOCK' in r['context'], r",
+      "assert deep_horizon._session_store.get('s-tg') == {store}, deep_horizon._session_store",
+      "# The real dispatcher shape: flat kwargs, no cwd — exactly the payload",
+      "# research/02 pins (session_id/platform/reason, or no reason at all).",
+      "deep_horizon._on_session_finalize(session_id='s-tg', platform='gateway', reason='new_session')",
+      "ends = [a for n, a in spawns if n == 'horizon']",
+      "assert len(ends) == 1, 'one stashed store, one session-end: %r' % (spawns,)",
+      "args = ends[0]",
+      "assert args[:3] == ['session-end', '--harness', 'hermes'], args",
+      "assert args[args.index('--session') + 1] == 's-tg', args",
+      "assert args[args.index('--store') + 1] == store, args",
+      "assert '--cwd' not in args, args",
+      "# Pop-on-use: a second finalize for the same id is the no-stash fallback.",
+      "spawns.clear()",
+      "deep_horizon._on_session_finalize(session_id='s-tg', platform='gateway')",
+      "ends = [a for n, a in spawns if n == 'horizon']",
+      "assert len(ends) == 1 and '--store' not in ends[0], ends",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  }, "horizon-adapter-test-");
+});
+
+// Ticket 05, the multi-store shape: a telegram session that touched three
+// projects stashes three stores, and finalize leaves one record per store —
+// each honest in its own project's log. The store format allows one session
+// id on many records. Fail-open is PER STORE: the first store's failing
+// spawn must never block the second.
+test("hermes-multi-store. finalize records once per stashed store — two stores, two session-end spawns, one failure never blocks the other", async () => {
+  await withDir(async (dir) => {
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import os, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "deep_horizon._session_store.clear()",
+      "store_a = " + JSON.stringify(join(dir, "proj-a")) + " + '/.horizon'",
+      "store_b = " + JSON.stringify(join(dir, "proj-b")) + " + '/.horizon'",
+      "deep_horizon._session_store['s-multi'] = {store_a, store_b}",
+      "spawns = []",
+      "state = {'raised': False}",
+      "def flaky_spawn(bin_name, args):",
+      "    spawns.append((bin_name, list(args)))",
+      "    if bin_name == 'horizon' and not state['raised']:",
+      "        state['raised'] = True",
+      "        raise FileNotFoundError('transient')",
+      "    return (0, '', '')",
+      "deep_horizon._spawn_bin = flaky_spawn",
+      "deep_horizon._on_session_finalize(session_id='s-multi', platform='gateway', reason='shutdown')",
+      "ends = [a for n, a in spawns if n == 'horizon']",
+      "assert len(ends) == 2, 'two stashed stores must record even with one spawn failing: %r' % (spawns,)",
+      "assert state['raised'], 'the failure must have landed on the first spawn'",
+      "stores = sorted(a[a.index('--store') + 1] for a in ends)",
+      "assert stores == sorted([store_a, store_b]), 'every stashed store records exactly once: %r' % (stores,)",
+      "for a in ends:",
+      "    assert a[:3] == ['session-end', '--harness', 'hermes'], a",
+      "    assert a[a.index('--session') + 1] == 's-multi', a",
+      "    assert '--cwd' not in a, a",
+      "assert 's-multi' not in deep_horizon._session_store, 'the stash must pop whole, once'",
+      "# The stash is gone: a second finalize is the cwd fallback, not a third record.",
+      "os.chdir(" + JSON.stringify(dir) + ")",
+      "spawns.clear()",
+      "deep_horizon._on_session_finalize(session_id='s-multi', platform='gateway', reason='shutdown')",
+      "ends = [a for n, a in spawns if n == 'horizon']",
+      "assert len(ends) == 1 and '--store' not in ends[0], ends",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  }, "horizon-adapter-test-");
+});
+
+// Spec amendment 07-D1's adapter delta: every horizon-inject spawn carries
+// --session <id> where the adapter holds it — the composer bakes the
+// provenance footer from it. Section path: session_info's session_id. Param
+// path: the payload's session_id.
+test("hermes-session-flag. every horizon-inject spawn carries --session <id>: the section path from session_info, the param path from its payload", async () => {
+  await withDir(async (dir) => {
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
+      "deep_horizon._session_store.clear()",
+      "spawns = []",
+      "def fake_spawn(bin_name, args):",
+      "    spawns.append((bin_name, list(args)))",
+      "    return (0, json.dumps({'text': 'BLOCK', 'store': None}), '')",
+      "deep_horizon._spawn_bin = fake_spawn",
+      "def inject_args():",
+      "    return [a for n, a in spawns if n == 'horizon-inject']",
+      "# Section path: session_info.session_id rides.",
+      "deep_horizon._section_text({'session_id': 's-sec', 'cwd': '/no/such/dir', 'platform': 'gateway'})",
+      "injects = inject_args()",
+      "assert len(injects) == 1, spawns",
+      "assert injects[0][injects[0].index('--session') + 1] == 's-sec', injects",
+      "assert injects[0][:2] == ['--harness', 'hermes'], injects",
+      "# Param path: payload session_id rides (after the turn-1 first sight).",
+      "repo = " + JSON.stringify(join(dir, "flagrepo")),
+      "hist = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': repo + '/f'})}},",
+      "]}]",
+      "deep_horizon._pre_llm_call(session_id='s-par', conversation_history=[])",
+      "spawns.clear()",
+      "deep_horizon._pre_llm_call(session_id='s-par', conversation_history=hist)",
+      "injects = inject_args()",
+      "assert len(injects) == 1, spawns",
+      "assert injects[0][injects[0].index('--session') + 1] == 's-par', injects",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
     assert.equal(r.code, 0, `python failed: ${r.stderr}`);
     assert.equal(r.stdout.trim(), "OK");
   }, "horizon-adapter-test-");
