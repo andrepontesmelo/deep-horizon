@@ -117,7 +117,8 @@ want changed. A changed want is a close plus an add, not an amend.
 Advisory metadata on each log entry: which harness wrote it, whether stdin was
 a terminal, and whether the entry was agent-proposed and human-confirmed.
 Evidence for the reader, never enforcement — the CLI cannot actually tell a
-human from an agent.
+human from an agent, and the session id arrives composed into the horizon the
+session received, never remembered by the agent.
 
 ## Nudge
 
