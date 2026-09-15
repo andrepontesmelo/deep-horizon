@@ -21,7 +21,7 @@
 // Unknown flags are a usage error (exit 2).
 import { homedir } from "node:os";
 import { cliVersion } from "./cli.ts";
-import { readGapsFile, resolveStore, suppressBootstrap } from "./store.ts";
+import { appendHooksLog, readGapsFile, resolveStore, suppressBootstrap } from "./store.ts";
 import { BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT, aboutPrefix, gapLine, horizonBlock, provenanceFooter } from "./texts.ts";
 
 // The flags horizon-inject accepts: the CLI's global options (--help and
@@ -109,7 +109,10 @@ function helpText() {
     "--json prints one JSON line instead: {\"text\": <string>, \"store\": <string|null>}\n" +
     "— the composed text plus the resolved store directory (null when no store was\n" +
     "found). Plain stdout stays text-only; empty output means silent.\n" +
-    "Read-only: never writes the store. The composition twin of `horizon show` (spec D6).\n"
+    "Read-only toward the store's data. The one write it ever makes is a single\n" +
+    "best-effort line in the store's .horizon/hooks.log (the bin-fire log): an\n" +
+    "unwritable log costs the line, never the injection. The composition twin of\n" +
+    "`horizon show` (spec D6).\n"
   );
 }
 
@@ -144,28 +147,34 @@ export function compose({ gaps, about, silence, harness, session }) {
 
 // The total answer for one cwd: the composed text plus the store directory
 // the resolution already paid for (null when no store was found — the
-// silence and storeless-nudge cases). Read-only (D6): resolve+read, never
-// write — the tmp sweep and store materialization stay CLI-only side
-// effects. `home` is injectable so tests can fake $HOME and never touch
-// the real one. Errors come back as { error: { code, message } } and stay
+// silence and storeless-nudge cases) and the fire's outcome for hooks.log
+// (ticket 09): injected when the block composes, nudged for either nudge,
+// silent when empty. Read-only toward the store's DATA (D6): resolve+read,
+// never write — no tmp sweep, no materialization; the one sanctioned write
+// is the bin-fire log line main() appends to .horizon/hooks.log. `home` is
+// injectable so tests can fake $HOME and never touch the real one. Errors
+// come back as { error: { code, message }, store, outcome } and stay
 // unwrapped: stderr keeps the store's message and stdout stays empty even
-// under --json.
+// under --json; the store rides along so main() can still log the failed
+// fire against it.
 export function resolveInjection(dir, { home, harness, session }) {
   const found = resolveStore(dir, { readonly: true });
   const store = found ? found.dir : null;
-  if (found && found.open.code !== undefined) return { error: found.open };
+  if (found && found.open.code !== undefined) return { error: found.open, store, outcome: "error" };
   let gaps = [];
   let about;
   if (found) {
     const g = readGapsFile(found.dir);
-    if (!g.ok) return { error: { code: g.code, message: g.message } };
+    if (!g.ok) return { error: { code: g.code, message: g.message }, store, outcome: "error" };
     gaps = g.data.gaps;
     about = g.data.about;
   }
   // A storeless $HOME is not a project: emit nothing (exit 0, empty stdout —
   // the adapters treat empty stdout as a silent no-op).
   const silence = suppressBootstrap({ cwd: dir, storeFound: !!found, home });
-  return { text: compose({ gaps, about, silence, harness, session }), store };
+  const text = compose({ gaps, about, silence, harness, session });
+  const outcome = text === "" ? "silent" : gaps.length > 0 ? "injected" : "nudged";
+  return { text, store, outcome };
 }
 
 // The bin entry, mirroring src/cli.ts's main: writes stdout and stderr
@@ -197,8 +206,19 @@ export async function main(argv, sink = processSink()) {
   try {
     answer = resolveInjection(cwd ?? process.cwd(), { home: homedir(), harness, session });
   } catch {
+    // Nothing is known about the store here, so the fire stays unlogged —
+    // the log helper needs the resolved dir, and guessing one would be a
+    // second resolution this fail-open path must not pay for.
     sink.stderr("horizon-inject: store read failed\n");
     return 7;
+  }
+  // hooks.log (ticket 09): one best-effort line per bin fire into the
+  // resolved store. Storeless fires (the $HOME silence, the storeless
+  // nudge) have no store to log into and stay unlogged. The append never
+  // raises and never changes the exit code below — an unwritable hooks.log
+  // costs the line, never the hook.
+  if (answer.store) {
+    appendHooksLog(answer.store, { harness, bin: "horizon-inject", session, outcome: answer.outcome });
   }
   if (answer.error) {
     sink.stderr(`${answer.error.message}\n`);

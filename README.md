@@ -52,7 +52,9 @@ A folder install is symlinked, so the global bins run this checkout's
 
 Status: this package ships the CLI core (`horizon`), the `horizon-inject`
 composer, and adapters for every harness below (Claude Code has no npm
-artifact — its settings block is the adapter).
+artifact — its settings block is the adapter). After the CLI is on PATH,
+`horizon install --harness zcode|hermes` wires the adapter configs for you
+and `horizon doctor` verifies the wiring — see Wiring below.
 
 ## CLI
 
@@ -60,7 +62,7 @@ Run `horizon` inside a project; the store lives in `.horizon/` (found upward,
 like git finds `.git`). `horizon init` creates it.
 
 ```
-usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init> [...]
+usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init|doctor|install> [...]
 
 commands:
   show                      print open gaps (id + two spaces + text)
@@ -76,6 +78,8 @@ commands:
   log [--limit N]           print session records, newest first
   session-end --harness <name> --session <id> [--summary "<text>"] [--store <dir>] — once per (harness, session); a repeat is a silent no-op
   init                      create .horizon/ in --cwd
+  doctor [--harness <name>] read-only wiring check per harness (zcode, hermes; both by default) — one PASS/FAIL line per check with the fix hint; exit 0 all-pass, 1 any FAIL
+  install --harness <name>  wire a harness's global config (zcode, hermes; repeat the flag or comma-separate); parse → merge → validate → backup → atomic write, idempotent
 ```
 
 A gap's title is one line; it may also carry optional **details** — the
@@ -127,6 +131,50 @@ was found). The close hooks hand that store back, so teardown never
 re-discovers it: `horizon session-end --harness <name> --session <id>
 --store <dir>` (without a store the command still works, discovering from
 `--cwd`; a path that does not exist is a silent no-op).
+
+## Wiring: horizon install, horizon doctor
+
+Two adapters ride global config surfaces — ZCode's `~/.zcode/cli/config.json`
+and Hermes' `~/.hermes` — and `horizon install` applies them so nobody has to
+hand-edit JSON:
+
+```bash
+horizon install --harness zcode      # repeat the flag or comma-separate: --harness zcode,hermes
+horizon install --harness hermes
+```
+
+ZCode: the config is parsed, merged, validated, backed up
+(`config.json.bak-pre-horizon-<timestamp>` alongside), and written
+atomically — never a blind write. A config that does not parse, or a `hooks`
+shape install does not recognize, is a loud refusal (exit 2, fix by hand):
+an unparseable config disables the *whole* file in ZCode, so writing over
+one is the one unrecoverable move. The merge writes the block documented in
+the ZCode section below (SessionStart matcher `startup|resume`, PreToolUse
+`pre-execute`), preserves every foreign key, replaces only deep-horizon's
+own entries (matched by a command naming `deep-horizon`), and leaves `Stop`
+untouched. Global config only: project hooks are trust-gated and double-fire
+once trusted when both scopes declare them — exactly one surface per
+machine. Hermes: the plugin files are copied to
+`~/.hermes/plugins/deep-horizon/` (byte-identical files skipped, stale
+`__pycache__` removed) and `~/.hermes/config.yaml` gains `deep-horizon` in
+`plugins.enabled` — appended last, backed up, nothing else reordered; a yaml
+install cannot confidently read is refused, not guessed at. Re-running an
+install changes nothing when already wired (and takes no backup when nothing
+will be written); upgrading is `npm i -g deep-horizon@latest && horizon
+install --harness zcode --harness hermes && horizon doctor` — the merge is
+the migration, there is no config migration machinery.
+
+`horizon doctor` is the read-only twin: per harness, one PASS/FAIL line per
+check with the fix hint, exit 0 when everything is wired, 1 when something
+is not. It checks the bins on PATH, the config's presence and parse, both
+ZCode hooks (a missing PreToolUse is the F3-class "shipped but not wired"
+state — the check names it and the fix), and for Hermes the plugin files,
+the `plugins.enabled` entry, and the shims. Absent and corrupt configs are
+FAIL lines, never a crash.
+
+```bash
+horizon doctor                       # both harnesses; --harness zcode narrows
+```
 
 ## Per-harness setup
 
@@ -421,12 +469,13 @@ The adapter is POSIX sh scripts shipped inside the package
 config runs them straight from the global install, so there is no copy
 step. They need `jq` and `node` on PATH.
 
-`.zcode/config.json` (project-local, checked into the repo — this repo
-carries the SessionStart half; the same `hooks` block may instead live in
-the user config `~/.zcode/cli/config.json`). `horizon install --harness
-zcode` writes that user-config block for you — parse, merge, validate,
-timestamped backup, idempotent — and `horizon doctor` verifies the wiring
-afterwards:
+`horizon install --harness zcode` writes the block below into the user
+config `~/.zcode/cli/config.json` (parse → merge → validate → backup →
+atomic write; see Wiring), and `horizon doctor` verifies the wiring
+afterwards. Project-local `.zcode/config.json` may carry the
+same block instead — this repo checks in the SessionStart half — but project
+hooks are trust-gated and double-fire once trusted when both scopes declare
+them, so pick exactly one surface; the user config is the reliable one:
 
 ```json
 {
@@ -439,7 +488,8 @@ afterwards:
           "hooks": [
             {
               "type": "command",
-              "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/session-start\""
+              "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/session-start\"",
+              "enabled": true
             }
           ]
         }
@@ -451,6 +501,7 @@ afterwards:
             {
               "type": "command",
               "command": "\"$(npm root -g)/deep-horizon/adapters/zcode/pre-execute\"",
+              "enabled": true,
               "timeout": 10
             }
           ]
@@ -490,7 +541,10 @@ carries no subagent marker, so
 there is no subagent guard: if a subagent session fires the hook, it
 receives the horizon like any other session — noise, not harm. Every
 hook fails open: a missing bin, a missing `jq`, or any error injects
-nothing and never blocks the session.
+nothing and never blocks the session. Each fire appends one line to the
+store's `.horizon/hooks.log` (the bin-fire log, gitignored like
+sessions.jsonl) — injected/nudged/silent for startup, recorded/error for
+`horizon session-end` — so a regression is visible without forensics.
 
 Param trigger: the `PreToolUse` hook scans each matching call's
 arguments for absolute target directories — a `workdir` argument, the

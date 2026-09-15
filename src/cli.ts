@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import {
   addGap,
   amendGap,
+  appendHooksLog,
   closeGap,
   ensureStoreDir,
   readGap,
@@ -9,13 +10,15 @@ import {
   readSessions,
   recordSession,
   resolveStore,
+  sessionEndStoreDir,
   setAbout,
   setDetail,
   usage,
 } from "./store.ts";
+import { collectHarnessValues, runDoctor, runInstall } from "./wiring.ts";
 import { gapLine } from "./texts.ts";
 
-const COMMANDS = ["show", "about", "add", "close", "amend", "detail", "log", "session-end", "init"];
+const COMMANDS = ["show", "about", "add", "close", "amend", "detail", "log", "session-end", "init", "doctor", "install"];
 const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin", "--summary", "--limit", "--detail", "--store"]);
 const BOOL_FLAGS = new Set(["--json", "--help", "--version", "--clear"]);
 
@@ -62,7 +65,9 @@ function helpText() {
     "  detail <id> --clear       remove a gap's details\n" +
     "  log [--limit N]           print session records, newest first\n" +
     "  session-end --harness <name> --session <id> [--summary \"<text>\"] [--store <dir>] — once per (harness, session); a repeat is a silent no-op\n" +
-    "  init                      create .horizon/ in --cwd\n"
+    "  init                      create .horizon/ in --cwd\n" +
+    "  doctor [--harness <name>] read-only wiring check per harness (zcode, hermes; both by default) — one PASS/FAIL line per check with the fix hint; exit 0 all-pass, 1 any FAIL\n" +
+    "  install --harness <name>  wire a harness's global config (zcode, hermes; repeat the flag or comma-separate); parse → merge → validate → backup → atomic write, idempotent\n"
   );
 }
 
@@ -138,11 +143,12 @@ export async function main(argv, sink = processSink()) {
   let json = !!globals.json;
   // Exit codes, for the reader — docs only. The contract's one home is the
   // test suite's bare literals; nothing here imports these numbers.
-  //   0 success · 2 usage (parse, unknown command or flag, bad --limit) ·
-  //   3 rejected text (gap text, about line, details) · 4 at capacity ·
-  //   5 unknown or invalid gap id · 6 rename retries exhausted ·
-  //   7 store malformed or unusable · 8 duplicate or retired gap id.
-  //   1 is nobody's: a crash crashes.
+  //   0 success · 2 usage (parse, unknown command or flag, bad --limit) and
+  //   install's loud refusals · 3 rejected text (gap text, about line,
+  //   details) · 4 at capacity · 5 unknown or invalid gap id ·
+  //   6 rename retries exhausted · 7 store malformed or unusable ·
+  //   8 duplicate or retired gap id · 1 is doctor's alone: any wiring check
+  //   failed (a crash still crashes with whatever code the runtime picks).
   const fail = (code, message) => {
     if (json) {
       sink.stdout(JSON.stringify({ error: { code, message } }) + "\n");
@@ -371,12 +377,22 @@ export async function main(argv, sink = processSink()) {
         return fail(2, "horizon: session-end requires --harness and --session");
       }
       const summary = explicit.has("summary") ? opts.summary : null;
+      const storeArg = explicit.has("store") ? opts.store : null;
       const w = recordSession(cwd, {
         harness,
         sessionId: session,
         summary,
-        store: explicit.has("store") ? opts.store : null,
+        store: storeArg,
       });
+      // hooks.log (ticket 09): one best-effort line per bin fire, resolved
+      // through the same two-form rule recordSession used, so the line names
+      // the store the record went to (or would have gone to — an error fire
+      // logs outcome=error against the store it found). An idempotent repeat
+      // logs recorded: the pair's record IS in that store. Storeless fires
+      // stay unlogged; the append never raises and never changes the exit
+      // code below.
+      const logDir = sessionEndStoreDir(cwd, storeArg);
+      if (logDir) appendHooksLog(logDir, { harness, bin: "horizon-session-end", session, outcome: w ? "error" : "recorded" });
       if (w) return fail(w.code, w.message);
       return 0;
     }
@@ -385,7 +401,41 @@ export async function main(argv, sink = processSink()) {
       const r = ensureStoreDir(cwd);
       if (r.code !== undefined) return fail(r.code, r.message);
       if (r.created) sink.stderr(`horizon: created ${r.dir}\n`);
+      // The one teaching line (0.4 store topology): gaps.json is the shared
+      // truth and travels with git; the jsonl logs are machine-local and
+      // gitignored by the .gitignore just written.
+      sink.stderr("horizon: commit gaps.json — the horizon travels with the repo; the jsonl logs stay machine-local\n");
       return 0;
+    }
+
+    case "doctor": {
+      // Read-only diagnostics over the machine's harness wiring (ticket 09).
+      // --harness narrows to one of zcode|hermes; the default checks both.
+      // --json is accepted and ignored: the report is one PASS/FAIL line per
+      // check, a shape a human reads and a test greps.
+      const only = opts.harness;
+      if (only !== undefined && only !== "zcode" && only !== "hermes") {
+        return fail(2, `horizon: unknown harness: ${only} (zcode, hermes)`);
+      }
+      return runDoctor({ only, sink });
+    }
+
+    case "install": {
+      // The wiring half of ticket 10. --harness is repeatable for install —
+      // the upgrade path is `horizon install --harness zcode --harness
+      // hermes` — while the shared parser is last-wins for every other
+      // caller, so install re-scans argv for its own values (same token
+      // rules: "--" ends flags, --harness=value counts).
+      const requested = collectHarnessValues(argv);
+      if (requested.length === 0) {
+        return fail(2, "horizon: install requires --harness <zcode|hermes> (repeat the flag or comma-separate: --harness zcode,hermes)");
+      }
+      for (const h of requested) {
+        if (h !== "zcode" && h !== "hermes") {
+          return fail(2, `horizon: unknown harness: ${h} (zcode, hermes)`);
+        }
+      }
+      return runInstall(requested, sink);
     }
 
     default:

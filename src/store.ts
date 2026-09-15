@@ -13,10 +13,11 @@ const HORIZON_DIR = ".horizon";
 const GAPS_FILE = "gaps.json";
 const SESSIONS_FILE = "sessions.jsonl";
 const CLOSES_FILE = "closes.jsonl";
-const GITIGNORE_BODY = "sessions.jsonl\n*.tmp.*\n";
+const HOOKS_LOG_FILE = "hooks.log";
+const GITIGNORE_BODY = "sessions.jsonl\nhooks.log\n*.tmp.*\n";
 
 export function usage() {
-  return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init> [...]";
+  return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init|doctor|install> [...]";
 }
 
 function codePoints(s) {
@@ -383,6 +384,39 @@ function appendLine(storeDir, file, obj) {
   return null;
 }
 
+// --- hooks.log (ticket 09: the one observability channel) ---
+//
+// One append-only line per BIN fire — the bins write it (horizon-inject,
+// horizon session-end), never the adapters, so every harness that shells out
+// gets logging for free — into the resolved store's .horizon/hooks.log:
+//
+//   <iso-ts> <harness> <bin> session=<id|-> store=<resolved|-> outcome=<...>
+//
+// outcome is injected|nudged|silent for horizon-inject (the section-10
+// variants plus the empty composition) and recorded|error for session-end
+// (an idempotent repeat still logs recorded: the pair's record IS in that
+// store — the line says how the fire ended, not that bytes moved).
+// Storeless fires (the nudge, the silence, a vanished --store) stay
+// unlogged: there is no store to log into, and that class was always
+// diagnosed from harness logs — the invisible class was store-side drops.
+//
+// The whole contract is best-effort: the logging hangs off fail-open hooks,
+// so this helper NEVER raises, NEVER changes an exit code, and NEVER blocks
+// the write it accompanies — an unwritable hooks.log costs the line, never
+// the hook. Note an accepted gap: an EXISTING store's .gitignore predates
+// this file and will not list it (the ignore body ships only with newly
+// materialized stores); the log is diagnostics, not data, so no store is
+// ever rewritten just to add the line.
+export function appendHooksLog(storeDir, { harness, bin, session, outcome }) {
+  try {
+    appendFileSync(
+      join(storeDir, HOOKS_LOG_FILE),
+      `${utcNow()} ${harness} ${bin} session=${session || "-"} store=${storeDir} outcome=${outcome}\n`,
+      { encoding: "utf8" },
+    );
+  } catch { /* the line is lost, never the hook */ }
+}
+
 // Close records for one session: the whole file parsed, then filtered by
 // session_id — the only reader is recordSession's join. An absent file is
 // an empty history, like sessions.jsonl.
@@ -554,6 +588,18 @@ export function closeGap(cwd, id, sessionId) {
   return writeGapsFile(loaded.dir, next);
 }
 
+// The store a session-end fire lands in — recordSession's own two-form
+// resolution pulled out so the bin's hooks.log line (ticket 09, via
+// sessionEndStoreDir's caller in cli.ts) names the same store the record
+// went to without re-deriving the rule and drifting from it. An explicit
+// --store is trusted but checked (absent or a non-directory is the storeless
+// twin); a cwd walks up. Null is the storeless twin: no record, no log line.
+export function sessionEndStoreDir(cwd, store) {
+  if (store !== null) return explicitStoreDir(store);
+  const r = resolveStore(cwd);
+  return r ? r.dir : null;
+}
+
 // recordSession appends the one session record (CONTEXT: Session record),
 // once per (harness, session_id): a record already in sessions.jsonl for the
 // pair makes the call a silent no-op — the first record wins and a later
@@ -689,10 +735,11 @@ export function readGap(cwd, id) {
 // honours .gitattributes in subdirectories, so a Windows checkout with
 // core.autocrlf=true cannot rewrite sessions.jsonl into CRLF. An existing
 // file is never clobbered (the user may have customised it).
-// .gitignore keeps sessions.jsonl (append-only machine noise: unbounded, and
-// two clones appending to one tracked file conflict on every pull) and the
-// atomic-write tmp files out of git, without touching the repo's root
-// .gitignore (spec: 09-open-items-resolved B). gaps.json stays committed —
+// .gitignore keeps sessions.jsonl and hooks.log (append-only machine noise:
+// unbounded, and two clones appending to one tracked file conflict on every
+// pull) and the atomic-write tmp files out of git, without touching the
+// repo's root .gitignore (spec: 09-open-items-resolved B). gaps.json stays
+// committed —
 // the horizon is a repo-level artifact that travels. An existing file is
 // never clobbered.
 // materializeStoreDir makes a store directory complete: it creates the

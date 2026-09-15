@@ -112,18 +112,21 @@ test("inject-json-storeless. --json answers store:null when no store resolves; p
   });
 });
 
-test("38. inject makes no store writes: read-only dirs and read-only files still inject", async () => {
+test("38. inject writes nothing but hooks.log: read-only dirs and read-only files still inject", async () => {
   await withDir(async (dir) => {
     seed(dir, ["Read-only world"]);
     const store = join(dir, ".horizon");
     for (const name of readdirSync(store)) {
       writeFileSync(join(store, name), readFileSync(join(store, name), "utf8"), { mode: 0o444 });
     }
-    const before = readdirSync(store).sort().join(",");
+    const before = readdirSync(store).sort();
     const r = await runInject(["--cwd", dir]);
     assert.equal(r.code, 0);
     assert.ok(r.stdout.includes("Read-only world"));
-    assert.equal(readdirSync(store).sort().join(","), before, "store directory listing changed");
+    // The one sanctioned write (ticket 09): the bin-fire log appears; no
+    // store DATA file is created, moved, or rewritten.
+    assert.deepEqual(readdirSync(store).sort(), [...before, "hooks.log"], "store listing changed beyond hooks.log");
+    assert.match(readFileSync(join(store, "hooks.log"), "utf8"), / outcome=injected\n$/);
     await withDir(async (empty) => {
       const emptyStore = join(empty, ".horizon");
       mkdirSync(emptyStore, { recursive: true });
@@ -131,11 +134,12 @@ test("38. inject makes no store writes: read-only dirs and read-only files still
       for (const name of readdirSync(emptyStore)) {
         writeFileSync(join(emptyStore, name), readFileSync(join(emptyStore, name), "utf8"), { mode: 0o444 });
       }
-      const beforeEmpty = readdirSync(emptyStore).sort().join(",");
+      const beforeEmpty = readdirSync(emptyStore).sort();
       const r2 = await runInject(["--cwd", empty]);
       assert.equal(r2.code, 0);
       assert.ok(r2.stdout.startsWith("This project has no horizon yet"));
-      assert.equal(readdirSync(emptyStore).sort().join(","), beforeEmpty, "store directory listing changed");
+      assert.deepEqual(readdirSync(emptyStore).sort(), [...beforeEmpty, "hooks.log"], "empty store listing changed beyond hooks.log");
+      assert.match(readFileSync(join(emptyStore, "hooks.log"), "utf8"), / outcome=nudged\n$/);
     });
   });
 });
@@ -1213,7 +1217,7 @@ test("78. the provenance footer: §10.5 bytes verbatim with --session, absent wi
     // (The probe needs a storeless cwd that IS the home — resolveStore walks
     // up, so a child of dir would find dir's store.)
     await withDir(async (bare) => {
-      assert.deepEqual(resolveInjection(bare, { home: bare, harness: H, session: S }), { text: "", store: null });
+      assert.deepEqual(resolveInjection(bare, { home: bare, harness: H, session: S }), { text: "", store: null, outcome: "silent" });
     });
     // Both nudges carry it too — a storeless session's first bootstrap add
     // deserves real provenance.
@@ -1335,23 +1339,25 @@ test("inject-unit-2. the $-pattern guard: $&, $`, $', $$, $1 substitute byte-for
 
 // The --json envelope's content, in-process: resolveInjection is the total
 // answer for a cwd — the composed text plus the store the resolution already
-// paid for, null when none was found. `home` is injectable, so the silence
-// case never touches the real $HOME. A malformed store stays an unwrapped
-// error: { code, message }, stdout untouched (main() prints nothing under
-// --json on the error path).
-test("inject-unit-3. resolveInjection: the {text, store} answer — store rides along, storeless is null, home silence is empty", async () => {
+// paid for, null when none was found, and the fire's outcome for hooks.log
+// (ticket 09). `home` is injectable, so the silence case never touches the
+// real $HOME. A malformed store stays an unwrapped error: { code, message },
+// stdout untouched (main() prints nothing under --json on the error path);
+// the store still rides along so the failed fire can be logged against it.
+test("inject-unit-3. resolveInjection: the {text, store, outcome} answer — store rides along, storeless is null, home silence is empty", async () => {
   await withDir(async (dir) => {
     seed(dir, ["Envelope gap"]);
     const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
     const expected = specFence(spec, "### 10.1").replace("{{GAPS}}", "gap-1  Envelope gap\n");
-    assert.deepEqual(resolveInjection(dir, { home: "/home/fake-user" }), { text: expected, store: join(dir, ".horizon") });
+    assert.deepEqual(resolveInjection(dir, { home: "/home/fake-user" }), { text: expected, store: join(dir, ".horizon"), outcome: "injected" });
     await withDir(async (storeless) => {
       const s = resolveInjection(storeless, { home: "/home/fake-user" });
       assert.equal(s.store, null, "a storeless cwd must answer store:null");
+      assert.equal(s.outcome, "nudged", "the storeless nudge is the nudged outcome");
       assert.ok(s.text.startsWith("This project has no horizon yet"), "the storeless nudge still composes");
       // The silence twin: a storeless cwd that IS the (fake) home — empty
       // text, null store, nothing to hand back.
-      assert.deepEqual(resolveInjection(storeless, { home: storeless }), { text: "", store: null });
+      assert.deepEqual(resolveInjection(storeless, { home: storeless }), { text: "", store: null, outcome: "silent" });
     });
     await withDir(async (bad) => {
       mkdirSync(join(bad, ".horizon"), { recursive: true });
@@ -1360,6 +1366,8 @@ test("inject-unit-3. resolveInjection: the {text, store} answer — store rides 
       assert.equal(e.error.code, 7);
       assert.match(e.error.message, /gaps\.json/);
       assert.equal(e.text, undefined);
+      assert.equal(e.store, join(bad, ".horizon"), "the failed fire names the store it found");
+      assert.equal(e.outcome, "error");
     });
   });
 });
