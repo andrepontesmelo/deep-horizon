@@ -219,7 +219,13 @@ export async function main(argv, sink = processSink()) {
 
   const cwd = opts.cwd ?? process.cwd();
   const harness = opts.harness ?? process.env.HORIZON_HARNESS ?? "unknown";
-  const session = opts.session ?? "unknown";
+  // The session id falls through the env chain (0.4.0 amendment D3): agent
+  // shells do NOT carry ZCODE_SESSION_ID — hook processes do — so the envs
+  // are a fallback for humans at terminals and forgetful hook-glue, never
+  // the primary path. That path is the composed footer (spec 10.5): the
+  // adapter passes --session to horizon-inject, the text teaches the agent
+  // to pass it back here.
+  const session = opts.session ?? process.env.ZCODE_SESSION_ID ?? process.env.HORIZON_SESSION ?? "unknown";
   const origin = opts.origin ?? "human";
   if (origin !== "human" && origin !== "agent-proposed") {
     return fail(2, `horizon: --origin must be human or agent-proposed, got: ${origin}`);

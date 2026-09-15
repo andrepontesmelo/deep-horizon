@@ -1,5 +1,9 @@
 // The three locked injection strings (spec section 10). They live in the core
 // package so every adapter imports them instead of carrying its own copy.
+// The add teachings are id-first (`horizon add <id> "<one line>"`) since the
+// 0.4.0 amendment (D2): the CLI takes the id positionally, so teaching the
+// two-arg form was teaching an exit 2. The id's grammar stays out of these
+// strings — the CLI's rejection message and the docs own it.
 //
 // BYTE-CONTRACT (DEF-3 ruling, 2026-09-09): each export equals the inside of
 // its spec §10 fenced block EXACTLY — no leading/trailing newline added,
@@ -28,12 +32,12 @@ export const HORIZON_BLOCK_TEMPLATE =
   "Some gaps carry extended context beyond their one line —\n" +
   "`horizon detail <id>` prints it.\n" +
   "\n" +
-  "Three things are yours to do. When the user wants something that outlives this\n" +
-  "session, offer `horizon add \"<one line>\"`. When something here looks done, offer\n" +
-  "`horizon close <id>`. If no about line heads this block and the work tells you\n" +
-  "what the project is about, offer `horizon about \"<one line>\"`; if the user says\n" +
-  "it themselves, offer to set or update it with their words. All need the user's\n" +
-  "yes — the horizon is theirs, you only hold the pen.";
+  "Three things are yours to do. When the user wants something that outlives\n" +
+  "this session, offer `horizon add <id> \"<one line>\"`. When something here looks\n" +
+  "done, offer `horizon close <id>`. If no about line heads this block and the work\n" +
+  "tells you what the project is about, offer `horizon about \"<one line>\"`; if the\n" +
+  "user says it themselves, offer to set or update it with their words. All need\n" +
+  "the user's yes — the horizon is theirs, you only hold the pen.";
 
 // The bootstrap nudge (spec 10.2): injected when the store carries neither an
 // about line nor gaps — an absent store and an empty store are the same state
@@ -43,13 +47,13 @@ export const BOOTSTRAP_NUDGE_TEXT =
   "tells you what the project is about, offer once to set it:\n" +
   "`horizon about \"<one line>\"` with your draft, after the user's yes. If the\n" +
   "user says it themselves, offer their words instead. When the user names a want\n" +
-  "that outlives this session, offer `horizon add \"<one line>\"` the same way.\n" +
+  "that outlives this session, offer `horizon add <id> \"<one line>\"` the same way.\n" +
   "A decline ends the offering for this session.";
 
 // The warm nudge (spec 10.3): injected when an about line is set but no gaps
 // are. Composed AFTER aboutPrefix, so "the line above" is the about line.
 export const NUDGE_TEXT =
-  "No gaps yet. `horizon add \"<one line>\"` if the user names a want that\n" +
+  "No gaps yet. `horizon add <id> \"<one line>\"` if the user names a want that\n" +
   "outlives this session. If what the user says the project is about no longer\n" +
   "matches the line above, offer to update it — `horizon about`, their words,\n" +
   "after their yes.";
@@ -69,6 +73,25 @@ export function horizonBlock(gapsStdout) {
 // Composed by horizon-inject (D6: single-sourced there, never per-adapter).
 export function aboutPrefix(about) {
   return typeof about === "string" ? `This project is about: ${about}\n\n` : "";
+}
+
+// The provenance footer (0.4.0 amendment D1, spec 10.5): teaches a session to
+// name itself in the store's records. Composed OUTSIDE the locked strings —
+// the §10.4 about-prefix precedent — so the byte-lock (test 34) keeps locking
+// only the three fences, and the footer's own bytes are pinned against the
+// spec's §10.5 fence by their own test. Substitution is function replacement
+// (DEF-1): session ids are caller-authored, and a string replacement would
+// expand $-patterns ($&, $`, $', $$, $1) out of them. No session id (absent
+// or empty), no footer — a human running horizon-inject by hand gets none.
+// The harness always arrives resolved (flag, HORIZON_HARNESS, "unknown").
+export const PROVENANCE_FOOTER_TEMPLATE =
+  "Provenance: when you run `horizon add` or `horizon close`, append\n" +
+  "`--harness {{HARNESS}} --session {{SESSION}}` verbatim — it names this\n" +
+  "session in the store's record.";
+
+export function provenanceFooter(harness, session) {
+  if (typeof session !== "string" || session.length === 0) return "";
+  return PROVENANCE_FOOTER_TEMPLATE.replace("{{HARNESS}}", () => harness).replace("{{SESSION}}", () => session);
 }
 
 // The gap line (spec 3.1) — id, two spaces, text, one line per gap. Three
