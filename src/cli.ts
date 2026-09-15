@@ -224,8 +224,10 @@ export async function main(argv, sink = processSink()) {
   // are a fallback for humans at terminals and forgetful hook-glue, never
   // the primary path. That path is the composed footer (spec 10.5): the
   // adapter passes --session to horizon-inject, the text teaches the agent
-  // to pass it back here.
-  const session = opts.session ?? process.env.ZCODE_SESSION_ID ?? process.env.HORIZON_SESSION ?? "unknown";
+  // to pass it back here. An empty env value is absent (an exported "" is
+  // an unset id, not a session named "").
+  const envSession = [process.env.ZCODE_SESSION_ID, process.env.HORIZON_SESSION].find((v) => typeof v === "string" && v) || "unknown";
+  const session = opts.session ?? envSession;
   const origin = opts.origin ?? "human";
   if (origin !== "human" && origin !== "agent-proposed") {
     return fail(2, `horizon: --origin must be human or agent-proposed, got: ${origin}`);
