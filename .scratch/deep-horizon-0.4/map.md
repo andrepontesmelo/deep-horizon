@@ -247,3 +247,16 @@ decisions): verify dsh/opencode/pi spawn sites pass `--session`; verify the
 zcode subagent start-phase behavior (0 ms no-marker passes suggest hooks
 skip subagents — confirm, then document); confirm kanban/cron behavioral
 proof when the next task/fire lands after ticket 11's config.
+
+## Outcome (2026-09-15)
+
+Built and deployed the same day, orchestrator-driven: five slices, each
+implement→review→merge (all reviews APPROVE; every nit fixed), 228/228
+tests on main. Machine cutover from the symlink to a real packed-tarball
+install (the registry publish is the one pending step — the npm token in
+~/.npmrc is dead, `npm login` needed; `npm publish` from the repo when it
+is), `horizon install` wired both harnesses, `horizon doctor` green
+(7/7). One live-caught bug fixed post-merge (the session-record union
+inherited authorship on close; now witnesses `added_session_id` — test
+28b). Horizon gaps closed with real provenance: `close-hook`,
+`zcode-param-trigger`; `registry-release` stays open pending the publish.
