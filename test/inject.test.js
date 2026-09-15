@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { runCli, runInject, seed, specFence, withDir } from "./harness.js";
 import { setAbout as storeSetAbout, setDetail } from "../src/store.ts";
 import { compose, resolveInjection } from "../src/inject.ts";
+import { provenanceFooter } from "../src/texts.ts";
 
 const ADAPTER = new URL("../src/adapters/dsh.ts", import.meta.url).pathname;
 
@@ -153,7 +154,7 @@ test("39. malformed gaps.json: inject exits 7 naming the file and prints no text
   });
 });
 
-test("40. inject supports the CLI's global options (help/version, --harness/--session/--origin accepted and ignored)", async () => {
+test("40. inject supports the CLI's global options (help/version; --origin accepted and ignored; --harness/--session feed the footer)", async () => {
   await withDir(async (dir) => {
     seed(dir, ["Global options gap"]);
     const help = await runInject(["--help"]);
@@ -1165,6 +1166,69 @@ test("inject-matrix. the five store states each produce exactly one variant — 
       assert.equal(present[0][0], variant, `${label}: wrong variant present`);
     });
   }
+});
+
+// --- provenance footer (0.4.0 amendment D1, spec 10.5) ---
+
+// The footer composes OUTSIDE the locked strings (the about-prefix
+// precedent), so its bytes carry their own lock: the §10.5 fence with the
+// two slots substituted is the exact tail of every variant composed with a
+// session id — and a $-bearing id must round-trip (DEF-1's footer twin).
+test("78. the provenance footer: §10.5 bytes verbatim with --session, absent without, on the block and both nudges, $-ids round-trip", async () => {
+  const spec = readFileSync(new URL("../.scratch/deep-horizon/05-cli-contract.md", import.meta.url), "utf8").split("\n");
+  const footer = (harness, session) =>
+    specFence(spec, "### 10.5").replace("{{HARNESS}}", () => harness).replace("{{SESSION}}", () => session);
+  const H = "zcode";
+  const S = "sess-$&-$`-$'$1-42";
+
+  // Unit: the footer's bytes are the fence with the slots filled; a
+  // $-bearing session id survives byte-for-byte (a string replacement would
+  // expand $&, $`, $', $$, $1 — the very DEF-1 bug). No session, no footer.
+  assert.equal(provenanceFooter(H, S), footer(H, S));
+  assert.equal(provenanceFooter(H, ""), "");
+  assert.equal(provenanceFooter(H, undefined), "");
+  // compose tolerates the flag-less call: byte-identical to the pre-0.4
+  // block — no footer, no trailing blank line.
+  const GAP = { id: "gap-1", text: "Footer gap" };
+  const block = specFence(spec, "### 10.1").replace("{{GAPS}}", () => "gap-1  Footer gap\n");
+  assert.equal(compose({ gaps: [GAP], about: undefined, silence: false, harness: H, session: S }), block + "\n\n" + footer(H, S));
+  assert.equal(compose({ gaps: [GAP], about: undefined, silence: false }), block);
+
+  await withDir(async (dir) => {
+    seed(dir, ["Footer gap"]);
+    // The block, end to end through the bin: footer after one blank line.
+    const r = await runInject(["--cwd", dir, "--harness", H, "--session", S]);
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, block + "\n\n" + footer(H, S), "the block carries the footer after one blank line");
+    // Absent --session: byte-identical to the pre-0.4 composition.
+    const bare = await runInject(["--cwd", dir]);
+    assert.equal(bare.code, 0);
+    assert.equal(bare.stdout, block);
+    // The harness falls back through HORIZON_HARNESS when the flag is absent.
+    const env = { ...process.env, HORIZON_HARNESS: "hermes" };
+    const envd = await runInject(["--cwd", dir, "--session", "s-2"], { env });
+    assert.equal(envd.code, 0);
+    assert.ok(envd.stdout.endsWith("\n\n" + footer("hermes", "s-2")), "HORIZON_HARNESS names the footer when --harness is absent");
+    // Silence stays silent even with a session: empty stdout means silent.
+    // (The probe needs a storeless cwd that IS the home — resolveStore walks
+    // up, so a child of dir would find dir's store.)
+    await withDir(async (bare) => {
+      assert.deepEqual(resolveInjection(bare, { home: bare, harness: H, session: S }), { text: "", store: null });
+    });
+    // Both nudges carry it too — a storeless session's first bootstrap add
+    // deserves real provenance.
+    await withDir(async (empty) => {
+      seed(empty, []);
+      const b = await runInject(["--cwd", empty, "--harness", H, "--session", S]);
+      assert.equal(b.code, 0);
+      assert.equal(b.stdout, specFence(spec, "### 10.2") + "\n\n" + footer(H, S), "the bootstrap nudge carries the footer");
+      setAbout(empty, "About line");
+      const w = await runInject(["--cwd", empty, "--harness", H, "--session", S]);
+      assert.equal(w.code, 0);
+      assert.equal(w.stdout, `This project is about: About line\n\n` + specFence(spec, "### 10.3") + "\n\n" + footer(H, S),
+        "the warm nudge carries the footer after the about prefix");
+    });
+  });
 });
 
 // --- details pointer (per-gap extended context, retrieved on demand) ---

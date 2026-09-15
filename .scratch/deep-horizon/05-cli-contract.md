@@ -96,7 +96,9 @@ One object per line, appended, never rewritten:
   what it recorded during the session (§3.7). Never supplied by the agent.
 - `harness` + `session_id` — the harness's own id, recorded verbatim. It is the
   join key back into that harness's transcripts; deep-horizon never invents an
-  id of its own.
+  id of its own. Pre-0.4 records carry `"unknown"` honestly and are left
+  as-is: provenance is advisory evidence, and timestamp-correlated backfill
+  would be partly fabrication (0.4.0 amendment D4).
 
 ---
 
@@ -107,7 +109,7 @@ One object per line, appended, never rewritten:
 | `--cwd <path>` | Resolve the store from here instead of the process cwd. |
 | `--json` | Machine-readable output on stdout (§7). Errors also become JSON. |
 | `--harness <name>` | Records provenance. Defaults to `$HORIZON_HARNESS`, then `unknown`. |
-| `--session <id>` | The harness's session id, for provenance and session records. |
+| `--session <id>` | The harness's session id, for provenance and session records. Defaults to `$ZCODE_SESSION_ID`, then `$HORIZON_SESSION`, then `unknown` — the envs are a fallback for humans at terminals and forgetful hook-glue (agent shells do not carry `ZCODE_SESSION_ID`; hook processes do). The primary path is the composed footer (§10.5): the adapter hands `--session` to `horizon-inject`, and the injected text teaches the agent to hand it back. |
 | `--origin <human\|agent-proposed>` | Defaults to `human`. |
 | `--version` / `--help` | Standard. Always exit 0. |
 
@@ -576,12 +578,12 @@ plan around closing them, and do not report progress against them.
 Some gaps carry extended context beyond their one line —
 `horizon detail <id>` prints it.
 
-Three things are yours to do. When the user wants something that outlives this
-session, offer `horizon add "<one line>"`. When something here looks done, offer
-`horizon close <id>`. If no about line heads this block and the work tells you
-what the project is about, offer `horizon about "<one line>"`; if the user says
-it themselves, offer to set or update it with their words. All need the user's
-yes — the horizon is theirs, you only hold the pen.
+Three things are yours to do. When the user wants something that outlives
+this session, offer `horizon add <id> "<one line>"`. When something here looks
+done, offer `horizon close <id>`. If no about line heads this block and the work
+tells you what the project is about, offer `horizon about "<one line>"`; if the
+user says it themselves, offer to set or update it with their words. All need
+the user's yes — the horizon is theirs, you only hold the pen.
 ```
 
 Chosen over a terse variant and an explicit-contract variant. The reasoning:
@@ -617,7 +619,7 @@ This project has no horizon yet — no about line, no gaps. If the work at hand
 tells you what the project is about, offer once to set it:
 `horizon about "<one line>"` with your draft, after the user's yes. If the
 user says it themselves, offer their words instead. When the user names a want
-that outlives this session, offer `horizon add "<one line>"` the same way.
+that outlives this session, offer `horizon add <id> "<one line>"` the same way.
 A decline ends the offering for this session.
 ```
 
@@ -633,7 +635,7 @@ Injected when an about line is set but no gaps exist. Composed **after** the
 about prefix (§10.4), so "the line above" is the about line, literally.
 
 ```
-No gaps yet. `horizon add "<one line>"` if the user names a want that
+No gaps yet. `horizon add <id> "<one line>"` if the user names a want that
 outlives this session. If what the user says the project is about no longer
 matches the line above, offer to update it — `horizon about`, their words,
 after their yes.
@@ -679,7 +681,33 @@ no-about case, so it never carries a prefix. The prefix is composed by
 `horizon-inject` from the core package's `aboutPrefix` helper (D6:
 composition stays single-sourced there, never per-adapter).
 
-### 10.5 Acceptance tests for the texts
+### 10.5 The provenance footer
+
+Since 0.4.0, when a session id is known, `horizon-inject` appends a
+provenance footer after one blank line following the composed text — after
+the about prefix and the variant, on the horizon block AND both nudges
+alike: a storeless session's first bootstrap add deserves real provenance
+too. The footer is composed outside the locked strings (the §10.4
+precedent), so the byte-lock keeps locking only the three fences; the
+footer's own bytes are locked here:
+
+```
+Provenance: when you run `horizon add` or `horizon close`, append
+`--harness {{HARNESS}} --session {{SESSION}}` verbatim — it names this
+session in the store's record.
+```
+
+`{{HARNESS}}` and `{{SESSION}}` are the two slots, substituted by function
+replacement (DEF-1): a `$`-bearing session id must round-trip byte-for-byte,
+never expand. The harness resolves `--harness`, then `HORIZON_HARNESS`, else
+`unknown`. No session id — `--session` absent — no footer, and the composed
+text is byte-identical to the pre-0.4 output: a human running
+`horizon-inject` by hand gets none. The primary provenance path is the
+adapters passing `--session <id>` when they spawn the bin (0.4.0 amendment
+D1); the CLI's env fallbacks (§2) serve humans and hook-glue, never the
+footer.
+
+### 10.6 Acceptance tests for the texts
 
 34. The horizon block substitutes `{{GAPS}}` with `show` stdout byte-for-byte,
     with no added bullets, indentation, or trailing newline changes.
@@ -690,15 +718,21 @@ composition stays single-sourced there, never per-adapter).
 36. All three strings are exported from the core package and imported by every
     adapter; no adapter contains a literal copy. (Enforced by a test that greps
     the adapter sources for a distinctive phrase from each string.)
-37. The about line, when set, is injected as `This project is about: <text>`
+37. When a session id is known, the composed text carries the provenance
+    footer after one blank line, byte-identical to the §10.5 fence with the
+    slots substituted — on the block and on both nudges alike; a `$`-bearing
+    session id round-trips byte-for-byte. Without a session id the composed
+    text is byte-identical to the pre-0.4 output: no footer, no trailing
+    blank line.
+38. The about line, when set, is injected as `This project is about: <text>`
     followed by a blank line ahead of the block (gaps present) or the warm
     nudge (none); the bootstrap nudge carries no prefix. When unset, the
     injected text is byte-identical to §10.1/§10.2 alone.
-38. The about line survives every whole-file rewrite (`add`, `close`,
+39. The about line survives every whole-file rewrite (`add`, `close`,
     `amend`, `about` itself) and is removed only by `about --clear`, which
     preserves the gaps. A non-string `about` in `gaps.json` is malformed
     (exit 7), and an unset store never gains the field from a rewrite.
-39. The horizon block carries the detail pointer — the one line naming
+40. The horizon block carries the detail pointer — the one line naming
     `horizon detail <id>` as the retrieval path — and neither nudge does:
     no gaps exist in the nudge states, so no details can either. Details
     content itself never appears in any injected text. (Pinned in code by

@@ -10,22 +10,24 @@
 // not reachable only through the bin's subprocess.
 //
 // Flags mirror the CLI's global options so harness glue can forward them
-// (--cwd, --harness, --session, --origin); only --cwd changes behaviour.
-// --json is the total answer for a cwd: {"text": <string>, "store":
-// <string|null>} — the composed text plus the store directory resolution
-// already paid for, null when no store was found (the silence and
-// storeless-nudge cases). Plain stdout stays text-only: empty output means
-// silent, the contract the non-json callers rely on. Unknown flags are a
-// usage error (exit 2).
+// (--cwd, --harness, --session, --origin). --cwd changes the store
+// resolution; since 0.4.0 (spec 10.5) --session and --harness compose the
+// provenance footer — no --session, no footer; --origin stays
+// accepted-and-ignored. --json is the total answer for a cwd:
+// {"text": <string>, "store": <string|null>} — the composed text plus the
+// store directory resolution already paid for, null when no store was found
+// (the silence and storeless-nudge cases). Plain stdout stays text-only:
+// empty output means silent, the contract the non-json callers rely on.
+// Unknown flags are a usage error (exit 2).
 import { homedir } from "node:os";
 import { cliVersion } from "./cli.ts";
 import { readGapsFile, resolveStore, suppressBootstrap } from "./store.ts";
-import { BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT, aboutPrefix, gapLine, horizonBlock } from "./texts.ts";
+import { BOOTSTRAP_NUDGE_TEXT, NUDGE_TEXT, aboutPrefix, gapLine, horizonBlock, provenanceFooter } from "./texts.ts";
 
 // The flags horizon-inject accepts: the CLI's global options (--help and
-// --version answer here too). --harness, --session, and --origin are
-// accepted and ignored — harness glue forwards them; only --cwd changes
-// behaviour.
+// --version answer here too). --origin is accepted and ignored — harness glue
+// forwards it; --cwd resolves the store and --harness/--session feed the
+// provenance footer (spec 10.5).
 const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin"]);
 const BOOL_FLAGS = new Set(["--json", "--help", "--version"]);
 
@@ -100,7 +102,10 @@ function helpText() {
     "\n" +
     "Prints the about line (when set) and a blank line, then the section-10 horizon\n" +
     "block when the store has open gaps; with no gaps, the warm nudge when an about\n" +
-    "line is set, the bootstrap nudge when neither is.\n" +
+    "line is set, the bootstrap nudge when neither is. With --session, a provenance\n" +
+    "footer follows after one blank line: the harness and session id to append to\n" +
+    "`horizon add`/`horizon close` so the store's records name this session. No\n" +
+    "--session, no footer.\n" +
     "--json prints one JSON line instead: {\"text\": <string>, \"store\": <string|null>}\n" +
     "— the composed text plus the resolved store directory (null when no store was\n" +
     "found). Plain stdout stays text-only; empty output means silent.\n" +
@@ -116,8 +121,13 @@ function helpText() {
 // replacement, so $-patterns in user-authored gap text ($&, $`, $', $$, $1
 // — DEF-1) reach the block verbatim. aboutPrefix is empty with no about
 // line, so the block and the warm nudge compose with their prefix and the
-// bootstrap case carries none (spec 10.4).
-export function compose({ gaps, about, silence }) {
+// bootstrap case carries none (spec 10.4). The provenance footer (spec
+// 10.5) rides every variant but silence, after the prefix and core,
+// blank-line separated — the footer applies to the block AND both nudges
+// (a storeless session's first bootstrap add deserves real provenance
+// too), and only when a session id is known. Empty output stays empty:
+// empty stdout means silent, whatever the flags said.
+export function compose({ gaps, about, silence, harness, session }) {
   let core;
   if (gaps.length > 0) {
     core = horizonBlock(gaps.map(gapLine).join("\n") + "\n");
@@ -128,7 +138,8 @@ export function compose({ gaps, about, silence }) {
   } else {
     core = BOOTSTRAP_NUDGE_TEXT;
   }
-  return aboutPrefix(about) + core;
+  const footer = core === "" ? "" : provenanceFooter(harness, session);
+  return aboutPrefix(about) + core + (footer === "" ? "" : `\n\n${footer}`);
 }
 
 // The total answer for one cwd: the composed text plus the store directory
@@ -139,7 +150,7 @@ export function compose({ gaps, about, silence }) {
 // the real one. Errors come back as { error: { code, message } } and stay
 // unwrapped: stderr keeps the store's message and stdout stays empty even
 // under --json.
-export function resolveInjection(dir, { home }) {
+export function resolveInjection(dir, { home, harness, session }) {
   const found = resolveStore(dir, { readonly: true });
   const store = found ? found.dir : null;
   if (found && found.open.code !== undefined) return { error: found.open };
@@ -154,7 +165,7 @@ export function resolveInjection(dir, { home }) {
   // A storeless $HOME is not a project: emit nothing (exit 0, empty stdout —
   // the adapters treat empty stdout as a silent no-op).
   const silence = suppressBootstrap({ cwd: dir, storeFound: !!found, home });
-  return { text: compose({ gaps, about, silence }), store };
+  return { text: compose({ gaps, about, silence, harness, session }), store };
 }
 
 // The bin entry, mirroring src/cli.ts's main: writes stdout and stderr
@@ -176,9 +187,15 @@ export async function main(argv, sink = processSink()) {
 
   const cwd = parsed.opts?.cwd;
   const json = !!parsed.opts?.json;
+  // The footer's inputs (spec 10.5): --session gates it — absent, no footer,
+  // so a human running the bin by hand gets none. The harness only names the
+  // footer, so it always resolves: flag, then HORIZON_HARNESS, else
+  // "unknown".
+  const harness = parsed.opts?.harness ?? process.env.HORIZON_HARNESS ?? "unknown";
+  const session = parsed.opts?.session;
   let answer;
   try {
-    answer = resolveInjection(cwd ?? process.cwd(), { home: homedir() });
+    answer = resolveInjection(cwd ?? process.cwd(), { home: homedir(), harness, session });
   } catch {
     sink.stderr("horizon-inject: store read failed\n");
     return 7;
