@@ -932,7 +932,7 @@ test("73. the Hermes section treats a non-empty session cwd as the ONLY candidat
   }, "horizon-adapter-test-");
 });
 
-test("74. the Hermes section prefers the session cwd when it has a store, even if the launch dir also has one", async () => {
+test("74. the Hermes section composes only the session cwd's horizon — a stored launch dir never bleeds in", async () => {
   await withDir(async (dir) => {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -956,10 +956,10 @@ test("74. the Hermes section prefers the session cwd when it has a store, even i
   }, "horizon-adapter-test-");
 });
 
-test("75. the Hermes section keeps the first candidate when neither cwd has a store — the bootstrap nudge for the session cwd, not silence", async () => {
+test("75. a storeless non-empty session cwd gets its own nudge — no launch-dir deferral", async () => {
   // A genuinely storeless project dir must still get its nudge (that is
-  // correct behavior), and the first candidate (the session cwd) stands —
-  // the launch dir never hijacks a storeless session.
+  // correct behavior); the session cwd stands alone (ticket 06) — the
+  // launch dir is never consulted, so it can neither hijack nor rescue.
   await withDir(async (dir) => {
     const launch = join(dir, "launch");
     const sessionCwd = join(dir, "session-cwd");
@@ -1006,7 +1006,7 @@ test("76. the Hermes session-end spawn hands back the stashed injection store wi
       "# The section runs first, against the REAL bins, from the launch dir:",
       "# the session cwd is the only candidate (ticket 06), it has the store,",
       "# and the answer's store field is frozen for the close hook. The launch",
-      "# dir carries its own seeded store that must never be consulted.",
+      "# dir stays empty — under the single-candidate rule it is never read.",
       "deep_horizon._section_text({'session_id': 's-stash', 'cwd': " + JSON.stringify(sessionCwd) + "})",
       "assert deep_horizon._session_store.get('s-stash') == {" + JSON.stringify(join(sessionCwd, ".horizon")) + "}, deep_horizon._session_store",
       "# Now the spawn is fake, the process chdir'd away, and the finalize",

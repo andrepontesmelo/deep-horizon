@@ -57,7 +57,11 @@ returns ``None``) still falls back to the process working directory, the
 launch dir. The plugin never walks the filesystem for stores itself — store
 existence is the bin's answer (``--json``'s ``store`` field), one rule; a
 storeless answer is taken verbatim (the nudge for a storeless project dir,
-silence for $HOME). The pre_llm_call path never distrusts (its repo paths
+silence for $HOME). A frozen storeless nudge can still coexist with a later
+param-path block in the same session — accepted and bounded (ticket 06):
+the section freezes once, the param block arrives later and real, and they
+cannot be reconciled without rewriting frozen prompts. The pre_llm_call
+path never distrusts (its repo paths
 come from the model's own tool-call parameters and are ground truth); a
 storeless answer there is silence — the nudge never fires from a param
 probe.
