@@ -23,6 +23,16 @@ The registry tarball ships `dist/` as packed, so no build step and no
 lifecycle script runs on install — the npm >= 12 install-scripts protection
 is irrelevant on this route.
 
+After installing, wire the harnesses — install writes the hook config
+itself (parse, merge, validate, timestamped backup; it refuses loudly
+rather than blind-write an unrecognized shape), and doctor verifies the
+result:
+
+```bash
+horizon install --harness zcode --harness hermes
+horizon doctor
+```
+
 From a checkout instead (hacking on the adapters): build before installing.
 On npm >= 12 the install-scripts protection blocks this package's `prepare`
 (the build) on path installs, and the `--allow-scripts` remedies npm's own
@@ -86,6 +96,25 @@ work is heading); when set, it is injected ahead of the horizon block. Store
 files: `.horizon/gaps.json` (the open gaps, the retired ids of closed gaps,
 and the about line), `.horizon/sessions.jsonl` and `.horizon/closes.jsonl`
 (append-only history).
+
+## The store and git
+
+`gaps.json` is the shared truth: **commit it**. The append-only logs
+(`sessions.jsonl`, `closes.jsonl`, `hooks.log`) are machine-local by
+design — gitignored by the `.gitignore` every store carries, never
+merged, because concurrent append-only logs would spend their lives in
+merge conflicts for no cross-machine value. The trade, stated once:
+*what* is open or closed travels with the repository; *when it happened
+and in which session* stays on the machine where it happened.
+
+Git worktrees are the corollary, not a problem: a committed `gaps.json`
+does not fork the store, it **branches** it — each worktree checkout
+rides its branch like any other file, and merging the branch home
+reconciles the gaps with it. A worktree's `sessions.jsonl` is that
+checkout's diary and stays there. `horizon init` writes the nested
+`.gitignore` that implements all of this; the pattern this repo's own
+root `.gitignore` uses (ignore `.horizon/*`, re-include `gaps.json`,
+`.gitignore`, `.gitattributes`) is the canonical one to copy.
 
 ## The adapter wire interface
 
@@ -394,7 +423,10 @@ step. They need `jq` and `node` on PATH.
 
 `.zcode/config.json` (project-local, checked into the repo — this repo
 carries the SessionStart half; the same `hooks` block may instead live in
-the user config `~/.zcode/cli/config.json`):
+the user config `~/.zcode/cli/config.json`). `horizon install --harness
+zcode` writes that user-config block for you — parse, merge, validate,
+timestamped backup, idempotent — and `horizon doctor` verifies the wiring
+afterwards:
 
 ```json
 {
@@ -403,7 +435,7 @@ the user config `~/.zcode/cli/config.json`):
     "events": {
       "SessionStart": [
         {
-          "matcher": "startup",
+          "matcher": "startup|resume",
           "hooks": [
             {
               "type": "command",
@@ -443,12 +475,18 @@ Omitting the matcher entirely would match every tool and work too — the
 script scans fields, not tool names — it would just fire more often for
 nothing.
 
-Startup: the `SessionStart` hook matches `startup` only — the first turn
-of a fresh session — and injects one composed block through the
-`additionalContext` envelope ZCode appends to the message history. A
-resumed session replays the original injection from its persisted
-history, so re-injecting would duplicate it (the same assumption as the
-Claude Code adapter). The hook payload carries no subagent marker, so
+Startup: the `SessionStart` hook matches `startup` and `resume` — every
+app instance hands its session the horizon once. The widening is forced by
+a proven fact: the `additionalContext` envelope never persists to the
+session history, so a session resumed in a new app instance has no horizon
+in context and the `resume` fire is the only seam that can re-deliver it.
+(The harness runs the hook once per app instance — a `sessionStartHookRan`
+latch — so the matcher widening cannot loop.) A 10-second simultaneity
+guard covers the one race the latch cannot: two app instances starting
+within seconds of each other both fire `startup` for the same session id —
+the second fire finds its marker pair freshly seeded and stays silent; a
+restart minutes later re-injects, which is the point. The hook payload
+carries no subagent marker, so
 there is no subagent guard: if a subagent session fires the hook, it
 receives the horizon like any other session — noise, not harm. Every
 hook fails open: a missing bin, a missing `jq`, or any error injects
@@ -464,10 +502,12 @@ store, the dir's horizon is injected mid-session through the same
 `additionalContext` envelope, once per store per session — the hook
 itself fires on every matching call (proven live: two identical calls
 produced two injections), so the dedup is the script's job, kept in a
-per-session marker file under `$TMPDIR` that the startup hook seeds with
+per-session marker file under `~/.cache/deep-horizon/markers/` that the
+startup hook seeds with
 the launch store. That seed is the point: a session launched in repo A
 that touches repo A again mid-session does not get repo A's horizon
-twice; a first touch of repo B does. Storeless targets are probed once,
+twice; a first touch of repo B does. The cache dir is deliberate — the
+markers survive a reboot, which the next paragraph depends on. Storeless targets are probed once,
 remembered silent, and never re-asked. The hook never denies a tool
 call — it has no deny path at all (exit 2 would deny; the script cannot
 produce one) — and fails open the same way: any error, missing tool, or
@@ -501,17 +541,28 @@ directory (a storeless composition is empty and injects nothing) and
 only when the payload carries a session id: without the id the agent
 cannot name the record, and a placeholder id would write a wrong one.
 
-Known limitations, stated bluntly: the param trigger's dedup memory
-lives in a `$TMPDIR` marker keyed by the session id — a resumed session
-that came back with a new id after a tmp wipe can repeat a repo's
-horizon once. And no true close hook: its hook
+The instruction is the quality path, not the load-bearing one — the
+live data says agents understand the duty, defer it mid-session
+correctly, and then the session simply ends without a wrap-up exchange,
+so the offer never fires. The load-bearing mechanism is **startup
+reconciliation**: every session-start also scans the marker dir for
+*prior* sessions whose marker names this fire's store, older than 60
+seconds, with no record in the store's `sessions.jsonl` — and writes
+each orphan's record itself (`horizon session-end --harness zcode
+--session <id> --store <store>`, summary honestly null). The store's own
+once-guard makes it idempotent; the 60-second guard keeps live
+concurrent sessions out of scope. This also covers the signal deaths no
+hook can see: a session killed by SIGINT/SIGTERM — or a terminal closed
+— leaves a marker, and the next session in that project buries it.
+
+Known limitations, stated bluntly: reconciliation only runs when some
+session starts in the project again — a project whose every session dies
+before any next startup stays unrecorded until then. And no true close
+hook exists: its hook
 events number exactly seven (SessionStart, UserPromptSubmit, PreToolUse,
 PermissionRequest, PostToolUse, PostToolUseFailure, Stop) and none of
 them is an exit hook, while on SIGINT/SIGTERM the binary's own shutdown
-runs no user-reachable code at all. A session interrupted with
-SIGINT/SIGTERM — or a terminal closed — writes no record, because the
-duty lives in a once-per-session startup injection and nothing fires at
-process exit.
+runs no user-reachable code at all.
 
 ## Manual use, no global install
 
