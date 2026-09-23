@@ -15,7 +15,8 @@ shape install does not recognize, is refused loudly rather than blind-written.
 
 ## Supported versions
 
-Only the latest tag on `main` receives security fixes.
+Fixes target the `main` branch HEAD and the latest published npm version;
+release tags lag behind `main`, so name the commit or npm version in reports.
 
 ## Reporting a vulnerability
 
