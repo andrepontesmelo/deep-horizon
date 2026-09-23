@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, rmdirSync, readFileSync, rmSync, writ
 import { join } from "node:path";
 import { freshDir, runCli, seed, specFence, withDir } from "./harness.js";
 import { main } from "../src/cli.ts";
+import { CLOSES_FILE, HOOKS_LOG_FILE, SESSIONS_FILE } from "../src/store.ts";
 
 const BIN = new URL("../bin/horizon.js", import.meta.url).pathname;
 
@@ -1233,7 +1234,7 @@ test("X5. a store directory named .Horizon is discovered (case-insensitive resol
   });
 });
 
-test("X6. init writes .horizon/.gitignore (sessions.jsonl, *.tmp.*); gaps.json not ignored", async () => {
+test("X6. init writes .horizon/.gitignore (sessions.jsonl, closes.jsonl, hooks.log, *.tmp.*); gaps.json not ignored", async () => {
   await withDir(async (dir) => {
     const r = await runCli(["init", "--cwd", dir]);
     assert.equal(r.code, 0);
@@ -1242,6 +1243,13 @@ test("X6. init writes .horizon/.gitignore (sessions.jsonl, *.tmp.*); gaps.json n
     const body = readFileSync(gi, "utf8");
     assert.match(body, /^sessions\.jsonl$/m, "sessions.jsonl entry missing");
     assert.match(body, /^\*\.tmp\.\*$/m, "*.tmp.* entry missing");
+    // Invariant: a freshly materialized store's .gitignore covers EVERY
+    // append-only file the store writes, by the store's own constants — not a
+    // snapshot list. A new append-only file added to store.ts without its
+    // ignore line fails here (defect: closes.jsonl was missing).
+    for (const f of [SESSIONS_FILE, CLOSES_FILE, HOOKS_LOG_FILE]) {
+      assert.match(body, new RegExp(`^${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"), `${f} must be gitignored`);
+    }
     // First add (store created by add, not init) also ships the .gitignore.
     await withDir(async (dir2) => {
       await runCli(["add", "ships-ignore", "Ships gitignore too", "--cwd", dir2]);

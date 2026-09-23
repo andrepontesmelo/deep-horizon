@@ -11,10 +11,12 @@ export const MAX_TEXT_POINTS = 512;
 export const MAX_DETAIL_POINTS = 2048;
 const HORIZON_DIR = ".horizon";
 const GAPS_FILE = "gaps.json";
-const SESSIONS_FILE = "sessions.jsonl";
-const CLOSES_FILE = "closes.jsonl";
-const HOOKS_LOG_FILE = "hooks.log";
-const GITIGNORE_BODY = "sessions.jsonl\nhooks.log\n*.tmp.*\n";
+// Exported for the test invariant: a freshly materialized store's .gitignore
+// must cover every append-only file the store writes (test/cli.test.js X6).
+export const SESSIONS_FILE = "sessions.jsonl";
+export const CLOSES_FILE = "closes.jsonl";
+export const HOOKS_LOG_FILE = "hooks.log";
+const GITIGNORE_BODY = "sessions.jsonl\ncloses.jsonl\nhooks.log\n*.tmp.*\n";
 
 export function usage() {
   return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init|doctor|install> [...]";
