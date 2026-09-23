@@ -10,7 +10,7 @@ start of every new agent session, on every harness, from a store shared by all
 of them.
 
 The horizon says where the work is *heading*. It is not what the project *is*
-(that is `AGENTS.md` / `CLAUDE.md`, the about line, and moving-target's
+(that is `AGENTS.md` / `CLAUDE.md`, the about line, and deep-horizon's
 distilled paragraph), and it is not what to do this session.
 
 ## About

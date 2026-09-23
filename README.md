@@ -338,9 +338,9 @@ The extension entry point is the package's `exports["./pi"]` module:
 `session_start` shells out to `horizon-inject` and stashes the output; the
 first `before_agent_start` prompt returns it as a persistent message. Only
 the `startup` reason stashes — `new`, `resume`, `fork`, and `reload` arrive
-inside a running process or replay an existing horizon. The `git:` package
-specifier is proven live; `npm:deep-horizon` does not resolve today (no
-registry release), so point the specifier at the repo.
+inside a running process or replay an existing horizon. Both specifiers are
+live: `npm:deep-horizon` resolves from the npm registry (deep-horizon@0.4.0),
+and the `git:` repo specifier remains a pinned alternative.
 
 **Subagent opt-out:** pi has no discriminator for subagent sessions, so the
 adapter skips injection when `HORIZON_SUBAGENT` is set to a truthy value
@@ -385,8 +385,8 @@ binary's own handlers are bare `process.exit()` calls, so nothing graceful
 ever runs at exit. opencode sessions are invisible to the log. Its gaps
 still read and write like every other harness's.
 
-`"plugin": ["deep-horizon"]` resolves a registry package, and there is none
-yet — the route today is the local plugin at
+`"plugin": ["deep-horizon"]` resolves the published registry package
+(deep-horizon@0.4.0). A local route also works: the plugin at
 `.opencode/plugin/deep-horizon.ts` (live-verified shape):
 
 ```ts
@@ -630,8 +630,8 @@ node ./deep-horizon/bin/horizon-inject.js --harness <name>
 ```
 
 (The bins import `dist/`, so run `npm install` in the clone first — its
-`prepare` builds it. `npx -p deep-horizon` resolves the registry, which has
-no such package yet.)
+`prepare` builds it. Or skip the clone: `npx -p deep-horizon horizon show`
+runs the published package, deep-horizon@0.4.0, straight from the registry.)
 
 ## Contributing
 
