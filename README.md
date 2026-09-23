@@ -1,5 +1,9 @@
 # deep-horizon
 
+[![CI](https://github.com/andrepontesmelo/deep-horizon/actions/workflows/ci.yml/badge.svg)](https://github.com/andrepontesmelo/deep-horizon/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/package-json/v/andrepontesmelo/deep-horizon/main?label=version)](package.json)
+![local gate](https://img.shields.io/badge/local%20gate-228%20tests%20%2B%20build-brightgreen)
+
 A deterministic, human-authored **horizon** — a short list of open gaps plus a
 session log — shared across AI agent harnesses, injected at the start of every
 new session.
@@ -628,6 +632,11 @@ node ./deep-horizon/bin/horizon-inject.js --harness <name>
 (The bins import `dist/`, so run `npm install` in the clone first — its
 `prepare` builds it. `npx -p deep-horizon` resolves the registry, which has
 no such package yet.)
+
+## Contributing
+
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and the local gate.
+Security issues: [SECURITY.md](SECURITY.md) (do not open a public issue).
 
 ## License
 
