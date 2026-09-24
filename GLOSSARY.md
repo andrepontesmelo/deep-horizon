@@ -1,4 +1,4 @@
-# CONTEXT.md — deep-horizon glossary
+# GLOSSARY.md — deep-horizon glossary
 
 Vocabulary only. No implementation details, no spec, no scratch notes.
 

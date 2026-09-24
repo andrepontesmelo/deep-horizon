@@ -23,7 +23,7 @@ CI runs the same gate on Node 22; a PR is mergeable when it is green.
 - Every adapter hook fails open: a missing bin, a timeout, or an error injects
   nothing and never blocks a session. A change that makes an adapter fail
   closed needs a discussion first.
-- Glossary terms from [CONTEXT.md](CONTEXT.md) are used verbatim in comments,
+- Glossary terms from [GLOSSARY.md](GLOSSARY.md) are used verbatim in comments,
   tests and errors (gap, about, horizon, store).
 - The injected surface is one line per gap, at most 5 open gaps, nothing
   machine-generated in the human's words — keep the composer's output

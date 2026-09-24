@@ -13,11 +13,11 @@ Blocked by: —
 - **deep-horizon** — *what we steer toward next*: human-authored, directional,
   moves only with your yes.
 
-That pair goes in both READMEs; CONTEXT.md's Horizon gloss already carries it.
+That pair goes in both READMEs; GLOSSARY.md's Horizon gloss already carries it.
 
 ## Decisions (batch 1, single-query mode — recommendations adopted; veto via card comment)
 
-1. **Relationship:** describe it in both READMEs (and CONTEXT.md); neither
+1. **Relationship:** describe it in both READMEs (and GLOSSARY.md); neither
    plugin changes behaviour. No absorb, no supersede, no merge.
 2. **Coupling:** none. Different stores, no cross-writes; the injected texts
    stay exactly as HL-06 locked them — no cross-reference clause, because the

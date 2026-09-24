@@ -24,7 +24,7 @@ install path are all locked.
 ## Notes
 
 - Domain: agent-harness plugins, cross-tool interop, prompt injection at
-  session start, session-end recording. Glossary: repo `CONTEXT.md`.
+  session start, session-end recording. Glossary: repo `GLOSSARY.md`.
 - Skills every session should consult: `grilling`, `domain-modeling`,
   `wayfinder`. For zcode evidence work: the `zcode-guide:diagnosing-hooks`
   and `zcode-guide:diagnosing-plugins` skills.

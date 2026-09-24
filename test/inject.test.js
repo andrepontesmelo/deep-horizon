@@ -1263,7 +1263,7 @@ test("pointer-1. the horizon block carries the detail pointer; neither nudge doe
   });
 });
 
-// Injection minimalism (CONTEXT.md): details content NEVER appears in any
+// Injection minimalism (GLOSSARY.md): details content NEVER appears in any
 // injected text — the one line plus the pointer is everything a session gets.
 test("pointer-2. details content never reaches injected text", async () => {
   await withDir(async (dir) => {

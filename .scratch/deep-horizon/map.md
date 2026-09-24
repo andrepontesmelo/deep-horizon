@@ -404,7 +404,7 @@ clean until a review passes.
 
 What implementation inherits:
 
-- `CONTEXT.md` — the glossary (horizon, gap, close, propose, gap log, session
+- `GLOSSARY.md` — the glossary (horizon, gap, close, propose, gap log, session
   record, revision, provenance, nudge, resolution, injection).
 - `.scratch/deep-horizon/05-cli-contract.md` — seven commands, two JSON
   schemas, an eight-code exit table, the two locked injection strings, and **36
