@@ -333,6 +333,101 @@ test("doctor-7. the default paths resolve through $HOME (os.homedir honours it o
   });
 });
 
+// --- doctor, the store half (t_c9029752): .gitignore drift + --fix ---
+//
+// The store check resolves the cwd store the way the fleet sweep does — cd
+// in, no --cwd — so these pass the store dir as runCli's cwd. The wiring
+// half rides a healthy zcode fixture, so a green exit certifies the store
+// half too: the two share one exit code.
+
+test("doctor-8. a freshly init'd store passes: one store: PASS line naming the store dir; a store-less cwd prints no store line at all", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const storeRoot = join(tmp, "repo");
+    await runCli(["init", "--cwd", storeRoot]);
+    const env = wiringEnv({ zcodeConfig: cfg, pathDir: makeFakeBin(join(tmp, "bin")) });
+    const r = await runCli(["doctor", "--harness", "zcode"], { cwd: storeRoot, env });
+    assert.equal(r.code, 0, r.stdout);
+    const storeLines = r.stdout.split("\n").filter((l) => l.startsWith("store: "));
+    assert.equal(storeLines.length, 1, `exactly one store line: ${r.stdout}`);
+    assert.match(storeLines[0], / PASS /);
+    assert.ok(storeLines[0].includes(join(storeRoot, ".horizon", ".gitignore")), `names the store dir: ${storeLines[0]}`);
+    // The store check is not harness-scoped, but a cwd with no store in
+    // scope is not drift either: wiring-only callers keep the old behavior.
+    const bare = join(tmp, "no-store");
+    mkdirSync(bare, { recursive: true });
+    const b = await runCli(["doctor", "--harness", "zcode"], { cwd: bare, env });
+    assert.equal(b.code, 0, b.stdout);
+    assert.ok(!b.stdout.split("\n").some((l) => l.startsWith("store: ")), `no store in scope must print no store line: ${b.stdout}`);
+  });
+});
+
+test("doctor-9. deleting a line from .horizon/.gitignore FAILs with the missing line named and the --fix hint, exit 1", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const storeRoot = join(tmp, "repo");
+    await runCli(["init", "--cwd", storeRoot]);
+    const gi = join(storeRoot, ".horizon", ".gitignore");
+    // The historical drift, reproduced: a store whose file predates the
+    // hooks.log line (born before GITIGNORE_BODY gained it).
+    writeFileSync(gi, readFileSync(gi, "utf8").split("\n").filter((l) => l !== "hooks.log").join("\n"));
+    const r = await runCli(["doctor", "--harness", "zcode"], { cwd: storeRoot, env: wiringEnv({ zcodeConfig: cfg, pathDir: makeFakeBin(join(tmp, "bin")) }) });
+    assert.equal(r.code, 1, r.stdout);
+    const line = r.stdout.split("\n").find((l) => l.startsWith("store: "));
+    assert.ok(line, `no store line: ${r.stdout}`);
+    assert.match(line, / FAIL /);
+    assert.match(line, /missing: hooks\.log/);
+    assert.match(line, /run: horizon doctor --fix/);
+  });
+});
+
+test("doctor-10. --fix appends ONLY the missing line (foreign lines kept, no duplicates) and a re-run exits 0", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const storeRoot = join(tmp, "repo");
+    await runCli(["init", "--cwd", storeRoot]);
+    const gi = join(storeRoot, ".horizon", ".gitignore");
+    // Drift plus a foreign line: --fix must add hooks.log and touch nothing
+    // else — appends-only, never deletes.
+    writeFileSync(gi, `${readFileSync(gi, "utf8").split("\n").filter((l) => l !== "hooks.log" && l !== "").join("\n")}\n# my note\n`);
+    const fixed = await runCli(["doctor", "--fix", "--harness", "zcode"], { cwd: storeRoot, env: wiringEnv({ zcodeConfig: cfg, pathDir: makeFakeBin(join(tmp, "bin")) }) });
+    assert.equal(fixed.code, 0, fixed.stdout);
+    const fixLine = fixed.stdout.split("\n").find((l) => l.startsWith("store: "));
+    assert.ok(fixLine, `no store line: ${fixed.stdout}`);
+    assert.match(fixLine, / FIX /);
+    assert.match(fixLine, /hooks\.log/);
+    const after = readFileSync(gi, "utf8");
+    assert.match(after, /^hooks\.log$/m, "the missing line must be appended");
+    assert.match(after, /^# my note$/m, "foreign lines must be preserved");
+    assert.match(after, /^sessions\.jsonl$/m);
+    assert.equal(after.split("\n").filter((l) => l === "hooks.log").length, 1, "no duplicated lines");
+    const again = await runCli(["doctor", "--harness", "zcode"], { cwd: storeRoot, env: wiringEnv({ zcodeConfig: cfg, pathDir: makeFakeBin(join(tmp, "bin")) }) });
+    assert.equal(again.code, 0, again.stdout);
+    const passLine = again.stdout.split("\n").find((l) => l.startsWith("store: "));
+    assert.match(passLine, / PASS /);
+  });
+});
+
+test("doctor-11. --fix on an already-clean store is a no-op: byte-identical file, PASS line, exit 0", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const storeRoot = join(tmp, "repo");
+    await runCli(["init", "--cwd", storeRoot]);
+    const gi = join(storeRoot, ".horizon", ".gitignore");
+    const before = readFileSync(gi, "utf8");
+    const r = await runCli(["doctor", "--fix", "--harness", "zcode"], { cwd: storeRoot, env: wiringEnv({ zcodeConfig: cfg, pathDir: makeFakeBin(join(tmp, "bin")) }) });
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(readFileSync(gi, "utf8"), before, "--fix on a clean store must not touch the file");
+    const line = r.stdout.split("\n").find((l) => l.startsWith("store: "));
+    assert.ok(line, `no store line: ${r.stdout}`);
+    assert.match(line, / PASS /, "a clean store reports PASS even under --fix, never a spurious FIX");
+  });
+});
+
 // --- install (ticket 10): parse → merge → validate → backup → atomic write ---
 
 test("install-1. zcode on an absent config: starts from {}, writes the exact block, no backup of nothing", async () => {

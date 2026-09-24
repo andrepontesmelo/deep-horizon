@@ -4,6 +4,7 @@ import {
   amendGap,
   appendHooksLog,
   closeGap,
+  doctorStoreGitignore,
   ensureStoreDir,
   readGap,
   readGapsFile,
@@ -20,7 +21,7 @@ import { gapLine } from "./texts.ts";
 
 const COMMANDS = ["show", "about", "add", "close", "amend", "detail", "log", "session-end", "init", "doctor", "install"];
 const VALUE_FLAGS = new Set(["--cwd", "--harness", "--session", "--origin", "--summary", "--limit", "--detail", "--store"]);
-const BOOL_FLAGS = new Set(["--json", "--help", "--version", "--clear"]);
+const BOOL_FLAGS = new Set(["--json", "--help", "--version", "--clear", "--fix"]);
 
 function flagKey(name) {
   return name.slice(2);
@@ -66,7 +67,7 @@ function helpText() {
     "  log [--limit N]           print session records, newest first\n" +
     "  session-end --harness <name> --session <id> [--summary \"<text>\"] [--store <dir>] — once per (harness, session); a repeat is a silent no-op\n" +
     "  init                      create .horizon/ in --cwd\n" +
-    "  doctor [--harness <name>] read-only wiring check per harness (zcode, hermes; both by default) — one PASS/FAIL line per check with the fix hint; exit 0 all-pass, 1 any FAIL\n" +
+    "  doctor [--harness <name>] [--fix] read-only checks: harness wiring (zcode, hermes; both by default) + the resolved store's .gitignore drift vs GITIGNORE_BODY — one PASS/FAIL line per check with the fix hint; exit 0 all-pass, 1 any FAIL; --fix appends the store's missing .gitignore lines (idempotent, never deletes)\n" +
     "  install --harness <name>  wire a harness's global config (zcode, hermes; repeat the flag or comma-separate); parse → merge → validate → backup → atomic write, idempotent\n"
   );
 }
@@ -409,15 +410,22 @@ export async function main(argv, sink = processSink()) {
     }
 
     case "doctor": {
-      // Read-only diagnostics over the machine's harness wiring (ticket 09).
-      // --harness narrows to one of zcode|hermes; the default checks both.
-      // --json is accepted and ignored: the report is one PASS/FAIL line per
-      // check, a shape a human reads and a test greps.
+      // Read-only diagnostics (ticket 09): harness wiring, plus — since
+      // t_c9029752 — the cwd-resolved store's .gitignore drift against
+      // GITIGNORE_BODY (the file is written once at init and never
+      // re-synced; stores born before a line was added silently drift).
+      // --harness narrows the wiring half to zcode|hermes; the store check
+      // is per-directory and not harness-scoped. --json is accepted and
+      // ignored: the report is one PASS/FAIL line per check, a shape a
+      // human reads and a test greps. --fix turns the store drift check
+      // into its repair twin: append-only, idempotent, wiring untouched.
       const only = opts.harness;
       if (only !== undefined && only !== "zcode" && only !== "hermes") {
         return fail(2, `horizon: unknown harness: ${only} (zcode, hermes)`);
       }
-      return runDoctor({ only, sink });
+      const wiring = runDoctor({ only, sink });
+      const store = doctorStoreGitignore(cwd, { fix: !!opts.fix, sink });
+      return wiring === 0 && store === 0 ? 0 : 1;
     }
 
     case "install": {
