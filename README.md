@@ -82,7 +82,7 @@ commands:
   log [--limit N]           print session records, newest first
   session-end --harness <name> --session <id> [--summary "<text>"] [--store <dir>] — once per (harness, session); a repeat is a silent no-op
   init                      create .horizon/ in --cwd
-  doctor [--harness <name>] read-only wiring check per harness (zcode, hermes; both by default) — one PASS/FAIL line per check with the fix hint; exit 0 all-pass, 1 any FAIL
+  doctor [--harness <name>] [--fix] read-only checks: harness wiring (zcode, hermes; both by default) + the resolved store's .gitignore drift vs GITIGNORE_BODY — one PASS/FAIL line per check with the fix hint; exit 0 all-pass, 1 any FAIL; --fix appends the store's missing .gitignore lines (idempotent, never deletes)
   install --harness <name>  wire a harness's global config (zcode, hermes; repeat the flag or comma-separate); parse → merge → validate → backup → atomic write, idempotent
 ```
 
@@ -176,8 +176,19 @@ state — the check names it and the fix), and for Hermes the plugin files,
 the `plugins.enabled` entry, and the shims. Absent and corrupt configs are
 FAIL lines, never a crash.
 
+Doctor also checks the store it resolves from the working directory — the
+`.horizon/.gitignore` written at `init` is never re-synced, so a store
+created before the CLI learned about a new append-only file silently stops
+covering it. The check is membership against `GITIGNORE_BODY` (the store
+module's own constant — the single source): only a *missing* line is
+drift; extra lines and their order are yours. A directory with no store in
+scope prints nothing and keeps doctor's wiring-only behavior. `--fix`
+appends exactly the missing lines — never deletes or rewrites anything,
+idempotent — so a fleet sweep of every repo you own is one loop:
+
 ```bash
-horizon doctor                       # both harnesses; --harness zcode narrows
+horizon doctor                       # both harnesses + the store; --harness zcode narrows the wiring half
+for d in */; do (cd "$d" && horizon doctor --fix); done   # drift check + repair across the fleet
 ```
 
 ## Per-harness setup

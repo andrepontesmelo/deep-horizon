@@ -16,7 +16,11 @@ const GAPS_FILE = "gaps.json";
 export const SESSIONS_FILE = "sessions.jsonl";
 export const CLOSES_FILE = "closes.jsonl";
 export const HOOKS_LOG_FILE = "hooks.log";
-const GITIGNORE_BODY = "sessions.jsonl\ncloses.jsonl\nhooks.log\n*.tmp.*\n";
+// The store's machine-local tail: every append-only file the store writes.
+// Exported as the single source for doctor's drift check (t_c9029752): the
+// literal must never be duplicated, so a new append-only file updates
+// exactly one place — here, where init writes it from.
+export const GITIGNORE_BODY = "sessions.jsonl\ncloses.jsonl\nhooks.log\n*.tmp.*\n";
 
 export function usage() {
   return "usage: horizon [--cwd <path>] [--json] [--harness <name>] [--session <id>] [--origin <human|agent-proposed>] <show|about|add|close|amend|detail|log|session-end|init|doctor|install> [...]";
@@ -791,4 +795,69 @@ export function ensureStoreDir(cwd) {
   const created = materializeStoreDir(dir);
   if (created && created.code !== undefined) return created;
   return { dir, created };
+}
+
+// Doctor's store check (t_c9029752): .horizon/.gitignore is written once at
+// init and never re-synced, so a store born before GITIGNORE_BODY gained a
+// line silently stops covering an append-only file (the 2026-09-24 fleet
+// drifted exactly this way). The comparison is membership, not equality:
+// line order and extra lines are the repo owner's business; only a MISSING
+// line is drift. --fix appends only what is missing — never deletes, never
+// rewrites, idempotent by construction — and refuses to touch a file it
+// could not read (never a blind write, the same rule install follows). A
+// cwd with no store in scope prints nothing and passes: not drift, and
+// wiring-only callers keep doctor's old behavior. One PASS/FAIL/FIX line on
+// the sink, return 0 or 1.
+export function doctorStoreGitignore(cwd, { fix = false, sink } = {}) {
+  const found = resolveStore(cwd, { readonly: true });
+  if (!found) return 0;
+  const ignorePath = join(found.dir, ".gitignore");
+  const wanted = GITIGNORE_BODY.split("\n").filter((l) => l.length > 0);
+  let text = null;
+  let reason = null;
+  try {
+    text = readFileSync(ignorePath, "utf8");
+  } catch (err) {
+    reason = err && err.code === "ENOENT" ? "missing" : `cannot read: ${err.message}`;
+  }
+  if (reason === null) {
+    const present = text.split("\n").map((l) => l.trim());
+    const missing = wanted.filter((l) => !present.includes(l));
+    if (missing.length === 0) {
+      sink.stdout(`store: PASS ${ignorePath} covers every store-written file\n`);
+      return 0;
+    }
+    if (fix) {
+      const prefix = text.endsWith("\n") || text.length === 0 ? "" : "\n";
+      try {
+        appendFileSync(ignorePath, `${prefix}${missing.join("\n")}\n`, "utf8");
+      } catch (err) {
+        sink.stdout(`store: FAIL ${ignorePath} (cannot append: ${err.message}) — fix the file by hand\n`);
+        return 1;
+      }
+      sink.stdout(`store: FIX ${ignorePath}: appended ${missing.join(", ")}\n`);
+      return 0;
+    }
+    sink.stdout(`store: FAIL ${ignorePath} missing: ${missing.join(", ")} — run: horizon doctor --fix\n`);
+    return 1;
+  }
+  // Unreadable or absent. An absent file is fixable (--fix recreates it, an
+  // append to nothing is the init write); an unreadable one is not — what
+  // it covers is unknowable, and appending to it would be a blind write.
+  if (reason === "missing") {
+    if (fix) {
+      try {
+        appendFileSync(ignorePath, GITIGNORE_BODY, "utf8");
+      } catch (err) {
+        sink.stdout(`store: FAIL ${ignorePath} (cannot append: ${err.message}) — fix the file by hand\n`);
+        return 1;
+      }
+      sink.stdout(`store: FIX ${ignorePath}: appended ${wanted.join(", ")}\n`);
+      return 0;
+    }
+    sink.stdout(`store: FAIL ${ignorePath} (missing) — run: horizon doctor --fix\n`);
+    return 1;
+  }
+  sink.stdout(`store: FAIL ${ignorePath} (${reason}) — fix the file by hand\n`);
+  return 1;
 }
