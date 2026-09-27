@@ -9,7 +9,7 @@ Thanks for looking at deep-horizon. PRs welcome.
 3. Run the local gate:
 
    ```bash
-   npm test   # builds dist/, then the full suite (228 tests at time of writing)
+   npm test   # builds dist/, then the full suite
    ```
 
 4. Open a PR describing what changed and why.

@@ -5,12 +5,19 @@
 // pointing every round at fixtures, never at the real home.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runCli, runInject, seed, withDir } from "./harness.js";
 
 const HERMES_SRC = new URL("../adapters/hermes", import.meta.url).pathname;
+
+// The running package's own bin/ — the shadow check's candidate 1, the same
+// one-level hop the wiring module derives from src/wiring.ts (test/ and src/
+// are siblings under the package root). fileURLToPath, not .pathname — the
+// same percent-encoding discipline the src anchor uses.
+const REPO_BIN = fileURLToPath(new URL("../bin", import.meta.url));
 
 // --- fixtures ---
 
@@ -46,13 +53,36 @@ function zcodeConfigText(matcher = "startup|resume") {
   );
 }
 
+// The PATH fixture has to survive the shadow check (which realpaths the
+// resolved bin), so the honest fake of "installed and on PATH" is npm's own
+// shape: a symlink to the package's bin. The suite runs the wiring module
+// from this repo's src/, so the symlink lands on the running package — the
+// shadow check's candidate 1, the dev-checkout case (matrix row a). Windows
+// keeps plain files: symlinks need privileges there, and the shadow check
+// skips win32 anyway (npm's shims are copies, not links).
 function makeFakeBin(dir) {
   mkdirSync(dir, { recursive: true });
   for (const bin of ["horizon", "horizon-inject"]) {
-    writeFileSync(join(dir, bin), "#!/bin/sh\n");
-    chmodSync(join(dir, bin), 0o755);
+    const shim = join(dir, bin);
+    rmSync(shim, { force: true }); // idempotent like the plain-file write it replaced
+    if (process.platform === "win32") {
+      writeFileSync(shim, "#!/bin/sh\n");
+      chmodSync(shim, 0o755);
+    } else {
+      symlinkSync(join(REPO_BIN, `${bin}.js`), shim);
+    }
   }
   return dir;
+}
+
+// One fake deep-horizon bin inside a fake package tree — a stale dev
+// checkout's bin/ or an npm-global tree's deep-horizon/bin/. The shadow
+// check compares paths, never bytes, so a stub file is the whole tree as
+// far as the check can see.
+function stubBin(dir, bin) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${bin}.js`), "#!/bin/sh\n");
+  return join(dir, `${bin}.js`);
 }
 
 function makeHermesHome(home, { enabled = ["deep-horizon"], style = "block" } = {}) {
@@ -66,16 +96,20 @@ function makeHermesHome(home, { enabled = ["deep-horizon"], style = "block" } = 
   return home;
 }
 
-// The wiring env: everything the real environment carries, with the two
-// seams (and optionally PATH / HOME) pointed at the fixture.
-function wiringEnv({ zcodeConfig, hermesHome, pathDir, home } = {}) {
+// The wiring env: everything the real environment carries, with the seams
+// (and optionally PATH / HOME) pointed at the fixture. HORIZON_NPM_ROOT_G is
+// deleted unless a test seams it, so no doctor round ever answers from the
+// developer's real npm.
+function wiringEnv({ zcodeConfig, hermesHome, pathDir, home, npmRootG } = {}) {
   const env = { ...process.env };
   delete env.HORIZON_ZCODE_CONFIG;
   delete env.HORIZON_HERMES_HOME;
+  delete env.HORIZON_NPM_ROOT_G;
   if (zcodeConfig) env.HORIZON_ZCODE_CONFIG = zcodeConfig;
   if (hermesHome) env.HORIZON_HERMES_HOME = hermesHome;
   if (pathDir) env.PATH = pathDir;
   if (home) env.HOME = home;
+  if (npmRootG) env.HORIZON_NPM_ROOT_G = npmRootG;
   return env;
 }
 
@@ -227,7 +261,7 @@ test("hooks-log-7. a storeless session-end creates no store and logs nothing; ne
 
 // --- doctor (ticket 09): read-only wiring checks ---
 
-test("doctor-1. healthy zcode + hermes fixtures: exit 0, one PASS line per check (4 zcode, 3 hermes)", async () => {
+test("doctor-1. healthy zcode + hermes fixtures: exit 0, one PASS line per check (5 zcode, 4 hermes)", async () => {
   await withDir(async (tmp) => {
     const cfg = join(tmp, "config.json");
     writeFileSync(cfg, zcodeConfigText());
@@ -236,8 +270,8 @@ test("doctor-1. healthy zcode + hermes fixtures: exit 0, one PASS line per check
     assert.equal(r.code, 0, r.stdout);
     const zLines = r.stdout.split("\n").filter((l) => l.startsWith("zcode: "));
     const hLines = r.stdout.split("\n").filter((l) => l.startsWith("hermes: "));
-    assert.equal(zLines.length, 4, r.stdout);
-    assert.equal(hLines.length, 3, r.stdout);
+    assert.equal(zLines.length, 5, r.stdout);
+    assert.equal(hLines.length, 4, r.stdout);
     for (const l of [...zLines, ...hLines]) assert.match(l, / PASS /, l);
     assert.ok(zLines.some((l) => l.includes("PreToolUse wired to pre-execute")));
     assert.ok(hLines.some((l) => l.includes("plugins.enabled")));
@@ -425,6 +459,239 @@ test("doctor-11. --fix on an already-clean store is a no-op: byte-identical file
     const line = r.stdout.split("\n").find((l) => l.startsWith("store: "));
     assert.ok(line, `no store line: ${r.stdout}`);
     assert.match(line, / PASS /, "a clean store reports PASS even under --fix, never a spurious FIX");
+  });
+});
+
+// --- doctor, the PATH-shadow check (the 2026-09-26 incident): the
+// PATH-resolved bins must be THE SAME package tree the wiring invokes —
+// resolution alone stayed PASS through the hybrid where ~/.local/bin
+// symlinks into a pre-0.4.0 checkout shadowed the installed package, so
+// hooks ran repo code. One test per matrix row; the seam HORIZON_NPM_ROOT_G
+// stands in for `npm root -g` exactly as the wiring module documents it.
+
+test("doctor-12. shadow row (a): PATH bins symlinked INSIDE the running package tree PASS — the dev-checkout case, both harnesses", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const hermes = makeHermesHome(join(tmp, "hermes"));
+    const r = await runCli(["doctor"], { env: wiringEnv({ zcodeConfig: cfg, hermesHome: hermes, pathDir: makeFakeBin(join(tmp, "bin")) }) });
+    assert.equal(r.code, 0, r.stdout);
+    assert.match(r.stdout, /zcode: PASS PATH horizon-inject is the wired package, not a stale shadow/);
+    assert.match(r.stdout, /hermes: PASS PATH horizon and horizon-inject are the wired package, not a stale shadow/);
+  });
+});
+
+test("doctor-13. shadow row (b): doctor from the repo, PATH resolving into the npm-global install — PASS via the install candidate", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const hermes = makeHermesHome(join(tmp, "hermes"));
+    // `npm root -g`'s answer shape, faked through the seam: <prefix>/lib/node_modules.
+    const npmRoot = join(tmp, "prefix", "lib", "node_modules");
+    const installHorizon = stubBin(join(npmRoot, "deep-horizon", "bin"), "horizon");
+    const installInject = stubBin(join(npmRoot, "deep-horizon", "bin"), "horizon-inject");
+    const binDir = join(tmp, "bin");
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(installHorizon, join(binDir, "horizon"));
+    symlinkSync(installInject, join(binDir, "horizon-inject"));
+    const r = await runCli(["doctor"], { env: wiringEnv({ zcodeConfig: cfg, hermesHome: hermes, pathDir: binDir, npmRootG: npmRoot }) });
+    assert.equal(r.code, 0, r.stdout);
+    assert.match(r.stdout, /zcode: PASS PATH horizon-inject is the wired package/);
+    assert.match(r.stdout, /hermes: PASS PATH horizon and horizon-inject are the wired package/);
+  });
+});
+
+test("doctor-14. shadow row (c): a stale checkout's symlink shadows the install — FAIL names both paths and the fix; a bin absent from PATH adds no shadow line", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    // The incident shape, honestly anchored: the suite's wiring module IS
+    // the running package (candidate 1 = this repo's bin), PATH carries a
+    // symlink into some OTHER deep-horizon-looking tree, and npm's global
+    // root holds a third. The shadow matches neither candidate — the same
+    // verdict "doctor runs from the install, PATH points at a stale
+    // checkout" produces, with the repo standing in for the install.
+    const stale = stubBin(join(tmp, "old-checkout", "bin"), "horizon-inject");
+    const npmRoot = join(tmp, "prefix", "lib", "node_modules");
+    stubBin(join(npmRoot, "deep-horizon", "bin"), "horizon-inject");
+    const binDir = join(tmp, "bin");
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(stale, join(binDir, "horizon-inject"));
+    const r = await runCli(["doctor", "--harness", "zcode"], { env: wiringEnv({ zcodeConfig: cfg, pathDir: binDir, npmRootG: npmRoot }) });
+    assert.equal(r.code, 1);
+    const line = r.stdout.split("\n").find((l) => l.includes("not a stale shadow"));
+    assert.ok(line && line.includes("FAIL"), r.stdout);
+    assert.ok(line.includes(realpathSync(stale)), `names what PATH resolves to: ${line}`);
+    assert.ok(line.includes(join(npmRoot, "deep-horizon")), `names the install: ${line}`);
+    assert.match(line, /remove the shadowing link\/binary earlier on PATH/);
+    // The resolution line stays PASS — the shadow check adds a verdict, it
+    // does not replace the resolution one.
+    assert.match(r.stdout, /zcode: PASS horizon-inject resolves on PATH/);
+    // The skip rule: the bin absent from PATH entirely — the resolution
+    // check FAILs alone, no second line for the same absent bin.
+    await withDir(async (tmp2) => {
+      const cfg2 = join(tmp2, "config.json");
+      writeFileSync(cfg2, zcodeConfigText());
+      const r2 = await runCli(["doctor", "--harness", "zcode"], { env: wiringEnv({ zcodeConfig: cfg2, pathDir: join(tmp2, "empty-bin") }) });
+      assert.equal(r2.code, 1);
+      assert.match(r2.stdout, /FAIL horizon-inject resolves on PATH/);
+      assert.ok(!r2.stdout.includes("not a stale shadow"), `shadow must stay silent when nothing resolved: ${r2.stdout}`);
+    });
+  });
+});
+
+test("doctor-15. shadow row (d): npm unanswerable — a failing npm shim degrades to the running package alone, no throw", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const hermes = makeHermesHome(join(tmp, "hermes"));
+    // makeFakeBin's symlinks land on the running tree = candidate 1; npm,
+    // where the seam would send the spawn, answers nothing (exit 1) AND
+    // counts its firings — the pin for "asked at most once per doctor run":
+    // one spawn serves both harness sections' asks, the memo dies with the
+    // run.
+    const binDir = makeFakeBin(join(tmp, "bin"));
+    const npmFirings = join(tmp, "npm-firings");
+    writeFileSync(join(binDir, "npm"), `#!/bin/sh\necho fired >> ${JSON.stringify(npmFirings)}\nexit 1\n`);
+    chmodSync(join(binDir, "npm"), 0o755);
+    const r = await runCli(["doctor"], { env: wiringEnv({ zcodeConfig: cfg, hermesHome: hermes, pathDir: binDir }) });
+    assert.equal(r.code, 0, r.stdout); // candidate 1 alone, and no throw
+    assert.match(r.stdout, /zcode: PASS PATH horizon-inject is the wired package/);
+    assert.match(r.stdout, /hermes: PASS PATH horizon and horizon-inject are the wired package/);
+    assert.equal(readFileSync(npmFirings, "utf8").split("\n").filter((l) => l.length > 0).length, 1, "npm asked exactly once across the two-harness run");
+    // And with no npm answer a real shadow still FAILs — naming only the
+    // wired copy it knows, the hint without an install path.
+    await withDir(async (tmp2) => {
+      const cfg2 = join(tmp2, "config.json");
+      writeFileSync(cfg2, zcodeConfigText());
+      const stale = stubBin(join(tmp2, "old-checkout", "bin"), "horizon-inject");
+      const binDir2 = join(tmp2, "bin");
+      mkdirSync(binDir2, { recursive: true });
+      symlinkSync(stale, join(binDir2, "horizon-inject"));
+      writeFileSync(join(binDir2, "npm"), "#!/bin/sh\nexit 1\n");
+      chmodSync(join(binDir2, "npm"), 0o755);
+      const r2 = await runCli(["doctor", "--harness", "zcode"], { env: wiringEnv({ zcodeConfig: cfg2, pathDir: binDir2 }) });
+      assert.equal(r2.code, 1);
+      const line = r2.stdout.split("\n").find((l) => l.includes("not a stale shadow"));
+      assert.ok(line && line.includes("FAIL"), r2.stdout);
+      assert.ok(line.includes(realpathSync(stale)), `names the shadow: ${line}`);
+      assert.ok(!line.includes("the install lives at"), `no npm root, no install claim: ${line}`);
+    });
+  });
+});
+
+test("doctor-16. shadow row (e): npm's own relative global bin link (bin/horizon-inject -> ../lib/node_modules/...) PASSes by construction", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    // The npm prefix shape with the RELATIVE link exactly as npm makes it —
+    // the check must realpath through it, never string-compare.
+    const prefix = join(tmp, "npm-global");
+    const globalLib = join(prefix, "lib", "node_modules");
+    const target = stubBin(join(globalLib, "deep-horizon", "bin"), "horizon-inject");
+    const binDir = join(prefix, "bin");
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(join("..", "lib", "node_modules", "deep-horizon", "bin", "horizon-inject.js"), join(binDir, "horizon-inject"));
+    assert.equal(realpathSync(join(binDir, "horizon-inject")), realpathSync(target), "fixture sanity: the relative link resolves");
+    const r = await runCli(["doctor", "--harness", "zcode"], { env: wiringEnv({ zcodeConfig: cfg, pathDir: binDir, npmRootG: globalLib }) });
+    assert.equal(r.code, 0, r.stdout);
+    assert.match(r.stdout, /zcode: PASS PATH horizon-inject is the wired package/);
+  });
+});
+
+test("doctor-17. hermes shadow: only the stale bin is named; a bin absent from PATH FAILs the resolution line and adds no shadow line", async () => {
+  await withDir(async (tmp) => {
+    const hermes = makeHermesHome(join(tmp, "hermes"));
+    // horizon rides the running tree (candidate 1) while horizon-inject
+    // shadows a stale checkout: one FAIL line, naming the one offender.
+    const stale = stubBin(join(tmp, "old-checkout", "bin"), "horizon-inject");
+    const npmRoot = join(tmp, "prefix", "lib", "node_modules");
+    stubBin(join(npmRoot, "deep-horizon", "bin"), "horizon-inject");
+    const binDir = join(tmp, "bin");
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(join(REPO_BIN, "horizon.js"), join(binDir, "horizon"));
+    symlinkSync(stale, join(binDir, "horizon-inject"));
+    const r = await runCli(["doctor", "--harness", "hermes"], { env: wiringEnv({ hermesHome: hermes, pathDir: binDir, npmRootG: npmRoot }) });
+    assert.equal(r.code, 1);
+    assert.match(r.stdout, /hermes: PASS horizon and horizon-inject resolve on PATH/);
+    const line = r.stdout.split("\n").find((l) => l.includes("not a stale shadow"));
+    assert.ok(line && line.includes("FAIL"), r.stdout);
+    assert.ok(line.includes(realpathSync(stale)), `names the offender: ${line}`);
+    assert.equal((line.match(/resolves to/g) || []).length, 1, `only the stale bin is named: ${line}`);
+    // The hermes skip-rule twin: horizon-inject absent from PATH — the
+    // resolution line FAILs naming it, and no shadow line appears.
+    await withDir(async (tmp2) => {
+      const hermes2 = makeHermesHome(join(tmp2, "hermes"));
+      const binDir2 = join(tmp2, "bin");
+      mkdirSync(binDir2, { recursive: true });
+      symlinkSync(join(REPO_BIN, "horizon.js"), join(binDir2, "horizon"));
+      const r2 = await runCli(["doctor", "--harness", "hermes"], { env: wiringEnv({ hermesHome: hermes2, pathDir: binDir2 }) });
+      assert.equal(r2.code, 1);
+      assert.match(r2.stdout, /FAIL horizon and horizon-inject resolve on PATH \(horizon-inject\)/);
+      assert.ok(!r2.stdout.includes("not a stale shadow"), `no shadow line when a bin never resolved: ${r2.stdout}`);
+    });
+  });
+});
+
+test("doctor-18. shadow: npm answers but its root holds no deep-horizon — candidate 2 is dead by absence, candidate 1 alone decides", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const hermes = makeHermesHome(join(tmp, "hermes"));
+    // The seam answers (no spawn) yet the tree it names is empty: the
+    // absent candidate never matches — the PASS case behaves like npm
+    // failure, decided by the running package alone.
+    const npmRoot = join(tmp, "prefix", "lib", "node_modules");
+    mkdirSync(npmRoot, { recursive: true });
+    const r = await runCli(["doctor"], { env: wiringEnv({ zcodeConfig: cfg, hermesHome: hermes, pathDir: makeFakeBin(join(tmp, "bin")), npmRootG: npmRoot }) });
+    assert.equal(r.code, 0, r.stdout);
+    assert.match(r.stdout, /zcode: PASS PATH horizon-inject is the wired package/);
+    assert.match(r.stdout, /hermes: PASS PATH horizon and horizon-inject are the wired package/);
+    // And a real shadow still FAILs — the install path is named even though
+    // nothing lives there (the human is told where it SHOULD live), and the
+    // absent tree costs nothing but the verdict.
+    await withDir(async (tmp2) => {
+      const cfg2 = join(tmp2, "config.json");
+      writeFileSync(cfg2, zcodeConfigText());
+      const stale = stubBin(join(tmp2, "old-checkout", "bin"), "horizon-inject");
+      const npmRoot2 = join(tmp2, "prefix", "lib", "node_modules");
+      mkdirSync(npmRoot2, { recursive: true });
+      const binDir2 = join(tmp2, "bin");
+      mkdirSync(binDir2, { recursive: true });
+      symlinkSync(stale, join(binDir2, "horizon-inject"));
+      const r2 = await runCli(["doctor", "--harness", "zcode"], { env: wiringEnv({ zcodeConfig: cfg2, pathDir: binDir2, npmRootG: npmRoot2 }) });
+      assert.equal(r2.code, 1);
+      const line = r2.stdout.split("\n").find((l) => l.includes("not a stale shadow"));
+      assert.ok(line && line.includes("FAIL"), r2.stdout);
+      assert.ok(line.includes(realpathSync(stale)), `names the shadow: ${line}`);
+      assert.ok(line.includes(join(npmRoot2, "deep-horizon")), `names the (absent) install: ${line}`);
+      assert.match(line, /the install lives at/);
+    });
+  });
+});
+
+test("doctor-19. shadow: an npm that chatters on stdout still answers — the last non-empty line is the root", async () => {
+  await withDir(async (tmp) => {
+    const cfg = join(tmp, "config.json");
+    writeFileSync(cfg, zcodeConfigText());
+    const hermes = makeHermesHome(join(tmp, "hermes"));
+    // The row-b shape, answered by a shimmed npm through the real spawn
+    // path (no seam): a notice line rides stdout ahead of the answer, and
+    // taking the stdout whole would turn that notice into the root —
+    // candidate 2 would die and this run would FAIL.
+    const npmRoot = join(tmp, "prefix", "lib", "node_modules");
+    const installHorizon = stubBin(join(npmRoot, "deep-horizon", "bin"), "horizon");
+    const installInject = stubBin(join(npmRoot, "deep-horizon", "bin"), "horizon-inject");
+    const binDir = join(tmp, "bin");
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(installHorizon, join(binDir, "horizon"));
+    symlinkSync(installInject, join(binDir, "horizon-inject"));
+    writeFileSync(join(binDir, "npm"), `#!/bin/sh\necho "npm notice update available"\necho "${npmRoot}"\n`);
+    chmodSync(join(binDir, "npm"), 0o755);
+    const r = await runCli(["doctor"], { env: wiringEnv({ zcodeConfig: cfg, hermesHome: hermes, pathDir: binDir }) });
+    assert.equal(r.code, 0, r.stdout);
+    assert.match(r.stdout, /zcode: PASS PATH horizon-inject is the wired package/);
+    assert.match(r.stdout, /hermes: PASS PATH horizon and horizon-inject are the wired package/);
   });
 });
 
