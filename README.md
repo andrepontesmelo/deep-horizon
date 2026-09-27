@@ -175,8 +175,14 @@ check with the fix hint, exit 0 when everything is wired, 1 when something
 is not. It checks the bins on PATH, the config's presence and parse, both
 ZCode hooks (a missing PreToolUse is the F3-class "shipped but not wired"
 state — the check names it and the fix), and for Hermes the plugin files,
-the `plugins.enabled` entry, and the shims. Absent and corrupt configs are
-FAIL lines, never a crash.
+the `plugins.enabled` entry, and the shims. It also checks *which* copy the
+PATH bins resolve to: they must be the installed package
+(`$(npm root -g)/deep-horizon`) or the one doctor itself runs from — a stale
+symlink shadowing the install (once seen in the wild: hooks ran repo code
+while every resolution check stayed green) is a FAIL naming both paths and
+the fix. On Windows this line is skipped: npm's shims there are copies, not
+links, so a realpath match cannot mean *the same copy*. Absent and corrupt
+configs are FAIL lines, never a crash.
 
 Doctor also checks the store it resolves from the working directory — the
 `.horizon/.gitignore` written at `init` is never re-synced, so a store

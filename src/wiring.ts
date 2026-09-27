@@ -16,11 +16,14 @@
 // one.
 //
 // Test seams: HORIZON_ZCODE_CONFIG and HORIZON_HERMES_HOME relocate the two
-// surfaces. They exist for the suite (fixture dirs, never the real home —
-// the real machine is wired at release time by hand); no production
-// semantics hang on them and the docs never mention them.
+// surfaces; HORIZON_NPM_ROOT_G hands the PATH-shadow check npm's `root -g`
+// answer without the spawn (see npmGlobalRoot below). They exist for the
+// suite (fixture dirs, never the real home — the real machine is wired at
+// release time by hand); no production semantics hang on them and the docs
+// never mention them.
 
-import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,23 +98,117 @@ export function collectHarnessValues(argv) {
 
 // --- doctor ---
 
-// A bin resolves on PATH: some PATH directory holds a file of that name (the
-// .cmd/.exe companions too on Windows, where npm's shims carry extensions).
-// isFile is deliberately lax about the executable bit — npm's POSIX shims
-// and .cmd launchers both pass, and doctor reports wiring, not permissions.
-// Note the honest limit: this is THE CURRENT PATH; a harness whose gateway
-// runs with a different PATH can still be wired here and fail there.
-function onPath(bin) {
+// WHERE a bin resolves on PATH: the first PATH directory holding a file of
+// that name (.cmd/.exe companions too on Windows, where npm's shims carry
+// extensions), or null. This was onPath()'s boolean until the shadow check
+// below needed the path itself, to realpath it. isFile stays deliberately
+// lax about the executable bit — npm's POSIX shims and .cmd launchers both
+// pass, and doctor reports wiring, not permissions. Note the honest limit:
+// this is THE CURRENT PATH; a harness whose gateway runs with a different
+// PATH can still be wired here and fail there.
+function pathResolvedBin(bin) {
   const dirs = (process.env.PATH || "").split(delimiter).filter((d) => d.length > 0);
   const names = process.platform === "win32" ? [`${bin}.cmd`, `${bin}.exe`, bin] : [bin];
   for (const dir of dirs) {
     for (const name of names) {
       try {
-        if (statSync(join(dir, name)).isFile()) return true;
+        const p = join(dir, name);
+        if (statSync(p).isFile()) return p;
       } catch { /* not here */ }
     }
   }
-  return false;
+  return null;
+}
+
+// --- the PATH-shadow check (F3's blind spot: "wired, but to a stale copy")
+//
+// On 2026-09-26 this machine ran a hybrid: ~/.local/bin/horizon and
+// horizon-inject were links into a pre-0.4.0 dev checkout while the zcode
+// hook config invoked the adapter scripts from $(npm root -g)/deep-horizon —
+// the resolution check stayed PASS (a bin resolving ANYWHERE on PATH is all
+// it asks), so hooks silently ran repo code instead of the released package.
+// The invariant added here: the PATH-resolved bin must be THE SAME
+// deep-horizon package tree the wiring invokes, accepted by realpath match
+// against either of the two authoritative candidates — the running doctor's
+// own package, or the npm-global install. Windows is skipped, not degraded:
+// npm's shims there are copies, not links, so a realpath match cannot mean
+// "same tree" and every honest wiring would read as a shadow.
+
+// realpath through the link chain a PATH entry may hide behind (npm's own
+// global bin link is one), or the path back when it does not resolve: a
+// candidate that does not exist simply never matches — it is not an error,
+// and doctor never throws on a foreign machine's shapes.
+function realPathLenient(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+// Candidate 1: the running doctor's own package, by the same one-level hop
+// hermesAdapterDir() uses below — src/wiring.ts in a checkout, dist/wiring.js
+// in an installed package, both one level under the package root that holds
+// bin/ — so ../bin/<bin>.js is this package's own bin either way. The hop is
+// verified against hermesAdapterDir's spelling, not a third one invented
+// here.
+function ownPackageBin(bin) {
+  return fileURLToPath(new URL(`../bin/${bin}.js`, import.meta.url));
+}
+
+// Candidate 2's root: `npm root -g`, answered at most once per doctor run
+// (the spawn costs ~300ms and both harness sections ask; the memo comes in
+// from runDoctor so the cache dies with the run, never outlives it).
+// HORIZON_NPM_ROOT_G is the seam, same discipline as the two home seams
+// above: a fixture answer, no npm round trip in tests. Unset, the spawn
+// runs and ANY failure — npm absent from PATH, nonzero exit, empty output —
+// degrades to null, and the shadow check falls back to candidate 1 alone.
+// Never throws: a diagnostic is not a build step.
+function npmGlobalRoot(memo) {
+  if (memo.npmRoot !== undefined) return memo.npmRoot;
+  const seamed = process.env.HORIZON_NPM_ROOT_G;
+  if (seamed) {
+    memo.npmRoot = seamed;
+    return seamed;
+  }
+  try {
+    const r = spawnSync("npm", ["root", "-g"], { encoding: "utf8" });
+    // npm may print notices on stdout ahead of the answer; the answer is
+    // the LAST non-empty line, trimmed — extra output must not silently
+    // kill candidate 2.
+    const lines = r.status === 0 && typeof r.stdout === "string" ? r.stdout.split("\n").filter((l) => l.trim().length > 0) : [];
+    const root = lines.length > 0 ? lines[lines.length - 1].trim() : "";
+    memo.npmRoot = root.length > 0 ? root : null;
+  } catch {
+    memo.npmRoot = null;
+  }
+  return memo.npmRoot;
+}
+
+// The shadow check itself: every named bin must have resolved on PATH AND
+// realpath to one of the two authoritative copies. Returns the check object,
+// or null — contributing nothing — when a bin never resolved at all (the
+// resolution check above already FAILed; double-FAILing the same absent bin
+// teaches nothing) or on Windows (see the section comment). A FAIL detail
+// names both sides of the mismatch: what PATH resolves to, and the wired
+// copies it should have been.
+function pathShadowCheck(bins, resolved, memo, label) {
+  if (process.platform === "win32") return null;
+  if (!bins.every((b) => resolved[b])) return null;
+  const npmRoot = npmGlobalRoot(memo);
+  const offenders = [];
+  for (const bin of bins) {
+    const onPath = realPathLenient(resolved[bin]);
+    const wired = [realPathLenient(ownPackageBin(bin))];
+    if (npmRoot !== null) wired.push(realPathLenient(join(npmRoot, "deep-horizon", "bin", `${bin}.js`)));
+    if (!wired.includes(onPath)) offenders.push(`PATH's ${bin} resolves to ${onPath}, not the wired ${wired.join(" or ")}`);
+  }
+  return {
+    label,
+    pass: offenders.length === 0,
+    detail: offenders.join("; ") || undefined,
+    hint: `remove the shadowing link/binary earlier on PATH${npmRoot === null ? "" : `; the install lives at ${join(npmRoot, "deep-horizon")}`}`,
+  };
 }
 
 // The command strings one matcher-entry declares (tolerant: a malformed
@@ -152,15 +249,21 @@ function eventWires(config, event, bin, checkMatcher) {
 const INSTALL_ZCODE = "run: horizon install --harness zcode";
 const INSTALL_HERMES = "run: horizon install --harness hermes";
 
-function zcodeChecks() {
+function zcodeChecks(memo) {
   const cfgPath = zcodeConfigPath();
+  const injectResolved = pathResolvedBin("horizon-inject");
   const checks = [
     {
       label: "horizon-inject resolves on PATH",
-      pass: onPath("horizon-inject"),
+      pass: injectResolved !== null,
       hint: "install the CLI first: npm i -g deep-horizon (hooks fail open without the bin)",
     },
   ];
+  // The 2026-09-26 shadow incident's detector, paired with the resolution
+  // line above it (see the PATH-shadow section comment): resolving is not
+  // enough — the resolved bin must be the wired package.
+  const shadow = pathShadowCheck(["horizon-inject"], { "horizon-inject": injectResolved }, memo, "PATH horizon-inject is the wired package, not a stale shadow");
+  if (shadow) checks.push(shadow);
   // Read the config once; the wiring checks below read the parsed document
   // or, when it never parsed, print their FAIL lines anyway — absent config
   // is a FAIL line, not a crash.
@@ -204,7 +307,7 @@ function zcodeChecks() {
   return checks;
 }
 
-function hermesChecks() {
+function hermesChecks(memo) {
   const home = hermesHome();
   const pluginDir = join(home, "plugins", "deep-horizon");
   const yamlPath = join(home, "config.yaml");
@@ -230,12 +333,23 @@ function hermesChecks() {
     detail,
     hint: parsed.ok ? INSTALL_HERMES : "fix the yaml by hand — horizon install refuses to write over a shape it cannot read",
   });
+  // Resolve both bins once: the resolution line says WHETHER the gateway's
+  // bins are reachable, the shadow line whether they are THIS package's.
+  const horizonResolved = pathResolvedBin("horizon");
+  const injectResolved = pathResolvedBin("horizon-inject");
   checks.push({
     label: "horizon and horizon-inject resolve on PATH",
-    pass: onPath("horizon") && onPath("horizon-inject"),
-    detail: [onPath("horizon") ? null : "horizon", onPath("horizon-inject") ? null : "horizon-inject"].filter(Boolean).join(", ") || undefined,
+    pass: horizonResolved !== null && injectResolved !== null,
+    detail: [horizonResolved ? null : "horizon", injectResolved ? null : "horizon-inject"].filter(Boolean).join(", ") || undefined,
     hint: "install the CLI: npm i -g deep-horizon (the gateway spawns the same bins)",
   });
+  const shadow = pathShadowCheck(
+    ["horizon", "horizon-inject"],
+    { horizon: horizonResolved, "horizon-inject": injectResolved },
+    memo,
+    "PATH horizon and horizon-inject are the wired package, not a stale shadow",
+  );
+  if (shadow) checks.push(shadow);
   return checks;
 }
 
@@ -244,8 +358,12 @@ function hermesChecks() {
 // greps one stream.
 export function runDoctor({ only, sink }) {
   let allPass = true;
+  // One memo per run: npm root -g is asked at most once across both harness
+  // sections, and the answer never outlives the run (a long-lived process
+  // re-asks next time).
+  const memo = {};
   for (const harness of only ? [only] : ["zcode", "hermes"]) {
-    for (const c of harness === "zcode" ? zcodeChecks() : hermesChecks()) {
+    for (const c of harness === "zcode" ? zcodeChecks(memo) : hermesChecks(memo)) {
       if (c.pass) {
         sink.stdout(`${harness}: PASS ${c.label}\n`);
       } else {
