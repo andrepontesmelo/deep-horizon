@@ -93,8 +93,10 @@ creation with `add --detail "<text>"` or later with `horizon detail`. They
 are never injected: the injected horizon carries the one line only, plus a
 pointer that `horizon detail <id>` retrieves the rest on demand.
 
-Only the human closes a gap. The agent proposes — `horizon add` / `horizon
-close` run only after the human says yes. Gap ids are chosen, not minted:
+Closing does not ask. When a session has done the work a gap names, it
+closes the gap itself — `horizon close <id>` — and tells the user; `horizon
+add` and the about line still run only after the human says yes. Gap ids are
+chosen, not minted:
 `horizon add plant-photo-lookup "A person can hand a photo to the app and get
 the plant named."` — a slug of 3–40 lowercase letters, digits, and hyphens,
 starting with a letter. An id is never reused, even after its gap closes, so a

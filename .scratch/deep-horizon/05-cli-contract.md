@@ -399,7 +399,8 @@ same exit code, so a hook can branch without parsing stderr.
 
 - No LLM calls. No network. No background work.
 - Never writes a summary it was not given.
-- Never closes a gap on its own (HL-03 r3 — only the human closes).
+- Never closes a gap on its own (§10, as amended 2026-09-26 — the injected
+  texts own when a close happens; the CLI has no judgement of its own).
 - Never injects anything. Injection is the adapters' job; the CLI only prints.
 - Never edits `AGENTS.md`, `CLAUDE.md`, or any file outside `.horizon/`.
 
@@ -579,11 +580,13 @@ Some gaps carry extended context beyond their one line —
 `horizon detail <id>` prints it.
 
 Three things are yours to do. When the user wants something that outlives
-this session, offer `horizon add <id> "<one line>"`. When something here looks
-done, offer `horizon close <id>`. If no about line heads this block and the work
-tells you what the project is about, offer `horizon about "<one line>"`; if the
-user says it themselves, offer to set or update it with their words. All need
-the user's yes — the horizon is theirs, you only hold the pen.
+this session, offer `horizon add <id> "<one line>"`. When you have done
+what a gap names, close it — `horizon close <id>`, no asking — and tell
+the user. If no about line heads this block and the work tells you what
+the project is about, offer `horizon about "<one line>"`; if the user
+says it themselves, offer to set or update it with their words. Adds and
+the about line need the user's yes — you only hold the pen; a close does
+not.
 ```
 
 Chosen over a terse variant and an explicit-contract variant. The reasoning:
@@ -591,6 +594,17 @@ framing changes behaviour more reliably than instruction. *"Inherited, not
 assigned"* attacks the eagerness this project exists to prevent at its root,
 and *"you only hold the pen"* states the authorship rule (HL-03 r3) as identity
 rather than as a prohibition to comply with.
+
+**Amendment (Andre, 2026-09-26): the close duty no longer asks.** HL-03 r3's
+propose-and-confirm covered all three duties; it now covers two. When a
+session has done the work a gap names, it closes the gap itself — `horizon
+close <id>`, no offer, no yes — and tells the user. The split: adds and the
+about line change what the horizon *says* and keep the user's yes; a close
+only records work the session already *did*, so asking routed completed work
+through a permission step that added nothing. *"You only hold the pen"*
+survives, scoped to the two duties that still need it; "the horizon is
+theirs" folded into it — the close duty grew the paragraph, and the 5×512
+worst case must stay under the Hermes 4000-char cap (test 53).
 
 The third paragraph is grafted from the explicit-contract variant, which was
 strongest exactly where the framing variant was vague — naming what a gap *is

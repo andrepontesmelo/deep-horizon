@@ -33,11 +33,13 @@ export const HORIZON_BLOCK_TEMPLATE =
   "`horizon detail <id>` prints it.\n" +
   "\n" +
   "Three things are yours to do. When the user wants something that outlives\n" +
-  "this session, offer `horizon add <id> \"<one line>\"`. When something here looks\n" +
-  "done, offer `horizon close <id>`. If no about line heads this block and the work\n" +
-  "tells you what the project is about, offer `horizon about \"<one line>\"`; if the\n" +
-  "user says it themselves, offer to set or update it with their words. All need\n" +
-  "the user's yes — the horizon is theirs, you only hold the pen.";
+  "this session, offer `horizon add <id> \"<one line>\"`. When you have done\n" +
+  "what a gap names, close it — `horizon close <id>`, no asking — and tell\n" +
+  "the user. If no about line heads this block and the work tells you what\n" +
+  "the project is about, offer `horizon about \"<one line>\"`; if the user\n" +
+  "says it themselves, offer to set or update it with their words. Adds and\n" +
+  "the about line need the user's yes — you only hold the pen; a close does\n" +
+  "not.";
 
 // The bootstrap nudge (spec 10.2): injected when the store carries neither an
 // about line nor gaps — an absent store and an empty store are the same state

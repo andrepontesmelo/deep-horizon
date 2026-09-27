@@ -40,8 +40,9 @@ high-level: no details, no chosen approach, no decision history. The count cap
 forces prioritisation — without it, a gap list is just a backlog with a
 character limit.
 
-A gap is *open* until the human closes it. Nothing about a gap implies a plan,
-an owner, an estimate, or an order.
+A gap is *open* until the work it names is delivered and the session that
+delivered it closes it. Nothing about a gap implies a plan, an owner, an
+estimate, or an order.
 
 **Details** are a gap's optional extended context — the what, why, and origin
 that must not crowd the title (the one line). Multi-line, at most **2048
@@ -59,11 +60,12 @@ closed gaps.
 
 ## Close
 
-Marking a gap delivered. **Only the human closes a gap.** The agent may notice
-that one looks delivered and *ask*, but it never closes one on its own: an
-agent that silently drops a gap the human still cares about has destroyed the
-artifact's trustworthiness, and being wrong in that direction costs more than
-carrying a stale gap.
+Marking a gap delivered. When a session has **done the work a gap names**, it
+closes the gap itself — no asking — and tells the user it closed it. A close
+only records what the session already did, so it is owed to completed work,
+not permission to be requested. The one boundary: a session never closes a
+gap on work it merely *believes* done — did the action means did it; a gap
+the session is unsure about stays open for the human.
 
 Closed gaps live on in the session log — the project's record of what actually
 got built, and the answer to "when did this close, and in which session?" A
@@ -71,13 +73,16 @@ close also retires the gap's id: no gap added later may carry it.
 
 ## Propose
 
-The agent's only route to changing the horizon. When the human voices a want
-that will not be resolved in the current session, the agent **proposes** adding
-it as a gap and writes only after the human agrees. Same for closing.
+The agent's route to changing **what the horizon says**. When the human voices
+a want that will not be resolved in the current session, the agent **proposes**
+adding it as a gap and writes only after the human agrees. Same for the about
+line. Closing is the exception (see Close): a session that delivered a gap's
+work closes it unasked and informs the user.
 
-The human types no command; the agent does the typing. But nothing enters or
-leaves the horizon unsanctioned. This is what keeps the horizon something the
-human authored rather than something they audit.
+The human types no command; the agent does the typing. What enters the
+horizon is sanctioned; what leaves it is work the session can point to. This
+is what keeps the horizon something the human authored rather than something
+they audit.
 
 ## Gap log
 
