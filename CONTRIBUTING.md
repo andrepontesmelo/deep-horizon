@@ -25,6 +25,10 @@ CI runs the same gate on Node 22; a PR is mergeable when it is green.
   closed needs a discussion first.
 - Glossary terms from [GLOSSARY.md](GLOSSARY.md) are used verbatim in comments,
   tests and errors (gap, about, horizon, store).
+- The CLI contract and the locked §10 injected texts live in
+  [`.scratch/deep-horizon/05-cli-contract.md`](.scratch/deep-horizon/05-cli-contract.md);
+  test 34 byte-locks `src/texts.ts` against its §10 fences — edit the fence
+  and the export together, always.
 - The injected surface is one line per gap, at most 5 open gaps, nothing
   machine-generated in the human's words — keep the composer's output
   deterministic.

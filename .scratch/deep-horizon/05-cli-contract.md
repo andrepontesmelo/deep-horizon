@@ -604,7 +604,10 @@ only records work the session already *did*, so asking routed completed work
 through a permission step that added nothing. *"You only hold the pen"*
 survives, scoped to the two duties that still need it; "the horizon is
 theirs" folded into it — the close duty grew the paragraph, and the 5×512
-worst case must stay under the Hermes 4000-char cap (test 53).
+worst case must stay under the Hermes 4000-char cap (test 53). The budget,
+stated once: the block's fixed text leaves **527 characters for the duties
+paragraph** (510 used at 0.5.0); a paragraph past 527 breaks the cap at the
+worst case no matter how well it reads.
 
 The third paragraph is grafted from the explicit-contract variant, which was
 strongest exactly where the framing variant was vague — naming what a gap *is
