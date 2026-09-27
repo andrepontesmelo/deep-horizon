@@ -16,6 +16,8 @@ Thanks for looking at deep-horizon. PRs welcome.
 
 CI runs the same gate on Node 22; a PR is mergeable when it is green.
 
+Releases follow [RELEASE.md](RELEASE.md), starting with the npm-auth preflight.
+
 ## Ground rules
 
 - ESM only, Node >= 22.18, no transpile step, no new runtime dependencies
