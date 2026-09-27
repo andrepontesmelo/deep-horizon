@@ -21,7 +21,9 @@ carry the new version.
 
 ## 3. Commit, push, publish
 One release commit (texts, spec, package files, docs together); push `main`;
-then `npm publish` — `prepublishOnly` runs the full suite itself. Done when:
+then `npm publish` — `prepublishOnly` runs the full suite itself. A
+2FA-enforcing account needs the one-time code on the command
+(`npm publish --otp=<code>`); a bare token gets E403. Done when:
 `npm view deep-horizon version` prints the new version.
 
 ## 4. Fallback — registry unreachable or token dead
