@@ -34,9 +34,9 @@ Releases follow [RELEASE.md](RELEASE.md), starting with the npm-auth preflight.
 - The injected surface is one line per gap, at most 5 open gaps, nothing
   machine-generated in the human's words — keep the composer's output
   deterministic.
-- Update [README.md](README.md) when the CLI surface or a harness wiring
-  changes — the README is the single manual, and the per-harness sections are
-  load-bearing documentation, not marketing.
+- Update [README.md](README.md) and [docs/manual.md](docs/manual.md) when the
+  CLI surface or a harness wiring changes — the README is the front door, the
+  manual's per-harness sections are load-bearing documentation, not marketing.
 
 ## Reporting bugs
 

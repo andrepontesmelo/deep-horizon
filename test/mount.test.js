@@ -7,11 +7,11 @@ import { readFileSync } from "node:fs";
 // store constants — no apply — so cordis mounts nothing, silently. The row is
 // parsed out of the README and imported the way a host would resolve it.
 test("77. the README's DSH mount row resolves through the exports map to a module exporting apply", async () => {
-  const lines = readFileSync(new URL("../README.md", import.meta.url), "utf8").split("\n");
+  const lines = readFileSync(new URL("../docs/manual.md", import.meta.url), "utf8").split("\n");
   const dsh = lines.findIndex((l) => l.startsWith("### 1. DeepSeek Harness"));
-  assert.notEqual(dsh, -1, "README.md lost its DSH section");
+  assert.notEqual(dsh, -1, "docs/manual.md lost its DSH section");
   const insert = lines.findIndex((l, i) => i > dsh && l.trim() === "- insert:");
-  assert.notEqual(insert, -1, "README.md DSH section lost its - insert: mount row");
+  assert.notEqual(insert, -1, "docs/manual.md DSH section lost its - insert: mount row");
   const close = lines.findIndex((l, i) => i > insert && l.trim() === "```");
   assert.ok(close > insert, "mount row fence is unclosed");
   const row = lines.slice(insert, close).find((l) => /^\s*name:\s*\S+\s*$/.test(l));

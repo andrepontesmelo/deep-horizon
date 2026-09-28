@@ -32,9 +32,10 @@ function runPython(args, opts = {}) {
 // --- Claude Code: the settings.json block IS the adapter ---
 
 test("50. the Claude Code adapter ships as a documented settings.json block with startup-only matcher and a SessionEnd close hook", () => {
-  // The literal block lives in the main README's Claude Code section (folded
-  // out of README.dsh.md, which the docs consolidation deleted).
-  const text = readFileSync(join(ROOT, "README.md"), "utf8");
+  // The literal block lives in the manual's Claude Code section (folded
+// out of README.dsh.md, which the docs consolidation deleted; moved to
+// docs/manual.md by the README/manual split, t_fae6eb35).
+  const text = readFileSync(join(ROOT, "docs/manual.md"), "utf8");
   assert.ok(text.includes('"SessionStart"'), "README must document the SessionStart hook");
   assert.ok(text.includes('"matcher": "startup"'), "README must pin the matcher to startup only");
   assert.ok(text.includes("horizon-inject --harness claude-code"), "README must spawn horizon-inject for claude-code");
