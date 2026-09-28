@@ -377,12 +377,14 @@ _seen: dict[tuple[str, str], int] = {}
 # Highest assistant-tool_calls count already scanned per session (the delta
 # cursor). The count is NOT a monotone clock over the history: a session_id
 # absent from this dict is "first sight" — fresh session turn 1 (empty,
-# tool-call-free history) or a resumed session after a gateway restart (FULL
-# restored history) — and first sight consumes the whole history silently, so
-# the restored past can never re-inject. And turn-start compaction can REWRITE
-# the history below the cursor, so a fire whose history holds fewer tool_calls
-# than the stored cursor resets the cursor to zero and rescans (the shrink
-# guard); see _pre_llm_call.
+# tool-call-free history) or a restored session after a process boundary
+# (hermes chat --resume, gateway restart) — and first sight reconciles the
+# restored history against its own transcript (t_0b9d083a): a seen mark is
+# written only when a repo's exact block is already in the transcript, and a
+# block the transcript lacks is injected then and there. And turn-start
+# compaction can REWRITE the history below the cursor, so a fire whose
+# history holds fewer tool_calls than the stored cursor resets the cursor to
+# zero and rescans (the shrink guard); see _pre_llm_call.
 _scanned: dict[str, int] = {}
 
 # Per-session store memory for the close hook — session id -> the SET of
@@ -490,16 +492,78 @@ def _tool_call_count(conversation_history: object) -> int:
     return count
 
 
-def _mark_history_seen(conversation_history: object, session_id: str) -> set[str]:
-    """Classify every repo touch in a history and mark it seen — never inject.
+def _history_text(conversation_history: object) -> str:
+    """Concatenated str content of every message in a history, shape-tolerantly.
 
-    Shared consume-without-inject path: the history handed to a first sight is
-    one the session already lived through (a fresh session's empty turn 1, or
-    the byte-exact restored transcript after a gateway restart), so marking
-    every touched repo seen without spawning horizon-inject is what keeps the
-    once-per-(session, repo) invariant across restarts. Shape-tolerant like
-    _new_tool_calls: anything off-shape is skipped, never raised on.
+    The resume verification substrate: only message ``content`` strings count
+    (that is where the core persists an injected context block — DEF-A1's
+    "existed twice in context" evidence). Tool-call params are classified
+    separately by _history_touched_repos; anything off-shape contributes
+    nothing.
     """
+    parts: list[str] = []
+    if not isinstance(conversation_history, list):
+        return ""
+    for msg in conversation_history:
+        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+            parts.append(msg["content"])
+    return "\n".join(parts)
+
+
+def _reconcile_restored_history(conversation_history: object, session_id: str, frozen_repo: str | None) -> str:
+    """Transcript-verified dedup for a first sight carrying a restored history.
+
+    Replaces skip-on-first-sight's mark-on-first-sight (t_0b9d083a): a seen
+    mark is written ONLY when the exact injected block already appears in the
+    restored transcript (or the repo is storeless — silence is remembered the
+    same way the live path remembers it). A touched repo whose block is
+    MISSING from the transcript is injected right here — the `hermes chat
+    --resume` shape: the marks died with the old process, the restored
+    api_content never carried the block, and skip-on-first-sight suppressed
+    the injection forever (zero injections, live 2026-09-10,
+    session 20260910_122553_4fc2c8).
+
+    Fail open, same as the live path: a spawn failure or off-shape answer
+    writes no mark (the next touch retries) and injects nothing. Returns the
+    joined context blocks to hand the LLM ("" when the transcript already
+    carries everything).
+    """
+    transcript = _history_text(conversation_history)
+    blocks: list[str] = []
+    for repo in sorted(_history_touched_repos(conversation_history)):
+        if frozen_repo is not None and repo == frozen_repo:
+            continue  # the frozen section owns the launch repo — never this hook
+        if (session_id, repo) in _seen:
+            continue
+        try:
+            status, stdout, _stderr = _spawn_bin("horizon-inject", _inject_args(repo, session_id))
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            continue  # fail open: no mark, retryable on the next touch
+        if status != 0:
+            continue
+        answer = _parse_answer(stdout)
+        if answer is None:
+            continue  # off-shape: no mark, retryable
+        if answer["store"] is None:
+            _seen[(session_id, repo)] = 1  # storeless: silence remembered
+            continue
+        if answer["text"] and answer["text"] in transcript:
+            # The restored transcript already carries this exact block: the
+            # injection happened in the dead process and persisted. Mark seen,
+            # stay silent — never twice in context (DEF-A1 invariant).
+            _seen[(session_id, repo)] = 1
+            _session_store.setdefault(session_id, set()).add(answer["store"])
+            continue
+        # Block absent from the restored transcript: inject it now and mark.
+        _seen[(session_id, repo)] = 1
+        _session_store.setdefault(session_id, set()).add(answer["store"])
+        if answer["text"]:
+            blocks.append(answer["text"])
+    return "\n\n".join(blocks)
+
+
+def _history_touched_repos(conversation_history: object) -> set[str]:
+    """Every repo the tool_calls in a history touch (classify-only, no marks)."""
     touched: set[str] = set()
     if not isinstance(conversation_history, list):
         return touched
@@ -512,8 +576,6 @@ def _mark_history_seen(conversation_history: object, session_id: str) -> set[str
         for call in calls:
             name, args = _call_args(call)
             touched.update(_repos_in_params(name, args))
-    for repo in touched:
-        _seen[(session_id, repo)] = 1
     return touched
 
 
@@ -582,15 +644,20 @@ def _pre_llm_call(
         if not isinstance(session_id, str) or not session_id:
             return {"context": ""}
         if session_id not in _scanned:
-            # Skip-on-first-sight (DEF-A1): absent from the cursor means a
-            # fresh session's turn 1 (empty, tool-call-free history) or a
-            # resumed session after a gateway restart (FULL restored
-            # history). Either way consume the whole history silently —
-            # mark its touches seen without injecting — so the restored
-            # past can never re-inject a block the session already has.
+            # First sight (t_0b9d083a): absent from the cursor means a fresh
+            # session's turn 1 (empty, tool-call-free history) or a restored
+            # session after a process boundary (hermes chat --resume, gateway
+            # restart). Fresh turn 1 has no touches, so reconciliation is a
+            # no-op and fresh-session behavior is byte-identical. A restored
+            # history is reconciled against its own transcript: a repo's seen
+            # mark is written ONLY when its exact injected block is already in
+            # the transcript (or the repo is storeless); a block the transcript
+            # lacks is injected right here — the mark-on-first-sight cursor
+            # suppressed it forever (zero injections, live 2026-09-10).
             _scanned[session_id] = _tool_call_count(conversation_history)
-            _mark_history_seen(conversation_history, session_id)
-            return {"context": ""}
+            frozen_repo = _first_turn_frozen_repo(is_first_turn, terminal_cwd)
+            reconciled = _reconcile_restored_history(conversation_history, session_id, frozen_repo)
+            return {"context": reconciled}
         if _tool_call_count(conversation_history) < _scanned[session_id]:
             # Compaction shrink guard (DEF-A2): turn-start compaction
             # rewrote the history below the cursor, so per-call indexes

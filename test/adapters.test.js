@@ -684,14 +684,15 @@ test("69. the Hermes pre_llm_call hook ignores tool results, user text, unknown 
   }, "horizon-adapter-test-");
 });
 
-test("70. the Hermes pre_llm_call hook survives a simulated gateway restart: the restored history is consumed silently and new touches still inject", async () => {
-  // DEF-A1: the per-session state (_seen, _scanned) dies with the gateway
-  // process. A resumed session's first post-restart fire carries the FULL
-  // restored history with an empty cursor, so the old delta logic
-  // reclassified every historical touch as new and RE-INJECTED the block the
-  // persisted sidecar already restored (it then existed twice in context).
-  // Skip-on-first-sight consumes that history silently instead; the cursor
-  // still advances past it, so the next real touch keeps working.
+test("70. the Hermes pre_llm_call hook survives a simulated gateway restart: a transcript that carries the block consumes silently and new touches still inject", async () => {
+  // DEF-A1 + t_0b9d083a: the per-session state (_seen, _scanned) dies with the
+  // gateway process. A resumed session's first post-restart fire carries the
+  // FULL restored history. Production persistence keeps an injected context
+  // block in the transcript's message content, so the restored history below
+  // carries the alpha block as a content message. First sight verifies each
+  // touched repo against that transcript: alpha's exact block IS present, so
+  // it is marked seen WITHOUT re-injecting (never twice in context), while a
+  // NEW touch after the resume still injects.
   await withDir(async (dir) => {
     const alpha = join(dir, "alpha");
     const beta = join(dir, "beta");
@@ -723,16 +724,22 @@ test("70. the Hermes pre_llm_call hook survives a simulated gateway restart: the
       "c = call('s-r', hist1, user_message='go')",
       "assert 'alpha gap' in c, 'pre-restart alpha touch must inject: %r' % (c[:80],)",
       "# SIMULATED RESTART: clearing both dicts is exactly what a gateway",
-      "# restart produces; the same full history comes back from persistence.",
+      "# restart produces. The restored history is hist1 PLUS the persisted",
+      "# injection the dead process returned (the transcript keeps it as",
+      "# message content) — so the resume fire carries it.",
+      "restored = [{'role': 'assistant', 'content': c}] + hist1",
       "deep_horizon._seen.clear()",
       "deep_horizon._scanned.clear()",
-      "c = call('s-r', hist1, user_message='go')",
-      "assert not c, 'post-restart resume must NOT re-inject: %r' % (c[:80],)",
+      "c2 = call('s-r', restored, user_message='go')",
+      "assert not c2, 'post-restart resume (block persisted) must NOT re-inject: %r' % (c2[:80],)",
       "# The cursor advanced past the restored history: a NEW touch works,",
       "# and alpha does not re-appear alongside it.",
-      "c = call('s-r', hist2, user_message='go')",
-      "assert 'beta gap' in c, 'post-restart new touch must inject beta: %r' % (c[:80],)",
-      "assert 'alpha gap' not in c, 'restored alpha must not re-appear: %r' % (c[:120],)",
+      "restored2 = restored + [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c3', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': beta + '/notes.md'})}},",
+      "]}]",
+      "c3 = call('s-r', restored2, user_message='go')",
+      "assert 'beta gap' in c3, 'post-restart new touch must inject beta: %r' % (c3[:80],)",
+      "assert 'alpha gap' not in c3, 'restored alpha must not re-appear: %r' % (c3[:120],)",
       "print('OK')",
       "",
     ].join("\n"));
@@ -799,10 +806,12 @@ test("71. the Hermes pre_llm_call hook survives turn-start compaction: the shrin
 });
 
 test("72. the once-per-(session, repo) invariant holds across simulated gateway restarts", async () => {
-  // Restart-resume end to end: every fire's context is recorded, and each
-  // repo's block must appear EXACTLY ONCE in the whole stream — never
-  // re-injected by a post-restart resume, never duplicated by a fresh
-  // touch of an already-seen repo.
+  // Restart-resume end to end (t_0b9d083a shape): every fire's context is
+  // recorded, and each repo's block must appear EXACTLY ONCE in the whole
+  // stream — never re-injected by a post-restart resume whose transcript
+  // already carries it, never duplicated by a fresh touch of an already-seen
+  // repo. The restored histories carry the persisted blocks as content
+  // messages, exactly as production transcripts do.
   await withDir(async (dir) => {
     const alpha = join(dir, "alpha");
     const beta = join(dir, "beta");
@@ -836,20 +845,88 @@ test("72. the once-per-(session, repo) invariant holds across simulated gateway 
       "]}]",
       "# touch alpha -> inject.",
       "assert not fire('s-i', [], user_message='go'), 'turn 1 must inject nothing'",
-      "assert 'alpha gap' in fire('s-i', alpha_hist, user_message='go'), 'alpha must inject once'",
-      "# simulated restart; same history -> no inject.",
+      "a1 = fire('s-i', alpha_hist, user_message='go')",
+      "assert 'alpha gap' in a1, 'alpha must inject once'",
+      "# simulated restart; the transcript persisted the alpha block as",
+      "# message content (what the dead process actually returned).",
       "restart()",
-      "assert not fire('s-i', alpha_hist, user_message='go'), 'resume must not re-inject alpha'",
+      "restored1 = [{'role': 'assistant', 'content': a1}] + alpha_hist",
+      "assert not fire('s-i', restored1, user_message='go'), 'resume must not re-inject alpha'",
       "# touch beta -> inject beta only.",
-      "assert 'beta gap' in fire('s-i', both_hist, user_message='go'), 'beta must inject once'",
+      "b1 = fire('s-i', both_hist, user_message='go')",
+      "assert 'beta gap' in b1, 'beta must inject once'",
       "assert 'alpha gap' not in stream[-1], 'alpha must not re-appear with beta'",
-      "# simulated restart; full history -> no inject.",
+      "# simulated restart; full history with both persisted blocks.",
       "restart()",
-      "assert not fire('s-i', both_hist, user_message='go'), 'resume must not re-inject either repo'",
+      "restored2 = [{'role': 'assistant', 'content': a1}, {'role': 'assistant', 'content': b1}] + both_hist",
+      "assert not fire('s-i', restored2, user_message='go'), 'resume must not re-inject either repo'",
       "alpha_hits = sum(1 for c in stream if 'alpha gap' in c)",
       "beta_hits = sum(1 for c in stream if 'beta gap' in c)",
       "assert alpha_hits == 1, 'alpha block must appear exactly once, got %d: %r' % (alpha_hits, stream,)",
       "assert beta_hits == 1, 'beta block must appear exactly once, got %d: %r' % (beta_hits, stream,)",
+      "print('OK')",
+      "",
+    ].join("\n"));
+    const r = runPython([script]);
+    assert.equal(r.code, 0, `python failed: ${r.stderr}`);
+    assert.equal(r.stdout.trim(), "OK");
+  }, "horizon-adapter-test-");
+});
+
+test("73. a resumed session whose transcript LACKS the block gets it injected exactly once (the hermes chat --resume shape, t_0b9d083a)", async () => {
+  // Live repro 2026-09-10 (session 20260910_122553_4fc2c8): a 2-turn session
+  // resumed in a fresh process restored the tool-call history but the block
+  // never made it into the restored api_content. The old skip-on-first-sight
+  // cursor marked every touched repo seen at first sight, so the horizon was
+  // suppressed FOREVER — zero injections. Transcript-verified dedup instead
+  // verifies each touched repo against the restored transcript: alpha's block
+  // is absent, so first sight injects it; the same fire (or a later one) never
+  // injects twice; a fresh session's behavior is untouched (test 68).
+  await withDir(async (dir) => {
+    const alpha = join(dir, "alpha");
+    const beta = join(dir, "beta");
+    seed(alpha, ["alpha gap"]);
+    seed(beta, ["beta gap"]);
+    const script = join(dir, "drive.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(HERMES_PLUGIN_DIR) + ")",
+      "import deep_horizon",
+      "import os",
+      "os.environ['HORIZON_GIT_ROOT'] = " + JSON.stringify(dir + "/"),
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
+      "def ctx(r):",
+      "    return r.get('context', '') if isinstance(r, dict) else (r or '')",
+      "def call(session, history, **kw):",
+      "    return ctx(deep_horizon._pre_llm_call(session_id=session, conversation_history=history, **kw))",
+      "alpha = " + JSON.stringify(alpha),
+      "beta = " + JSON.stringify(beta),
+      "# The restored history the fresh process receives at resume: the alpha",
+      "# touch happened in the dead process, but the api_content carries NO",
+      "# injected block (the 2026-09-10 shape — proven zero injections).",
+      "restored = [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c1', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'git -C ' + alpha + ' status'})}},",
+      "]}]",
+      "c = call('s-x', restored, user_message='go')",
+      "assert 'alpha gap' in c, 'resume with missing block MUST inject alpha: %r' % (c[:80],)",
+      "# Same-session double-inject stays suppressed (cursor + _seen).",
+      "c2 = call('s-x', restored, user_message='go')",
+      "assert not c2, 'repeat fire must not re-inject: %r' % (c2[:80],)",
+      "# A later new touch after resume still injects its own repo.",
+      "grown = restored + [{'role': 'assistant', 'tool_calls': [",
+      "    {'id': 'c2', 'function': {'name': 'read_file', 'arguments': json.dumps({'path': beta + '/notes.md'})}},",
+      "]}]",
+      "c3 = call('s-x', grown, user_message='go')",
+      "assert 'beta gap' in c3, 'post-resume new touch must inject beta: %r' % (c3[:80],)",
+      "assert 'alpha gap' not in c3, 'alpha must not ride along: %r' % (c3[:120],)",
+      "# A SECOND process boundary (compaction or another resume) receiving",
+      "# the transcript WITH the persisted block must stay silent.",
+      "deep_horizon._seen.clear()",
+      "deep_horizon._scanned.clear()",
+      "persisted = [{'role': 'assistant', 'content': c3}, {'role': 'assistant', 'content': c}] + grown",
+      "c4 = call('s-x', persisted, user_message='go')",
+      "assert not c4, 'resume whose transcript carries the blocks must not re-inject: %r' % (c4[:80],)",
       "print('OK')",
       "",
     ].join("\n"));
