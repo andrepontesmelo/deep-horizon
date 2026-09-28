@@ -53,6 +53,7 @@
     "adapters/zcode/session-start",
     "adapters/zcode/pre-execute",
     "README.md",
+    "docs/manual.md",
     "LICENSE"
   ],
   "pi": {
